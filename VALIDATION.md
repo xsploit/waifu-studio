@@ -255,3 +255,11 @@ Scene prompts now keep persona and up to 38 previous history messages ahead of q
 Offline coverage checks stable prefix/order/history bounds, user-role recall isolation, worker-side traced recall matching the existing prompt and inspector trace, disabled/missing ledgers creating no files, and the real scene worker's two isolated recipient traces against local fake streaming requests. GUI appearance remains unaccepted.
 
 Final checks: 401 library + 88 app + 6 integration + 1 benchmark = 496 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. External-model review remains unavailable through the delegation causal-hop limit; no live provider cache measurement or GUI acceptance is claimed.
+
+## Current WebWaifu4 FBX GPU captures
+
+Snapshot `cc26ca1`: the current production VRM loader and retargeter rendered the recovered WebWaifu4 `Wave.fbx` on bundled Neuro using Vulkan / NVIDIA GeForce RTX 5060 Ti. The importer mapped 52 humanoid bones. Windowless captures at [0.5 seconds](previews/ww4-wave-retarget.png) and [1.5 seconds](previews/ww4-wave-retarget-1.5s.png) are 1280×960 RGBA, with 72,096 and 73,435 visible pixels respectively. Both were visually inspected: different torso/arm poses, whole avatar inside the frame. This is current GPU evidence for these two sample poses, not temporal smoothness, source-motion fidelity, arbitrary FBX rigs or physical desktop interaction. The earlier source/target-armature algebra regressions remain separate synthetic evidence.
+
+Source fixture SHA-256: `24b579c01571b1641646a45ac0def6b6d48a7964c7e02bbb7d24b742b50823fd`. The original FBX is not redistributed by this capture update. Command: `CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=../../work/studio-target nice -n 10 cargo run --example render_desktop_motion -- LOCAL_WW4_WAVE_FBX previews/ww4-wave-retarget.png --time 0.5 --frames 60`; the second run used the built executable and `--time 1.5`. No window, audio device, provider, key or network request is involved.
+
+Desktop inspection again returned “desktop changed during inspection”; no focus/input actions, guard bypass or live companion launch followed. Native drag/drop, sitting and live audio acceptance remain open. Code is unchanged from the 496-test receipt above; only these captures and documentation were added.
