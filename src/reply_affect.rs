@@ -10,7 +10,7 @@ const OPEN: &str = "<waifu-affect>";
 const CLOSE: &str = "</waifu-affect>";
 const MAX_METADATA: usize = 1024;
 const MAX_CHARACTERS: usize = 256;
-pub const AFFECT_PROMPT: &str = "After your normal reply, append exactly one trailing <waifu-affect>{\"emotion\":\"happy\",\"valence\":0.5,\"arousal\":0.3,\"dominance\":0.2}</waifu-affect> block. Emotion must be neutral, happy, sad, angry, relaxed, or surprised; each VAD number must be finite in [-1,1]. Describe your character's own current feeling. No other fields or text after the block. Never include this marker in the spoken prose.";
+pub const AFFECT_PROMPT: &str = "After your normal reply, append exactly one trailing <waifu-affect>{\"emotion\":\"happy\",\"valence\":0.5,\"arousal\":0.3,\"dominance\":0.2}</waifu-affect> block. Emotion must be neutral, amused, happy, excited, curious, confused, thinking, surprised, angry, annoyed, embarrassed, grateful, optimistic, proud, nervous, sad, caring, or relaxed; each VAD number must be finite in [-1,1]. Describe your character's own current feeling. No other fields or text after the block. Never include this marker in the spoken prose.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,6 +22,18 @@ pub enum AffectEmotion {
     Angry,
     Relaxed,
     Surprised,
+    Amused,
+    Excited,
+    Curious,
+    Confused,
+    Thinking,
+    Annoyed,
+    Embarrassed,
+    Grateful,
+    Optimistic,
+    Proud,
+    Nervous,
+    Caring,
 }
 impl AffectEmotion {
     fn aliases(self) -> &'static [&'static str] {
@@ -32,6 +44,12 @@ impl AffectEmotion {
             Self::Angry => &["angry", "anger"],
             Self::Relaxed => &["relaxed", "fun"],
             Self::Surprised => &["surprised", "surprise"],
+            Self::Amused | Self::Excited | Self::Optimistic | Self::Proud => &["happy", "joy"],
+            Self::Curious | Self::Thinking => &["thinking"],
+            Self::Confused => &["confused"],
+            Self::Annoyed => &["angry", "anger"],
+            Self::Embarrassed | Self::Nervous => &["embarrassed"],
+            Self::Grateful | Self::Caring => &["caring"],
         }
     }
 }
@@ -328,6 +346,34 @@ impl AffectLibrary {
 mod tests {
     use super::*;
     const JSON: &str = r#"{"emotion":"happy","valence":0.8,"arousal":0.4,"dominance":-0.2}"#;
+    #[test]
+    fn webwaifu_emotions_keep_their_identity_and_expression_mapping() {
+        for (emotion, expression) in [
+            ("neutral", None),
+            ("amused", Some("happy")),
+            ("happy", Some("happy")),
+            ("excited", Some("happy")),
+            ("curious", Some("thinking")),
+            ("confused", Some("confused")),
+            ("thinking", Some("thinking")),
+            ("surprised", Some("surprised")),
+            ("angry", Some("angry")),
+            ("annoyed", Some("angry")),
+            ("embarrassed", Some("embarrassed")),
+            ("grateful", Some("caring")),
+            ("optimistic", Some("happy")),
+            ("proud", Some("happy")),
+            ("nervous", Some("embarrassed")),
+            ("sad", Some("sad")),
+            ("caring", Some("caring")),
+            ("relaxed", Some("relaxed")),
+        ] {
+            let parsed = ReplyAffect::parse(&JSON.replace("happy", emotion)).unwrap();
+            assert_eq!(serde_json::to_value(parsed.emotion).unwrap(), emotion);
+            assert_eq!(parsed.emotion.aliases().first().copied(), expression);
+        }
+    }
+
     #[test]
     fn every_stream_split_hides_metadata() {
         let text = format!("こんにちは! {OPEN}{JSON}{CLOSE}");

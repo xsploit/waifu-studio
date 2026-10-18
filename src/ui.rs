@@ -1511,7 +1511,7 @@ fn motion_suggestion(
     egui::CollapsingHeader::new("Motion suggestion (optional)")
         .id_salt("motion_suggest")
         .show(ui, |ui| {
-            ui.small("Asks the Scene chat decision model to pick one of up to 16 scanned motions, or none. Runs only when you click; review the pick, then press Play.");
+            ui.small("Asks the Scene chat decision model to pick one of up to 16 scanned motions, or none. Manual suggestions require Play. The after-reply dropdown can enable suggestions or automatic playback.");
             caption(ui, "AFTER EACH REPLY");
             let mode_name = |mode| match mode {
                 ReplyMotionMode::Off => "Off",
