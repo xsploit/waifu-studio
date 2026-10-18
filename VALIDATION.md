@@ -4,6 +4,8 @@ Date: 2026-10-18; earlier GPU observations are identified below. Linux KDE/Wayla
 
 ## Compiled and automated checks
 
+Integration snapshot `920a374`: `cargo test --all-targets` passed **451 tests** (363 library, 82 controller/runtime/UI, 6 inspection), package formatting passed, and strict all-target Clippy passed. New coverage includes Vercel reasoning capability parsing/validation and Hyprland geometry fixtures plus fake-socket movement. The composer selection test opens the actual nested reasoning dropdown, chooses High, and confirms model/settings persistence and draft preservation. Desktop tracking now selects KWin or Hyprland through the same bridge interface; no live Hyprland or physical desktop input acceptance is claimed. Current-session inspection found KDE/KWin Wayland, correcting the audit's earlier Hyprland assumption.
+
 Integration snapshot `cd6fcc5`: `cargo test --all-targets` passed **443 tests** (355 library, 82 controller/runtime/UI, 6 inspection). This includes deterministic reply-emotion motion bindings and stale automatic-pick cancellation. Snapshot `04cb63f` additionally passed the mocked HTTP request test for history → recalled memory → latest user ordering, package formatting, and strict all-target Clippy. Concurrent follow-up edits require their own receipt; these results do not validate later worktree changes.
 
 - `cargo build --bin waifu-studio`: passed, development profile.
