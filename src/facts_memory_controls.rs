@@ -1,5 +1,5 @@
 use bevy_egui::egui;
-use waifu_studio::facts_memory::{FactsMemoryState, RecordKind};
+use waifu_studio::facts_memory::{FactsMemoryState, FactsRecallOutcome, RecordKind};
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
     ui.label("Evidence ledger: facts, preferences, questions and reflections are local to this character. Candidate extraction uses only user turns and always requires acceptance.");
@@ -174,4 +174,44 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             }
         }
     });
+    recall_inspector(ui, state);
+}
+
+/// Read-only view of the latest evidence recall; collapsed by default.
+fn recall_inspector(ui: &mut egui::Ui, state: &FactsMemoryState) {
+    egui::CollapsingHeader::new("Latest evidence recall trace")
+        .id_salt("facts-recall-trace")
+        .default_open(false)
+        .show(ui, |ui| {
+            let Some(trace) = state.latest_trace() else {
+                ui.weak("No evidence recall yet for this character in this session.");
+                return;
+            };
+            ui.weak(format!(
+                "{} query terms · {} bytes inserted · {} over budget · {} over 6-record limit",
+                trace.query_terms, trace.bytes_inserted, trace.over_budget, trace.over_limit
+            ));
+            ui.weak(format!(
+                "Excluded: {} superseded by corrections · {} expired · {} unmatched",
+                trace.superseded, trace.expired, trace.unmatched
+            ));
+            if trace.hits.is_empty() {
+                ui.weak("No matching records.");
+            }
+            for hit in &trace.hits {
+                let outcome = match hit.outcome {
+                    FactsRecallOutcome::Inserted => "sent",
+                    FactsRecallOutcome::OverBudget => "over budget",
+                    FactsRecallOutcome::OverLimit => "over limit",
+                };
+                ui.label(format!(
+                    "{:?} {} · score {} · matched: {} · {outcome}",
+                    hit.kind,
+                    &hit.record.to_string()[..8],
+                    hit.score,
+                    hit.matched_terms.join(", ")
+                ))
+                .on_hover_text(hit.record.to_string());
+            }
+        });
 }
