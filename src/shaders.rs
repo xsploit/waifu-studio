@@ -1,5 +1,5 @@
-//! Reversible material previews. Original VRM materials change only through opt-in
-//! material tuning, which restores each material's captured values when switched off.
+//! Reversible, avatar-private material previews. Imported source assets stay
+//! immutable; tuning restores each instance's captured values when switched off.
 use crate::visuals::{MaterialTuning, VisualState};
 use bevy::{asset::UntypedAssetId, prelude::*, render::render_resource::Face};
 use bevy_shader_mtoon::{MtoonMaterial, OutlineMaterial, OutlineSync, VrmOutlineMode};
@@ -174,11 +174,12 @@ impl PbrValues {
     }
 }
 
-/// Weak entries share conversions between primitives using the same source
-/// material, while allowing every texture/material handle to drop with its last
-/// mesh. There is intentionally no process-lifetime strong asset cache.
+/// Weak entries share conversions between primitives of one avatar using the
+/// same source material. Separate avatars never share mutable material variants.
+/// Every texture/material handle can drop with its last mesh. There is no
+/// process-lifetime strong asset cache.
 #[derive(Resource, Default)]
-struct VariantCache(HashMap<UntypedAssetId, Weak<VariantHandles>>);
+struct VariantCache(HashMap<(Entity, UntypedAssetId), Weak<VariantHandles>>);
 
 pub struct ShaderPreviewPlugin;
 impl Plugin for ShaderPreviewPlugin {
@@ -262,19 +263,20 @@ fn prepare_variants(
     mut cache: ResMut<VariantCache>,
 ) {
     for (entity, toon, standard) in &query {
-        if !parents
+        let Some(root) = parents
             .iter_ancestors(entity)
-            .any(|ancestor| roots.contains(ancestor))
-        {
+            .find(|ancestor| roots.contains(*ancestor))
+        else {
             continue;
-        }
-        let key = if let Some(toon) = toon {
+        };
+        let source_id = if let Some(toon) = toon {
             toon.id().untyped()
         } else if let Some(standard) = standard {
             standard.id().untyped()
         } else {
             continue;
         };
+        let key = (root, source_id);
         if let Some(shared) = cache.0.get(&key).and_then(Weak::upgrade) {
             commands
                 .entity(entity)
@@ -285,12 +287,16 @@ fn prepare_variants(
             let Some(source) = toons.get(&toon.0) else {
                 continue;
             };
-            (toon.0.clone(), standards.add(standard_from_toon(source)))
+            let source = source.clone();
+            let lit = standards.add(standard_from_toon(&source));
+            (toons.add(source), lit)
         } else if let Some(standard) = standard {
             let Some(source) = standards.get(&standard.0) else {
                 continue;
             };
-            (toons.add(toon_from_standard(source)), standard.0.clone())
+            let source = source.clone();
+            let toon = toons.add(toon_from_standard(&source));
+            (toon, standards.add(source))
         } else {
             continue;
         };
@@ -428,6 +434,160 @@ fn update_outlines(
 mod tests {
     use super::*;
     #[test]
+    fn avatar_variants_are_private_and_new_instances_do_not_compound_tuning() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .init_resource::<VisualState>()
+            .add_plugins(ShaderPreviewPlugin);
+        let original = MtoonMaterial {
+            matcap_factor: Vec3::splat(0.5),
+            ..default()
+        };
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .add(original.clone());
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .material
+            .matcap_strength = 2.;
+        let mut instances = Vec::new();
+        for _ in 0..3 {
+            let root = app.world_mut().spawn(ShaderPreview).id();
+            let mesh = app
+                .world_mut()
+                .spawn((
+                    ChildOf(root),
+                    Mesh3d(Handle::default()),
+                    MeshMaterial3d(source.clone()),
+                ))
+                .id();
+            app.update();
+            let variants = app.world().get::<Variants>(mesh).unwrap().0.clone();
+            let material = app
+                .world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&variants.toon)
+                .unwrap();
+            assert_eq!(
+                material.matcap_factor,
+                Vec3::ONE,
+                "each new avatar starts from the authored factor"
+            );
+            assert_eq!(
+                app.world().resource::<Assets<MtoonMaterial>>().get(&source),
+                Some(&original),
+                "tuning must never mutate the imported asset"
+            );
+            for other in &instances {
+                assert!(!Arc::ptr_eq(&variants, other));
+                assert_ne!(variants.toon, other.toon);
+                assert_ne!(variants.lit, other.lit);
+                assert_ne!(variants.unlit, other.unlit);
+            }
+            instances.push(variants);
+        }
+        // A future expression overlay on one avatar cannot change another avatar.
+        app.world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .get_mut(&instances[0].toon)
+            .unwrap()
+            .base_color = Color::BLACK;
+        assert_eq!(
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&instances[1].toon)
+                .unwrap()
+                .base_color,
+            original.base_color
+        );
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .material
+            .matcap_strength = 1.;
+        app.update();
+        for instance in &instances {
+            assert_eq!(
+                app.world()
+                    .resource::<Assets<MtoonMaterial>>()
+                    .get(&instance.toon)
+                    .unwrap()
+                    .matcap_factor,
+                original.matcap_factor
+            );
+        }
+    }
+
+    #[test]
+    fn pbr_tuning_keeps_imported_standard_material_immutable() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .init_resource::<VisualState>()
+            .add_plugins(ShaderPreviewPlugin);
+        let original = StandardMaterial {
+            perceptual_roughness: 0.2,
+            ..default()
+        };
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(original.clone());
+        let root = app.world_mut().spawn(ShaderPreview).id();
+        let mesh = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(source.clone()),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .material
+            .pbr = true;
+        app.update();
+        let private = app.world().get::<Variants>(mesh).unwrap().0.lit.clone();
+        assert_ne!(private, source);
+        assert_eq!(
+            PbrValues::read(
+                app.world()
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&source)
+                    .unwrap()
+            ),
+            PbrValues::read(&original)
+        );
+        assert_eq!(
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(&private)
+                .unwrap()
+                .perceptual_roughness,
+            0.45
+        );
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .material
+            .pbr = false;
+        app.update();
+        assert_eq!(
+            PbrValues::read(
+                app.world()
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&private)
+                    .unwrap()
+            ),
+            PbrValues::read(&original)
+        );
+    }
+
+    #[test]
     fn material_conversion_preserves_cutouts_and_double_sided_faces() {
         let original = MtoonMaterial {
             alpha_mode: AlphaMode::Mask(0.42),
@@ -473,6 +633,7 @@ mod tests {
             ))
             .id();
         app.update();
+        let handle = app.world().get::<Variants>(mesh).unwrap().0.toon.clone();
         let toon = |app: &App| {
             app.world()
                 .resource::<Assets<MtoonMaterial>>()
@@ -535,12 +696,16 @@ mod tests {
             .resource_mut::<Assets<MtoonMaterial>>()
             .add(original.clone());
         let root = app.world_mut().spawn(ShaderPreview).id();
-        app.world_mut().spawn((
-            ChildOf(root),
-            Mesh3d(Handle::default()),
-            MeshMaterial3d(handle.clone()),
-        ));
+        let mesh = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(handle.clone()),
+            ))
+            .id();
         app.update();
+        let handle = app.world().get::<Variants>(mesh).unwrap().0.toon.clone();
         let toon = |app: &App| {
             app.world()
                 .resource::<Assets<MtoonMaterial>>()
@@ -620,12 +785,14 @@ mod tests {
             ))
             .id();
         app.update();
+        let private = app.world().get::<Variants>(mesh).unwrap().0.toon.clone();
+        assert_ne!(private, handle);
         assert_eq!(
             app.world()
                 .get::<MeshMaterial3d<MtoonMaterial>>(mesh)
                 .unwrap()
                 .0,
-            handle
+            private
         );
         for mode in [ShaderMode::Lit, ShaderMode::Unlit] {
             app.world_mut().resource_mut::<ShaderSettings>().mode = mode;
@@ -664,7 +831,7 @@ mod tests {
                 .get::<MeshMaterial3d<MtoonMaterial>>(mesh)
                 .unwrap()
                 .0,
-            handle
+            private
         );
         assert_eq!(
             app.world().get::<Visibility>(outline),

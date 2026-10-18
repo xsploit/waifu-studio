@@ -291,3 +291,11 @@ Evidence: `cargo test --lib gaze::` passed 8/8 including the new freshness/inval
 ### Integrated gaze verification follow-up
 
 After `88cfbfc`, the single-job all-target suite passed **500 tests** (403 library, 90 application/controller/UI, 6 integration, 1 benchmark). A further schedule-level gaze regression then passed with all 9 gaze tests: a primary-window camera and avatar receive no native cursor events, opposite bridge coordinates turn the head in opposite directions, and disabling gaze restores the rest rotation. The library now has 404 tests; the complete 501-test total has not been rerun after adding that test. Updated the gaze panel's stale claim that compositor pointer input was unavailable. These remain offline checks, not live compositor acceptance.
+
+## 2026-10-18 — avatar-private shader materials
+
+Shader preview variants are now keyed by avatar root plus imported source asset. Primitives within one avatar still share conversions, but separate instances receive distinct mutable Toon/Lit/Unlit materials. Both MToon and StandardMaterial imports are cloned before tuning. Imported source assets stay unchanged, preventing a later instance from capturing already-scaled authored map strengths. Weak cache cleanup remains tied to the last mesh.
+
+Evidence: all 8 shader tests passed, including new regressions for three sequential instances under nonidentity tuning, material isolation, unchanged imported source values, PBR restoration, existing mode/outline switching and weak-cache cleanup. Strict all-target Clippy passed. The production windowless capture `previews/material-isolation-current.png` completed on Vulkan and was inspected: Neuro is visible in the Scene & avatar preview. No interactive desktop window or audio device was used. This is a material-ownership prerequisite; material-only VRM expressions remain unimplemented. Fable review dispatch was attempted but rejected with “Maximum automated causal hop budget reached”; no fresh external-model review is claimed.
+
+The final source change after those checks only wraps a documentation comment. No new build or render was started after the user requested advance load notifications.
