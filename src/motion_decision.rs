@@ -17,6 +17,7 @@ use std::{
 };
 use uuid::Uuid;
 use waifu_studio::recipient_decision::DecisionConfig;
+use waifu_studio::reply_affect::AffectEmotion;
 
 /// Most context bytes sent with one request.
 pub const MAX_CONTEXT_BYTES: usize = 4000;
@@ -372,6 +373,82 @@ pub struct CompletedReply<'a> {
     /// Identity of the visible avatar (entity bits), if any.
     pub avatar: Option<u64>,
     pub text: &'a str,
+    /// Parsed opt-in affect emotion of this same job, if any.
+    pub affect: Option<AffectEmotion>,
+}
+
+/// Every emotion the affect parser accepts, in WebWaifu4's order plus Relaxed.
+pub const EMOTIONS: [AffectEmotion; 18] = [
+    AffectEmotion::Neutral,
+    AffectEmotion::Amused,
+    AffectEmotion::Happy,
+    AffectEmotion::Excited,
+    AffectEmotion::Curious,
+    AffectEmotion::Confused,
+    AffectEmotion::Thinking,
+    AffectEmotion::Surprised,
+    AffectEmotion::Angry,
+    AffectEmotion::Annoyed,
+    AffectEmotion::Embarrassed,
+    AffectEmotion::Grateful,
+    AffectEmotion::Optimistic,
+    AffectEmotion::Proud,
+    AffectEmotion::Nervous,
+    AffectEmotion::Sad,
+    AffectEmotion::Caring,
+    AffectEmotion::Relaxed,
+];
+
+pub fn emotion_name(emotion: AffectEmotion) -> &'static str {
+    match emotion {
+        AffectEmotion::Neutral => "neutral",
+        AffectEmotion::Amused => "amused",
+        AffectEmotion::Happy => "happy",
+        AffectEmotion::Excited => "excited",
+        AffectEmotion::Curious => "curious",
+        AffectEmotion::Confused => "confused",
+        AffectEmotion::Thinking => "thinking",
+        AffectEmotion::Surprised => "surprised",
+        AffectEmotion::Angry => "angry",
+        AffectEmotion::Annoyed => "annoyed",
+        AffectEmotion::Embarrassed => "embarrassed",
+        AffectEmotion::Grateful => "grateful",
+        AffectEmotion::Optimistic => "optimistic",
+        AffectEmotion::Proud => "proud",
+        AffectEmotion::Nervous => "nervous",
+        AffectEmotion::Sad => "sad",
+        AffectEmotion::Caring => "caring",
+        AffectEmotion::Relaxed => "relaxed",
+    }
+}
+
+/// The emotion parsed for exactly this job and character; never a stored mood
+/// or an earlier reply's emotion.
+pub fn job_affect(
+    completed: Option<(Uuid, Uuid, AffectEmotion)>,
+    job: Uuid,
+    character: Uuid,
+) -> Option<AffectEmotion> {
+    completed
+        .filter(|(id, owner, _)| *id == job && *owner == character)
+        .map(|(_, _, emotion)| emotion)
+}
+
+/// The bound path for `emotion`, only if it is an auto-playable entry of the
+/// current scan. Never guesses from filenames.
+pub fn bound_motion(
+    config: &waifu_studio::data::ReplyMotionConfig,
+    emotion: AffectEmotion,
+    entries: &[MotionEntry],
+) -> Option<PathBuf> {
+    let binding = config
+        .emotion_bindings
+        .iter()
+        .find(|binding| binding.emotion == emotion)?;
+    entries
+        .iter()
+        .find(|entry| entry.path == binding.path && entry.auto_playable())
+        .map(|entry| entry.path.clone())
 }
 
 /// What the frame wants the caller to do.
@@ -434,14 +511,20 @@ impl ReplyMotion {
         start: impl FnOnce(&mut MotionSuggester, SuggestRequest) -> Result<(), String>,
     ) -> Option<AutoAction> {
         use waifu_studio::data::ReplyMotionMode as Mode;
-        if config.mode == Mode::Off && self.pending.take().is_some() {
+        // Cancel a running pick, or drop one that finished before this frame.
+        if matches!(config.mode, Mode::Off | Mode::EmotionMapped) && self.pending.take().is_some() {
             suggester.cancel();
+            suggester.dismiss();
         }
         // Every reply is marked seen, even while Off, so enabling later never
         // replays an old reply.
         if let Some(reply) = reply.filter(|reply| self.seen != Some(reply.id)) {
             self.seen = Some(reply.id);
-            if config.mode != Mode::Off && selected == Some(reply.character) {
+            if config.mode == Mode::EmotionMapped {
+                if selected == Some(reply.character) && avatar == reply.avatar {
+                    return self.mapped(now, config, reply, entries);
+                }
+            } else if config.mode != Mode::Off && selected == Some(reply.character) {
                 self.trigger(now, config, reply, entries, suggester, catalog, start);
             }
         }
@@ -474,10 +557,9 @@ impl ReplyMotion {
                 .resolve_play(selected, entries)
                 .ok()
                 .filter(|path| {
-                    entries.iter().any(|entry| {
-                        &entry.path == path
-                            && entry.category() != super::motion_library::MotionCategory::Locomotion
-                    })
+                    entries
+                        .iter()
+                        .any(|entry| &entry.path == path && entry.auto_playable())
                 })
         });
         suggester.dismiss();
@@ -493,6 +575,38 @@ impl ReplyMotion {
                 None
             }
         }
+    }
+
+    /// Deterministic EmotionMapped step for a newly seen reply: no request,
+    /// no fallback. Missing metadata or binding plays nothing.
+    fn mapped(
+        &mut self,
+        now: std::time::Instant,
+        config: &waifu_studio::data::ReplyMotionConfig,
+        reply: CompletedReply,
+        entries: &[MotionEntry],
+    ) -> Option<AutoAction> {
+        let Some(emotion) = reply.affect else {
+            self.note = Some("Latest reply had no affect metadata; no motion".into());
+            return None;
+        };
+        let Some(path) = bound_motion(config, emotion, entries) else {
+            self.note = Some(format!(
+                "No scanned motion bound to {}",
+                emotion_name(emotion)
+            ));
+            return None;
+        };
+        if self
+            .last_request
+            .is_some_and(|last| now.duration_since(last) < cooldown(config.cooldown_seconds))
+        {
+            self.note = Some("Skipped a reply during the motion cooldown".into());
+            return None;
+        }
+        self.last_request = Some(now);
+        self.note = Some(format!("Played the {} binding", emotion_name(emotion)));
+        Some(AutoAction::Play(path))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -779,6 +893,7 @@ mod tests {
             avatar: Option<u64>,
             now: Instant,
             config: ReplyMotionConfig,
+            affect: Option<AffectEmotion>,
             requests: Arc<std::sync::Mutex<Vec<String>>>,
         }
 
@@ -796,7 +911,9 @@ mod tests {
                     config: ReplyMotionConfig {
                         mode,
                         cooldown_seconds: 30,
+                        emotion_bindings: Vec::new(),
                     },
+                    affect: None,
                     requests: Default::default(),
                 }
             }
@@ -837,6 +954,7 @@ mod tests {
                         character_name: "Hikari",
                         avatar: self.avatar,
                         text,
+                        affect: self.affect,
                     }),
                     &self.entries,
                     &mut self.suggester,
@@ -1025,6 +1143,145 @@ mod tests {
             assert!(!sent.contains("secret"));
             let offered = offered.lock().unwrap();
             assert!(!offered.is_empty() && !offered.iter().any(|l| l == "walk"));
+        }
+
+        fn bind(h: &mut Harness, emotion: AffectEmotion, file: &str) {
+            h.config
+                .emotion_bindings
+                .push(waifu_studio::data::EmotionMotionBinding {
+                    emotion,
+                    path: PathBuf::from(format!("/lib/test/{file}")),
+                });
+        }
+
+        #[test]
+        fn emotion_mapped_plays_only_the_bound_scanned_motion_without_requests() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            bind(&mut h, AffectEmotion::Sad, "Gone.bvh"); // not in the scan
+            bind(&mut h, AffectEmotion::Excited, "walk.bvh"); // locomotion
+            h.affect = Some(AffectEmotion::Happy);
+            let reply = Uuid::new_v4();
+            assert_eq!(
+                h.frame(Some((reply, "Yay!")), "Wave"),
+                Some(AutoAction::Play(PathBuf::from("/lib/test/joy.bvh")))
+            );
+            for _ in 0..3 {
+                h.now += Duration::from_secs(120);
+                assert_eq!(h.frame(Some((reply, "Yay!")), "Wave"), None);
+            }
+            for emotion in [
+                AffectEmotion::Sad,
+                AffectEmotion::Excited,
+                AffectEmotion::Angry,
+            ] {
+                h.now += Duration::from_secs(120);
+                h.affect = Some(emotion);
+                assert_eq!(
+                    h.frame(Some((Uuid::new_v4(), "Hm.")), "Wave"),
+                    None,
+                    "{emotion:?}"
+                );
+            }
+            assert_eq!(h.sent(), 0, "mapped mode never calls the decision model");
+            assert_eq!(h.suggester.status(), &SuggestStatus::Idle);
+        }
+
+        #[test]
+        fn emotion_mapped_without_metadata_never_replays_an_old_emotion() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            h.affect = Some(AffectEmotion::Happy);
+            assert!(h.frame(Some((Uuid::new_v4(), "Yay!")), "Wave").is_some());
+            h.now += Duration::from_secs(120);
+            h.affect = None;
+            assert_eq!(h.frame(Some((Uuid::new_v4(), "Plain")), "Wave"), None);
+            assert_eq!(h.sent(), 0);
+
+            // Only the same job and character's affect is ever forwarded.
+            let (job, character) = (Uuid::new_v4(), Uuid::new_v4());
+            let recorded = Some((job, character, AffectEmotion::Happy));
+            assert_eq!(
+                job_affect(recorded, job, character),
+                Some(AffectEmotion::Happy)
+            );
+            assert_eq!(job_affect(recorded, Uuid::new_v4(), character), None);
+            assert_eq!(job_affect(recorded, job, Uuid::new_v4()), None);
+            assert_eq!(job_affect(None, job, character), None);
+        }
+
+        #[test]
+        fn emotion_mapped_respects_off_cooldown_and_stale_avatar_or_character() {
+            let mut h = Harness::new(ReplyMotionMode::Off);
+            bind(&mut h, AffectEmotion::Happy, "Wave.bvh");
+            h.affect = Some(AffectEmotion::Happy);
+            let old = Uuid::new_v4();
+            assert_eq!(h.frame(Some((old, "Hi")), "Wave"), None);
+            h.config.mode = ReplyMotionMode::EmotionMapped;
+            assert_eq!(h.frame(Some((old, "Hi")), "Wave"), None, "no replay");
+
+            assert!(h.frame(Some((Uuid::new_v4(), "Hi")), "Wave").is_some());
+            h.now += Duration::from_secs(5);
+            let skipped = Uuid::new_v4();
+            assert_eq!(h.frame(Some((skipped, "Hi")), "Wave"), None, "cooldown");
+            h.now += Duration::from_secs(120);
+            assert_eq!(h.frame(Some((skipped, "Hi")), "Wave"), None, "not retried");
+
+            // A reply whose avatar or character no longer matches is dropped.
+            h.now += Duration::from_secs(120);
+            let reply = Uuid::new_v4();
+            let auto = h.auto.frame(
+                h.now,
+                &h.config,
+                Some(h.character),
+                Some(99),
+                Some(CompletedReply {
+                    id: reply,
+                    character: h.character,
+                    character_name: "Hikari",
+                    avatar: h.avatar,
+                    text: "Hi",
+                    affect: h.affect,
+                }),
+                &h.entries,
+                &mut h.suggester,
+                |_| unreachable!(),
+                |_, _| unreachable!(),
+            );
+            assert_eq!(auto, None, "avatar changed");
+            let auto = h.auto.frame(
+                h.now,
+                &h.config,
+                Some(Uuid::new_v4()),
+                h.avatar,
+                Some(CompletedReply {
+                    id: Uuid::new_v4(),
+                    character: h.character,
+                    character_name: "Hikari",
+                    avatar: h.avatar,
+                    text: "Hi",
+                    affect: h.affect,
+                }),
+                &h.entries,
+                &mut h.suggester,
+                |_| unreachable!(),
+                |_, _| unreachable!(),
+            );
+            assert_eq!(auto, None, "character changed");
+        }
+
+        #[test]
+        fn switching_to_emotion_mapped_cancels_an_in_flight_pick() {
+            let mut h = Harness::new(ReplyMotionMode::AutoPlay);
+            let reply = Uuid::new_v4();
+            h.frame(Some((reply, "Hello!")), "Wave");
+            assert!(h.suggester.busy());
+            h.config.mode = ReplyMotionMode::EmotionMapped;
+            h.affect = Some(AffectEmotion::Happy);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            assert_eq!(h.settle(Some((reply, "Hello!"))), None);
+            assert_eq!(h.suggester.status(), &SuggestStatus::Idle);
+            assert_eq!(h.sent(), 1);
         }
     }
 }

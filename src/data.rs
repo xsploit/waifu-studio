@@ -68,6 +68,17 @@ pub enum ReplyMotionMode {
     Off,
     Suggest,
     AutoPlay,
+    /// Plays the user's binding for the reply's explicit affect emotion. No
+    /// decision request; replies without parsed metadata play nothing.
+    EmotionMapped,
+}
+
+/// One user-chosen emotion -> motion binding. The path only plays while it is
+/// an entry of the current scan.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmotionMotionBinding {
+    pub emotion: crate::reply_affect::AffectEmotion,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -75,12 +86,15 @@ pub enum ReplyMotionMode {
 pub struct ReplyMotionConfig {
     pub mode: ReplyMotionMode,
     pub cooldown_seconds: u32,
+    /// At most one binding per emotion; empty for older profiles.
+    pub emotion_bindings: Vec<EmotionMotionBinding>,
 }
 impl Default for ReplyMotionConfig {
     fn default() -> Self {
         Self {
             mode: ReplyMotionMode::Off,
             cooldown_seconds: 30,
+            emotion_bindings: Vec::new(),
         }
     }
 }
@@ -458,6 +472,20 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&scene).unwrap()).unwrap();
         assert_eq!(restored.reply_motion, scene.reply_motion);
         assert_eq!(restored.reply_motion.mode, ReplyMotionMode::AutoPlay);
+        assert!(restored.reply_motion.emotion_bindings.is_empty());
+        let mapped: ReplyMotionConfig = serde_json::from_str(
+            r#"{"mode":"emotion_mapped","emotion_bindings":[{"emotion":"happy","path":"/m/joy.bvh"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(mapped.mode, ReplyMotionMode::EmotionMapped);
+        assert_eq!(mapped.cooldown_seconds, 30);
+        assert_eq!(
+            mapped.emotion_bindings,
+            [EmotionMotionBinding {
+                emotion: crate::reply_affect::AffectEmotion::Happy,
+                path: "/m/joy.bvh".into(),
+            }]
+        );
     }
 
     #[test]

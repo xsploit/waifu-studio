@@ -211,6 +211,11 @@ impl MotionEntry {
     pub fn category(&self) -> MotionCategory {
         category_of(&self.path)
     }
+
+    /// Automatic playback never starts locomotion.
+    pub fn auto_playable(&self) -> bool {
+        self.category() != MotionCategory::Locomotion
+    }
 }
 
 /// Most options ever offered to a chooser in one catalog.

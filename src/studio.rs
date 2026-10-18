@@ -157,6 +157,8 @@ pub struct Studio {
     reply_filter: Option<waifu_studio::reply_affect::ReplyAffectFilter>,
     reply_affect_requested: bool,
     pub completed_chat: Option<(Uuid, Result<String, String>)>,
+    /// (job, character, emotion) parsed from that job's opt-in affect block.
+    pub completed_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
     pub proposals: Vec<waifu_studio::delegation::TaskProposal>,
     pub attachments: Vec<waifu_studio::attachments::ImageAttachment>,
     attachment_worker: Mutex<waifu_studio::attachments::AttachmentWorker>,
@@ -222,6 +224,7 @@ impl Studio {
             reply_filter: None,
             reply_affect_requested: false,
             completed_chat: None,
+            completed_affect: None,
             proposals: Vec::new(),
             attachments: vec![],
             attachment_worker: Mutex::new(Default::default()),
@@ -987,6 +990,7 @@ impl Studio {
         self.error = None;
         self.notice = None;
         self.completed_chat = None;
+        self.completed_affect = None;
         self.job = Some(provider::spawn_chat_with_images(
             config,
             context,
@@ -1074,6 +1078,7 @@ pub fn poll_studio(
                 studio.pending_response.push_str(&visible)
             }
             ProviderEvent::Finished(id) if studio.job.as_ref().is_some_and(|j| j.id == id) => {
+                studio.completed_affect = None;
                 if let Some(filter) = studio.reply_filter.take() {
                     let filtered = filter.finish();
                     studio.feed_reply_speech(id, &filtered.tail);
@@ -1082,8 +1087,12 @@ pub fn poll_studio(
                         if let (Some(character), Some(metadata)) =
                             (studio.chat_character, filtered.metadata)
                         {
-                            if let Err(error) = studio.affect.apply_reply(character, metadata) {
-                                studio.notice = Some(error);
+                            match studio.affect.apply_reply(character, metadata) {
+                                Ok(()) => {
+                                    studio.completed_affect =
+                                        Some((id, character, metadata.emotion));
+                                }
+                                Err(error) => studio.notice = Some(error),
                             }
                         } else if let Some(error) = filtered.error {
                             studio.notice = Some(error);
@@ -1139,6 +1148,7 @@ pub fn poll_studio(
                     studio.reply_speech_job = None;
                 }
                 studio.completed_chat = Some((id, Err(error.clone())));
+                studio.completed_affect = None;
                 studio.error = Some(error);
                 studio.job = None;
                 studio.pending_response.clear();

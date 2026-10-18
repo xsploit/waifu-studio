@@ -1454,6 +1454,7 @@ fn reply_motion_frame(
             character_name: &character.name,
             avatar,
             text,
+            affect: motion_decision::job_affect(studio.completed_affect, *id, character.id),
         }),
         _ => None,
     };
@@ -1517,6 +1518,7 @@ fn motion_suggestion(
                 ReplyMotionMode::Off => "Off",
                 ReplyMotionMode::Suggest => "Suggest after reply",
                 ReplyMotionMode::AutoPlay => "Auto-play after reply",
+                ReplyMotionMode::EmotionMapped => "Play bound motion for reply emotion",
             };
             egui::ComboBox::from_id_salt("reply_motion_mode")
                 .selected_text(mode_name(config.mode))
@@ -1525,6 +1527,7 @@ fn motion_suggestion(
                         ReplyMotionMode::Off,
                         ReplyMotionMode::Suggest,
                         ReplyMotionMode::AutoPlay,
+                        ReplyMotionMode::EmotionMapped,
                     ] {
                         changed |= ui
                             .selectable_value(&mut config.mode, mode, mode_name(mode))
@@ -1551,7 +1554,12 @@ fn motion_suggestion(
                     config.cooldown_seconds = seconds;
                     changed = true;
                 }
-                ui.small("Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
+                if config.mode == ReplyMotionMode::EmotionMapped {
+                    ui.small("No request is sent. Plays your binding for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
+                    changed |= emotion_bindings(ui, config, entries);
+                } else {
+                    ui.small("Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
+                }
                 if let Some(note) = &auto.note {
                     ui.small(RichText::new(note).color(MUTED));
                 }
@@ -1635,6 +1643,68 @@ fn motion_suggestion(
         });
     ui.ctx().data_mut(|d| d.insert_temp(source_id, use_reply));
     (action, changed)
+}
+
+/// One dropdown per affect emotion, listing only auto-playable entries of the
+/// current scan. A binding whose file left the scan shows as missing and
+/// never plays.
+fn emotion_bindings(
+    ui: &mut egui::Ui,
+    config: &mut waifu_studio::data::ReplyMotionConfig,
+    entries: &[motion_library::MotionEntry],
+) -> bool {
+    let mut changed = false;
+    caption(ui, "EMOTION BINDINGS");
+    for emotion in motion_decision::EMOTIONS {
+        let index = config
+            .emotion_bindings
+            .iter()
+            .position(|binding| binding.emotion == emotion);
+        let current = index.map(|i| config.emotion_bindings[i].path.clone());
+        let text = match &current {
+            None => "None".to_owned(),
+            Some(path) => entries
+                .iter()
+                .find(|entry| &entry.path == path && entry.auto_playable())
+                .map_or_else(
+                    || "Missing from scan".to_owned(),
+                    |entry| entry.label.clone(),
+                ),
+        };
+        let mut picked = current.clone();
+        ui.horizontal(|ui| {
+            ui.label(motion_decision::emotion_name(emotion));
+            egui::ComboBox::from_id_salt((
+                "emotion_binding",
+                motion_decision::emotion_name(emotion),
+            ))
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut picked, None, "None");
+                for entry in entries.iter().filter(|entry| entry.auto_playable()) {
+                    ui.selectable_value(
+                        &mut picked,
+                        Some(entry.path.clone()),
+                        format!("{} / {}", entry.group, entry.label),
+                    );
+                }
+            });
+        });
+        if picked != current {
+            changed = true;
+            match (index, picked) {
+                (Some(i), None) => {
+                    config.emotion_bindings.remove(i);
+                }
+                (Some(i), Some(path)) => config.emotion_bindings[i].path = path,
+                (None, Some(path)) => config
+                    .emotion_bindings
+                    .push(waifu_studio::data::EmotionMotionBinding { emotion, path }),
+                (None, None) => {}
+            }
+        }
+    }
+    changed
 }
 
 fn suggest_motion(
