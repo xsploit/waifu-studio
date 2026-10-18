@@ -26,7 +26,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut GazeState) -> bool {
     if !state.status.is_empty() {
         ui.small(&state.status);
     }
-    ui.small("Applies to the selected character. Eye movement needs eye bones. Pointer following uses the avatar viewport and returns to ambient movement outside it. Global desktop pointer and expression-based eye tracking are unavailable.");
+    ui.small("Applies to the selected character. Eye movement needs eye bones. Pointer following uses the avatar viewport and returns to ambient movement outside it. Desktop window detection can supply pointer coordinates during click passthrough. Expression-based eye tracking is unavailable.");
     if ui.button("Reset gaze settings").clicked() {
         state.config = GazeConfig::default();
     }

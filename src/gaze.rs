@@ -473,6 +473,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compositor_pointer_drives_the_scheduled_overlay_without_native_cursor_events() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, GazePlugin))
+            .init_resource::<AvatarLoadState>();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(1. / 60.),
+        ));
+        app.world_mut()
+            .spawn((Window::default(), bevy::window::PrimaryWindow));
+        let mut camera = Camera::default();
+        camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
+            physical_size: UVec2::new(400, 600),
+            scale_factor: 1.,
+        });
+        app.world_mut().spawn((
+            camera,
+            crate::visuals::VisualCamera,
+            bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Primary),
+        ));
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let mut head = None;
+        for (name, position) in [
+            (HumanBoneName::Hips, Vec3::Y),
+            (HumanBoneName::Head, Vec3::Y * 1.7),
+            (HumanBoneName::LeftUpperLeg, Vec3::new(0.1, 1., 0.)),
+            (HumanBoneName::RightUpperLeg, Vec3::new(-0.1, 1., 0.)),
+        ] {
+            let rest = Transform::from_translation(position);
+            let entity = app
+                .world_mut()
+                .spawn((name, rest, HumanoidRestTransform(rest), ChildOf(root)))
+                .id();
+            if name == HumanBoneName::Head {
+                head = Some(entity);
+            }
+        }
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        app.world_mut().resource_mut::<GazeState>().config = GazeConfig {
+            enabled: true,
+            target: GazeTarget::Pointer,
+            intensity: 1.,
+            head_follow: 1.,
+            head_drift: 0.,
+            eye_motion: 0.,
+            smoothing_seconds: 0.05,
+        };
+        let mut rotations = Vec::new();
+        for cursor in [Vec2::new(20., 300.), Vec2::new(380., 300.)] {
+            for _ in 0..90 {
+                app.world_mut()
+                    .resource_mut::<GazePointer>()
+                    .update(Some(cursor), std::time::Instant::now());
+                app.update();
+            }
+            rotations.push(
+                app.world()
+                    .get::<Transform>(head.unwrap())
+                    .unwrap()
+                    .rotation,
+            );
+        }
+        let left = rotations[0] * Vec3::Z;
+        let right = rotations[1] * Vec3::Z;
+        assert!(
+            left.x * right.x < -0.01,
+            "opposite bridge positions must turn the head in opposite directions"
+        );
+        app.world_mut().resource_mut::<GazeState>().config.enabled = false;
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Transform>(head.unwrap())
+                .unwrap()
+                .rotation,
+            Quat::IDENTITY
+        );
+    }
+
+    #[test]
     fn compositor_pointer_expires_and_rejects_invalid_or_future_samples() {
         use std::time::{Duration, Instant};
         let now = Instant::now();
