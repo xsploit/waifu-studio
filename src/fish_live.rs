@@ -35,7 +35,7 @@ impl LiveTransport {
         "Timestamp SSE"
     }
     pub fn capability(self) -> &'static str {
-        "Hosted Fish SSE: progressive WAV and cumulative word timings. WebSocket text streaming is not implemented."
+        "Timestamp SSE streams audio and word timings for submitted text. Live text/audio WebSocket under Delivery also accepts text as the chat model produces it."
     }
 }
 #[derive(Clone, Debug, PartialEq, Deserialize)]

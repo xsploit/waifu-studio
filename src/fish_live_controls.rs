@@ -4,7 +4,7 @@ use waifu_studio::fish_live::{FishLiveState, LiveTransport};
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FishLiveState) {
     ui.separator();
-    ui.label(egui::RichText::new("Fish live speech").strong());
+    ui.label(egui::RichText::new("Fish timestamp SSE").strong());
     egui::ComboBox::from_id_salt("fish-live-transport")
         .selected_text(state.transport.label())
         .show_ui(ui, |ui| {
