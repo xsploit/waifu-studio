@@ -3,7 +3,9 @@ use crate::{
     data::{Library, Store, Turn, trim_history},
     memory::MemoryState,
     provider::{self, ProviderConfig, ProviderEvent},
+    reply_affect::ReplyAffectFilter,
     scene_roster::SceneRoster,
+    speech_text::ReplySpeechText,
     voice::VoiceConfig,
 };
 use bevy::prelude::Resource;
@@ -60,6 +62,85 @@ pub struct SceneChat {
     events: Option<Mutex<mpsc::Receiver<Event>>>,
     active_recipients: Vec<Uuid>,
     speech: VecDeque<(Uuid, VoiceConfig, String)>,
+}
+/// Matches the studio's eight-entry speech queue, so one submit never overflows it.
+const SPEECH_EVENTS: usize = 8;
+const SPEECH_CHUNK_MIN: usize = 40;
+const SPEECH_CHUNK_MAX: usize = 300;
+/// Speaks sentence groups while a recipient's reply is still streaming. Task
+/// and affect metadata are filtered incrementally, so hidden blocks split
+/// across deltas are never spoken; the saved reply stays the raw text.
+struct SpeechStream {
+    affect: ReplyAffectFilter,
+    tasks: ReplySpeechText,
+    text: String,
+    early: usize,
+}
+impl SpeechStream {
+    fn new(early: usize) -> Self {
+        Self {
+            affect: ReplyAffectFilter::default(),
+            tasks: ReplySpeechText::default(),
+            text: String::new(),
+            early,
+        }
+    }
+    fn push(&mut self, delta: &str) -> Vec<String> {
+        let visible = self.affect.push(delta);
+        self.text.push_str(&self.tasks.push(&visible));
+        let mut chunks = vec![];
+        while self.early > 0 {
+            let Some(chunk) = take_speech_chunk(&mut self.text) else {
+                break;
+            };
+            self.early -= 1;
+            chunks.push(chunk);
+        }
+        chunks
+    }
+    /// Everything not yet spoken, as one final group; never repeats a chunk.
+    fn finish(mut self) -> Option<String> {
+        let tail = std::mem::take(&mut self.affect).finish().tail;
+        self.text.push_str(&self.tasks.push(&tail));
+        self.text.push_str(&self.tasks.finish());
+        let text = self.text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+}
+/// Takes the next complete sentence group (40–300 characters). Western
+/// terminators split only before whitespace, so decimals and URLs survive.
+fn take_speech_chunk(text: &mut String) -> Option<String> {
+    loop {
+        let mut end = None;
+        let mut last_space = None;
+        let mut chars = text.char_indices().enumerate().peekable();
+        while let Some((count, (index, c))) = chars.next() {
+            let next = index + c.len_utf8();
+            if c.is_whitespace() {
+                last_space = Some(next);
+            }
+            let boundary = match c {
+                '。' | '！' | '？' | '\n' => true,
+                '.' | '!' | '?' | '…' => {
+                    chars.peek().is_some_and(|(_, (_, n))| n.is_whitespace())
+                }
+                _ => false,
+            };
+            if boundary && count + 1 >= SPEECH_CHUNK_MIN {
+                end = Some(next);
+                break;
+            }
+            if count + 1 >= SPEECH_CHUNK_MAX {
+                end = Some(last_space.unwrap_or(next));
+                break;
+            }
+        }
+        let chunk: String = text.drain(..end?).collect();
+        let chunk = chunk.trim();
+        if !chunk.is_empty() {
+            return Some(chunk.to_owned());
+        }
+    }
 }
 fn available(library: &Library, roster: &SceneRoster, id: Uuid) -> bool {
     library.characters.iter().any(|c| c.id == id)
@@ -376,7 +457,7 @@ impl SceneChat {
         while self.transcript.len() > 80 {
             self.transcript.pop_front();
         }
-        while self.speech.len() > 4 {
+        while self.speech.len() > SPEECH_EVENTS {
             self.speech.pop_front();
         }
     }
@@ -429,7 +510,8 @@ fn run(
     std::fs::create_dir_all(store.root.join("conversations"))
         .map_err(|_| "Cannot create scene conversation storage")?;
     let mut memory = MemoryState::load(root.join("memory"));
-    for recipient in recipients {
+    let mut spoken = 0;
+    for (index, recipient) in recipients.iter().cloned().enumerate() {
         if cancel.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -461,6 +543,15 @@ fn run(
         );
         let (provider_tx, provider_rx) = mpsc::channel();
         let job = provider::spawn_chat(recipient.provider, context, provider_tx);
+        // Reserve one final event for this and each later voiced recipient.
+        let later = recipients[index + 1..]
+            .iter()
+            .filter(|r| r.voice.enabled)
+            .count();
+        let mut speech = recipient
+            .voice
+            .enabled
+            .then(|| SpeechStream::new(SPEECH_EVENTS.saturating_sub(spoken + 1 + later)));
         let mut reply = String::new();
         let mut last_progress = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(180);
@@ -478,6 +569,15 @@ fn run(
                         return Err("Scene reply exceeded 64 KB".into());
                     }
                     reply.push_str(&delta);
+                    for chunk in speech.as_mut().map(|s| s.push(&delta)).unwrap_or_default() {
+                        if cancel.load(Ordering::Acquire) {
+                            job.cancel();
+                            return Ok(());
+                        }
+                        tx.send(Event::Speech(recipient.id, recipient.voice.clone(), chunk))
+                            .map_err(|_| "Scene closed")?;
+                        spoken += 1;
+                    }
                     if last_progress.elapsed() >= Duration::from_millis(50) {
                         let _ = tx.try_send(Event::Progress(recipient.name.clone(), reply.clone()));
                         last_progress = Instant::now();
@@ -510,9 +610,10 @@ fn run(
             text: reply.clone(),
         }))
         .map_err(|_| "Scene closed")?;
-        if recipient.voice.enabled {
-            tx.send(Event::Speech(recipient.id, recipient.voice, reply))
+        if let Some(text) = speech.and_then(SpeechStream::finish) {
+            tx.send(Event::Speech(recipient.id, recipient.voice, text))
                 .map_err(|_| "Scene closed")?;
+            spoken += 1;
         }
     }
     Ok(())
@@ -882,5 +983,257 @@ mod tests {
         assert_eq!(state.transcript[1].character, Some(b));
         assert_eq!(state.take_speech().unwrap().0, a);
         assert_eq!(state.take_speech().unwrap().0, b);
+    }
+
+    const FIRST: &str = "The first sentence is long enough to speak early. ";
+    const HIDDEN: &str = "```waifu_tasks\n[{\"prompt\":\"never spoken\"}]```<waifu-affect>{\"emotion\":\"happy\",\"valence\":0.5,\"arousal\":0.3,\"dominance\":0.2}</waifu-affect>";
+
+    #[test]
+    fn speech_stream_hides_metadata_across_every_split_and_never_repeats() {
+        let prose = format!("{FIRST}Second sentence is also long enough to stand alone! Tail ");
+        let reply = format!("{prose}{HIDDEN}");
+        for split in (0..=reply.len()).filter(|&i| reply.is_char_boundary(i)) {
+            let mut stream = SpeechStream::new(SPEECH_EVENTS);
+            let mut chunks = stream.push(&reply[..split]);
+            chunks.extend(stream.push(&reply[split..]));
+            let early = chunks.len();
+            chunks.extend(stream.finish());
+            assert!(
+                early >= 2,
+                "split {split}: sentences must speak before finish"
+            );
+            assert_eq!(chunks.join(" "), prose.trim(), "split {split}");
+            for chunk in &chunks {
+                assert!(!chunk.contains("waifu") && !chunk.contains('`'), "{chunk}");
+            }
+        }
+        // Character-by-character deltas and an incomplete trailing marker.
+        let mut stream = SpeechStream::new(SPEECH_EVENTS);
+        let mut chunks: Vec<_> = format!("{FIRST}<waifu-aff")
+            .chars()
+            .flat_map(|c| stream.push(&c.to_string()))
+            .collect();
+        chunks.extend(stream.finish());
+        assert_eq!(chunks, [FIRST.trim()]);
+    }
+
+    #[test]
+    fn speech_stream_bounds_chunks_and_respects_early_budget() {
+        let long = "word ".repeat(400);
+        let mut stream = SpeechStream::new(SPEECH_EVENTS);
+        let chunks = stream.push(&long);
+        assert!(chunks.iter().all(|c| c.chars().count() <= SPEECH_CHUNK_MAX));
+        let mut none = SpeechStream::new(0);
+        assert!(none.push(&format!("{FIRST}{FIRST}")).is_empty());
+        assert_eq!(none.finish().unwrap(), format!("{FIRST}{FIRST}").trim());
+        let mut capped = SpeechStream::new(1);
+        assert_eq!(capped.push(&format!("{FIRST}{FIRST}{FIRST}")).len(), 1);
+        assert_eq!(capped.finish().unwrap(), format!("{FIRST}{FIRST}").trim());
+        assert!(SpeechStream::new(4).finish().is_none());
+    }
+
+    /// Serves one SSE reply per (parts, gate); the server waits on each gate
+    /// before writing that part, so tests can observe events mid-stream.
+    fn gated_server(
+        replies: Vec<Vec<(String, Option<mpsc::Receiver<()>>)>>,
+    ) -> (String, std::thread::JoinHandle<Vec<serde_json::Value>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = vec![];
+            for parts in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut data = vec![];
+                let mut chunk = [0u8; 4096];
+                let (end, length) = loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&chunk[..n]);
+                    if let Some(at) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&data[..at]).to_lowercase();
+                        let length = header
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                        break (at + 4, length);
+                    }
+                };
+                while data.len() < end + length {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&chunk[..n]);
+                }
+                requests.push(serde_json::from_slice(&data[end..end + length]).unwrap());
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                );
+                let mut closed = false;
+                for (text, gate) in parts {
+                    if let Some(gate) = gate
+                        && gate.recv_timeout(Duration::from_secs(10)).is_err()
+                    {
+                        closed = true;
+                        break;
+                    }
+                    let frame = serde_json::json!({"choices":[{"delta":{"content":text}}]});
+                    if write!(stream, "data: {frame}\n\n")
+                        .and_then(|_| stream.flush())
+                        .is_err()
+                    {
+                        closed = true;
+                        break;
+                    }
+                }
+                if !closed {
+                    let _ = stream.write_all(b"data: [DONE]\n\n");
+                }
+            }
+            requests
+        });
+        (url, server)
+    }
+
+    fn voiced_scene(url: String, names: &[&str]) -> (PathBuf, Library, SceneRoster, Vec<Uuid>) {
+        let root = std::env::temp_dir().join(format!("scene-speech-{}", Uuid::new_v4()));
+        let ids: Vec<_> = names.iter().map(|_| Uuid::new_v4()).collect();
+        let mut library = Library {
+            selected: Some(ids[0]),
+            providers: vec![ProviderConfig {
+                base_url: url,
+                model: "fake-scene-model".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        library.voice.enabled = true;
+        let mut roster = SceneRoster::default();
+        for (index, (id, name)) in ids.iter().zip(names).enumerate() {
+            library.characters.push(
+                serde_json::from_value(serde_json::json!({
+                    "id":id, "name":name, "model":"fixture.vrm", "persona":"persona", "format":"vrm"
+                }))
+                .unwrap(),
+            );
+            if index > 0 {
+                roster
+                    .add(*id, (*name).into(), "fixture.vrm".into())
+                    .unwrap();
+            }
+        }
+        (root, library, roster, ids)
+    }
+
+    fn poll_until(
+        chat: &mut SceneChat,
+        library: &Library,
+        roster: &SceneRoster,
+        done: impl Fn(&SceneChat) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(chat) {
+            chat.poll(library, roster);
+            assert!(Instant::now() < deadline, "timed out: {}", chat.status);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn scene_speech_starts_before_provider_finishes_and_flushes_in_order() {
+        let (gate_tx, gate_rx) = mpsc::channel();
+        let alice_tail = format!("and the rest arrives later. {HIDDEN}");
+        let bob = format!("Bob answers after Alice in explicit order. {HIDDEN}");
+        let (url, server) = gated_server(vec![
+            vec![(FIRST.into(), None), (alice_tail.clone(), Some(gate_rx))],
+            vec![(bob.clone(), None)],
+        ]);
+        let (root, library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
+        let mut chat = SceneChat::new(root.clone());
+        chat.recipients = ids.clone();
+        chat.draft = "Hello both".into();
+        chat.submit(&library, &roster).unwrap();
+        poll_until(&mut chat, &library, &roster, |c| !c.speech.is_empty());
+        // Alice's provider has not finished: no transcript line yet.
+        assert!(chat.is_busy());
+        assert_eq!(chat.transcript.len(), 1);
+        let (id, voice, text) = chat.take_speech().unwrap();
+        assert_eq!((id, text.as_str()), (ids[0], FIRST.trim()));
+        assert!(voice.enabled);
+        gate_tx.send(()).unwrap();
+        let mut spoken = vec![];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while chat.is_busy() {
+            chat.poll(&library, &roster);
+            spoken.extend(std::iter::from_fn(|| chat.take_speech()));
+            assert!(Instant::now() < deadline, "timed out: {}", chat.status);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        spoken.extend(std::iter::from_fn(|| chat.take_speech()));
+        assert_eq!(chat.status, "Scene replies finished");
+        let spoken: Vec<_> = spoken.into_iter().map(|(id, _, text)| (id, text)).collect();
+        assert_eq!(
+            spoken,
+            [
+                (ids[0], "and the rest arrives later.".to_owned()),
+                (
+                    ids[1],
+                    "Bob answers after Alice in explicit order.".to_owned()
+                ),
+            ]
+        );
+        let store = Store {
+            root: root.join("scene-chat"),
+        };
+        assert_eq!(
+            store.history(ids[0]).unwrap()[1].content,
+            format!("{FIRST}{alice_tail}")
+        );
+        assert_eq!(store.history(ids[1]).unwrap()[1].content, bob);
+        assert_eq!(chat.transcript[1].text, format!("{FIRST}{alice_tail}"));
+        let requests = server.join().unwrap();
+        assert!(
+            !requests[1].to_string().contains("rest arrives"),
+            "histories stay isolated"
+        );
+        drop(chat);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_mid_stream_stops_speech_and_saves_nothing() {
+        let (gate_tx, gate_rx) = mpsc::channel();
+        let (url, server) = gated_server(vec![vec![
+            (FIRST.into(), None),
+            (
+                "Stale sentence that must never be spoken aloud. ".into(),
+                Some(gate_rx),
+            ),
+        ]]);
+        let (root, library, roster, ids) = voiced_scene(url, &["Alice"]);
+        let mut chat = SceneChat::new(root.clone());
+        chat.recipients = ids.clone();
+        chat.draft = "Hello".into();
+        chat.submit(&library, &roster).unwrap();
+        poll_until(&mut chat, &library, &roster, |c| !c.speech.is_empty());
+        chat.cancel();
+        assert!(chat.take_speech().is_none());
+        let _ = gate_tx.send(());
+        server.join().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        chat.poll(&library, &roster);
+        assert!(chat.take_speech().is_none());
+        assert_eq!(chat.transcript.len(), 1);
+        let store = Store {
+            root: root.join("scene-chat"),
+        };
+        assert!(store.history(ids[0]).unwrap().is_empty());
+        drop(chat);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::Read,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::Duration,
@@ -164,8 +164,125 @@ impl VoiceEvent {
         }
     }
 }
+/// Concurrent HTTP speech requests, including cancelled ones still unwinding.
+pub const HTTP_SLOTS: usize = 2;
+/// Emission order for one speech turn. Requests in a turn download in
+/// parallel, but each hands its audio to playback only after its predecessor.
+#[derive(Default)]
+struct TurnOrder {
+    issued: AtomicU64,
+    next: Mutex<u64>,
+    advanced: Condvar,
+}
+impl TurnOrder {
+    /// Blocks until `seq` is the head, or returns false once cancelled.
+    fn wait(&self, seq: u64, cancelled: &impl Fn() -> bool) -> bool {
+        let mut next = self.next.lock().unwrap();
+        while *next != seq {
+            if cancelled() {
+                return false;
+            }
+            next = self
+                .advanced
+                .wait_timeout(next, Duration::from_millis(10))
+                .unwrap()
+                .0;
+        }
+        !cancelled()
+    }
+    fn advance(&self, seq: u64) {
+        let mut next = self.next.lock().unwrap();
+        if *next == seq {
+            *next += 1;
+            self.advanced.notify_all();
+        }
+    }
+}
+/// Releases an HTTP slot once every thread sharing it has exited.
+struct Slot(Arc<AtomicUsize>);
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// Bounded body spool filled by a download thread while the request waits for
+/// its turn, so the next sentence synthesizes during current playback.
+#[derive(Default)]
+struct Spool {
+    state: Mutex<SpoolState>,
+    changed: Condvar,
+}
+#[derive(Default)]
+struct SpoolState {
+    bytes: std::collections::VecDeque<u8>,
+    received: u64,
+    end: Option<Result<(), String>>,
+}
+struct SpoolReader<F> {
+    spool: Arc<Spool>,
+    cancelled: F,
+}
+impl<F: Fn() -> bool> Read for SpoolReader<F> {
+    fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+        let mut state = self.spool.state.lock().unwrap();
+        loop {
+            if (self.cancelled)() {
+                return Err(std::io::Error::other(crate::voice_stream::SafeStreamError(
+                    "Speech cancelled".into(),
+                )));
+            }
+            if !state.bytes.is_empty() {
+                return state.bytes.read(target);
+            }
+            match &state.end {
+                Some(Ok(())) => return Ok(0),
+                Some(Err(message)) => {
+                    return Err(std::io::Error::other(crate::voice_stream::SafeStreamError(
+                        message.clone(),
+                    )));
+                }
+                None => {}
+            }
+            state = self
+                .spool
+                .changed
+                .wait_timeout(state, Duration::from_millis(10))
+                .unwrap()
+                .0;
+        }
+    }
+}
+fn download(
+    mut response: reqwest::blocking::Response,
+    spool: &Spool,
+    cancelled: impl Fn() -> bool,
+) {
+    let mut buffer = [0; 16 * 1024];
+    let end = loop {
+        if cancelled() {
+            break Err("Speech cancelled".to_owned());
+        }
+        match response.read(&mut buffer) {
+            Ok(0) => break Ok(()),
+            Ok(n) => {
+                let mut state = spool.state.lock().unwrap();
+                state.received += n as u64;
+                if state.received > MAX_AUDIO {
+                    break Err("Speech audio exceeds 32 MiB".to_owned());
+                }
+                state.bytes.extend(&buffer[..n]);
+                spool.changed.notify_all();
+            }
+            Err(_) => break Err("Could not receive speech stream".to_owned()),
+        }
+    };
+    spool.state.lock().unwrap().end = Some(end);
+    spool.changed.notify_all();
+}
 struct PendingSpeech {
     generation: u64,
+    turn: Arc<TurnOrder>,
+    seq: u64,
     id: u64,
     config: VoiceConfig,
     text: String,
@@ -175,8 +292,9 @@ pub struct VoiceWorker {
     generation: Arc<AtomicU64>,
     sender: mpsc::Sender<(u64, VoiceEvent)>,
     receiver: mpsc::Receiver<(u64, VoiceEvent)>,
-    busy: Arc<std::sync::atomic::AtomicBool>,
-    pending: Mutex<Option<PendingSpeech>>,
+    slots: Arc<AtomicUsize>,
+    pending: Mutex<std::collections::VecDeque<PendingSpeech>>,
+    turn: Mutex<Arc<TurnOrder>>,
 }
 impl Default for VoiceWorker {
     fn default() -> Self {
@@ -190,18 +308,19 @@ impl VoiceWorker {
             generation: Arc::new(AtomicU64::new(0)),
             sender,
             receiver,
-            busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            pending: Mutex::new(None),
+            slots: Arc::new(AtomicUsize::new(0)),
+            pending: Mutex::default(),
+            turn: Mutex::default(),
         }
     }
-    /// Cancellation clears queued speech and suppresses playback/events; an
-    /// in-flight HTTP call retains the single worker slot until it finishes.
+    /// Cancels the whole turn: clears queued speech and suppresses playback and
+    /// events. In-flight HTTP calls keep their slots until they unwind.
     pub fn cancel(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
-        *self.pending.lock().unwrap() = None;
+        self.pending.lock().unwrap().clear();
+        *self.turn.lock().unwrap() = Arc::default();
     }
-    /// Newest wins: retain at most one pending request while a cancelled HTTP
-    /// worker finishes. Polling starts it as soon as the worker slot is free.
+    /// Newest wins: cancels the current turn and speaks `text` as a new one.
     pub fn start(
         &self,
         id: u64,
@@ -209,79 +328,133 @@ impl VoiceWorker {
         text: String,
         session_key: Option<String>,
     ) -> Result<(), String> {
-        if config.adapter == VoiceAdapter::Vercel && config.delivery != VoiceDelivery::Buffered {
-            return Err("Vercel speech currently requires buffered delivery".into());
+        validate_request(&config, &text)?;
+        self.cancel();
+        self.enqueue(id, config, text, session_key)
+    }
+    /// True when another request in the current turn can start immediately.
+    pub fn can_prefetch(&self) -> bool {
+        self.slots.load(Ordering::SeqCst) < HTTP_SLOTS && self.pending.lock().unwrap().is_empty()
+    }
+    /// Appends `text` to the current turn without interrupting it. Its request
+    /// starts as soon as a slot is free; its audio is delivered after every
+    /// earlier request in the turn.
+    pub fn enqueue(
+        &self,
+        id: u64,
+        config: VoiceConfig,
+        text: String,
+        session_key: Option<String>,
+    ) -> Result<(), String> {
+        validate_request(&config, &text)?;
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.len() >= HTTP_SLOTS {
+                return Err("Speech prefetch queue is full".into());
+            }
+            let turn = self.turn.lock().unwrap().clone();
+            pending.push_back(PendingSpeech {
+                generation: self.generation.load(Ordering::SeqCst),
+                seq: turn.issued.fetch_add(1, Ordering::SeqCst),
+                turn,
+                id,
+                config,
+                text,
+                session_key,
+            });
         }
-        if config.delivery == VoiceDelivery::TimestampSse || config.delivery.is_websocket() {
-            return Err("Live speech requires its dedicated Fish transport".into());
-        }
-        if text.trim().is_empty() || text.chars().count() > 12_000 {
-            return Err("Speech text must contain 1–12000 characters".into());
-        }
-        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.pending.lock().unwrap() = Some(PendingSpeech {
-            generation,
-            id,
-            config,
-            text,
-            session_key,
-        });
         self.start_pending();
         Ok(())
     }
+    fn claim_slot(&self) -> Option<Slot> {
+        self.slots
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < HTTP_SLOTS).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(self.slots.clone()))
+    }
     fn start_pending(&self) {
-        if self.busy.swap(true, Ordering::SeqCst) {
-            return;
+        loop {
+            let Some(slot) = self.claim_slot() else {
+                return;
+            };
+            let Some(request) = self.pending.lock().unwrap().pop_front() else {
+                return;
+            };
+            self.spawn(request, slot);
         }
-        let Some(request) = self.pending.lock().unwrap().take() else {
-            self.busy.store(false, Ordering::SeqCst);
-            return;
-        };
+    }
+    fn spawn(&self, request: PendingSpeech, slot: Slot) {
         let PendingSpeech {
             generation,
+            turn,
+            seq,
             id,
             config,
             text,
             session_key,
         } = request;
         let active = self.generation.clone();
-        let busy = self.busy.clone();
         let sender = self.sender.clone();
+        let slot = Arc::new(slot);
         std::thread::spawn(move || {
             let cancelled = || active.load(Ordering::SeqCst) != generation;
             let result = if config.delivery == VoiceDelivery::HttpWavStream {
-                let budget = crate::voice_stream::StreamBudget::default();
-                prepare_response(&config, &text, session_key.as_deref(), cancelled)
-                    .and_then(|(response, _)| {
-                        crate::voice_stream::receive_wav_with_budget(
-                            response,
-                            active.clone(),
-                            generation,
-                            &budget,
-                            |audio| {
-                                if !cancelled() {
-                                    let _ = sender
-                                        .send((generation, VoiceEvent::Streaming { id, audio }));
-                                }
-                            },
-                        )
-                        .map_err(|error| format!("Fish HTTP WAV: {error}"))
-                    })
-                    .map(|()| None)
+                prepare_response(&config, &text, session_key.as_deref(), cancelled).map(
+                    |(response, _)| {
+                        let spool = Arc::new(Spool::default());
+                        let (download_spool, download_active) = (spool.clone(), active.clone());
+                        let download_slot = slot.clone();
+                        std::thread::spawn(move || {
+                            let _slot = download_slot;
+                            download(response, &download_spool, || {
+                                download_active.load(Ordering::SeqCst) != generation
+                            });
+                        });
+                        Some(spool)
+                    },
+                )
             } else {
-                synthesize(&config, &text, session_key.as_deref(), cancelled).map(Some)
+                synthesize(&config, &text, session_key.as_deref(), cancelled).map(|audio| {
+                    // Buffered audio is complete; only its delivery is ordered.
+                    if turn.wait(seq, &cancelled) {
+                        let _ = sender.send((generation, VoiceEvent::Ready { id, audio }));
+                    }
+                    None
+                })
             };
-            if !cancelled() {
-                let event = match result {
-                    Ok(Some(audio)) => Some(VoiceEvent::Ready { id, audio }),
-                    Ok(None) => None,
-                    Err(message) => Some(VoiceEvent::Failed { id, message }),
-                };
-                if let Some(event) = event {
-                    let _ = sender.send((generation, event));
+            let result = match result {
+                Ok(Some(spool)) if turn.wait(seq, &cancelled) => {
+                    let budget = crate::voice_stream::StreamBudget::default();
+                    crate::voice_stream::receive_wav_with_budget(
+                        SpoolReader { spool, cancelled },
+                        active.clone(),
+                        generation,
+                        &budget,
+                        |audio| {
+                            if !cancelled() {
+                                let _ =
+                                    sender.send((generation, VoiceEvent::Streaming { id, audio }));
+                            }
+                        },
+                    )
+                    .map_err(|error| format!("Fish HTTP WAV: {error}"))
                 }
+                Ok(_) => Ok(()),
+                // Failures report in turn order, so earlier audio still plays first.
+                Err(message) => {
+                    turn.wait(seq, &cancelled);
+                    Err(message)
+                }
+            };
+            if let Err(message) = result
+                && !cancelled()
+            {
+                let _ = sender.send((generation, VoiceEvent::Failed { id, message }));
             }
-            busy.store(false, Ordering::SeqCst);
+            turn.advance(seq);
+            drop(slot);
         });
     }
     pub fn try_recv(&self) -> Option<VoiceEvent> {
@@ -298,6 +471,18 @@ impl Drop for VoiceWorker {
     fn drop(&mut self) {
         self.cancel();
     }
+}
+fn validate_request(config: &VoiceConfig, text: &str) -> Result<(), String> {
+    if config.adapter == VoiceAdapter::Vercel && config.delivery != VoiceDelivery::Buffered {
+        return Err("Vercel speech currently requires buffered delivery".into());
+    }
+    if config.delivery == VoiceDelivery::TimestampSse || config.delivery.is_websocket() {
+        return Err("Live speech requires its dedicated Fish transport".into());
+    }
+    if text.trim().is_empty() || text.chars().count() > 12_000 {
+        return Err("Speech text must contain 1–12000 characters".into());
+    }
+    Ok(())
 }
 const MAX_AUDIO: u64 = 32 * 1024 * 1024;
 fn synthesize(
@@ -600,6 +785,271 @@ mod tests {
         assert_eq!(count, 1);
         task.join().unwrap();
     }
+    fn mono_wav_header() -> Vec<u8> {
+        let mut wav = b"RIFF".to_vec();
+        wav.extend(u32::MAX.to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(u32::MAX.to_le_bytes());
+        wav
+    }
+    fn tone(value: i16, frames: usize) -> Vec<u8> {
+        (0..frames).flat_map(|_| value.to_le_bytes()).collect()
+    }
+    struct StreamServer {
+        url: String,
+        requests: mpsc::Receiver<String>,
+        release: mpsc::Sender<()>,
+        max_live: Arc<AtomicUsize>,
+    }
+    /// Offline Fish-local stand-in. "hold" streams 1600 frames of 0.25, then
+    /// withholds the rest until released; "fail" answers HTTP 500; "tone N"
+    /// streams 1600 frames of N. Records concurrent connections.
+    fn stream_server() -> StreamServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/tts", listener.local_addr().unwrap());
+        let (sender, requests) = mpsc::channel();
+        let (release, held) = mpsc::channel::<()>();
+        let held = Arc::new(Mutex::new(held));
+        let live = Arc::new(AtomicUsize::new(0));
+        let max_live = Arc::new(AtomicUsize::new(0));
+        let observed = max_live.clone();
+        std::thread::spawn(move || {
+            for socket in listener.incoming() {
+                let Ok(mut socket) = socket else { return };
+                let (sender, held, live, max_live) =
+                    (sender.clone(), held.clone(), live.clone(), observed.clone());
+                std::thread::spawn(move || {
+                    let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_live.fetch_max(now, Ordering::SeqCst);
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 4096];
+                    let body = loop {
+                        let n = socket.read(&mut buffer).unwrap_or(0);
+                        assert!(n > 0, "request ended early");
+                        request.extend_from_slice(&buffer[..n]);
+                        let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let length: usize = String::from_utf8_lossy(&request[..end])
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|n| n.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break request[end + 4..end + 4 + length].to_vec();
+                        }
+                    };
+                    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let text = json["text"].as_str().unwrap().to_owned();
+                    let _ = sender.send(text.clone());
+                    if text == "fail" {
+                        let _ = socket.write_all(
+                            b"HTTP/1.1 500 Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    } else {
+                        let value = text
+                            .strip_prefix("tone ")
+                            .map_or(8192, |n| n.parse().unwrap());
+                        let _ = socket.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nConnection: close\r\n\r\n",
+                        );
+                        let mut wav = mono_wav_header();
+                        wav.extend(tone(value, 1600));
+                        let _ = socket.write_all(&wav);
+                        let _ = socket.flush();
+                        if text == "hold" {
+                            let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                            let _ = socket.write_all(&tone(value, 1600));
+                        }
+                    }
+                    drop(socket);
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        StreamServer {
+            url,
+            requests,
+            release,
+            max_live,
+        }
+    }
+    /// Concurrent requests may arrive in either order; returns them sorted.
+    fn arrivals(server: &StreamServer, count: usize) -> Vec<String> {
+        let mut texts: Vec<String> = (0..count)
+            .map(|_| {
+                server
+                    .requests
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap()
+            })
+            .collect();
+        texts.sort();
+        texts
+    }
+    fn stream_config(url: &str) -> VoiceConfig {
+        VoiceConfig {
+            endpoint: url.into(),
+            delivery: VoiceDelivery::HttpWavStream,
+            ..VoiceConfig::preset(VoiceAdapter::FishLocal)
+        }
+    }
+    fn next_event(worker: &VoiceWorker) -> VoiceEvent {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(event) = worker.try_recv() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "no voice event");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn next_stream(worker: &VoiceWorker) -> crate::voice_stream::StreamingVoice {
+        match next_event(worker) {
+            VoiceEvent::Streaming { audio, .. } => audio,
+            other => panic!("expected stream, got {other:?}"),
+        }
+    }
+    /// Plays a stream to its end, returning every non-silent sample.
+    fn play(audio: &crate::voice_stream::StreamingVoice) -> Vec<f32> {
+        use bevy::audio::Decodable;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut samples = Vec::new();
+        for sample in audio.decoder() {
+            assert!(Instant::now() < deadline, "stream never ended");
+            if sample != 0.0 {
+                samples.push(sample);
+            }
+        }
+        samples
+    }
+    fn assert_quiet(worker: &VoiceWorker, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while Instant::now() < deadline {
+            assert!(worker.try_recv().is_none(), "unexpected voice event");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn http_prefetch_overlaps_playback_in_order_within_bounds() {
+        let server = stream_server();
+        let config = stream_config(&server.url);
+        let worker = VoiceWorker::new();
+        for text in ["hold", "tone 16384", "tone 4096", "tone 2048"] {
+            worker
+                .enqueue(7, config.clone(), text.into(), None)
+                .unwrap();
+        }
+        // Bounded: two requests run, two wait, a fifth is refused.
+        assert!(
+            worker
+                .enqueue(7, config.clone(), "tone 1024".into(), None)
+                .unwrap_err()
+                .contains("full")
+        );
+        let first = next_stream(&worker);
+        // Overlap: the next sentence is requested while the first still streams.
+        assert_eq!(arrivals(&server, 2), ["hold", "tone 16384"]);
+        assert!(!first.is_finished() && !first.is_failed());
+        assert!(!worker.can_prefetch());
+        assert!(
+            server
+                .requests
+                .recv_timeout(Duration::from_millis(200))
+                .is_err()
+        );
+        // Ordered: nothing overtakes the stream that is still playing.
+        assert_quiet(&worker, Duration::from_millis(200));
+        server.release.send(()).unwrap();
+        // Uninterrupted: every sample of the first stream plays.
+        let samples = play(&first);
+        assert_eq!(samples.len(), 3200);
+        assert!(samples.iter().all(|&s| s == 0.25));
+        assert!(!first.is_failed());
+        for expected in [0.5, 0.125, 0.0625] {
+            let samples = play(&next_stream(&worker));
+            assert_eq!(samples.len(), 1600);
+            assert!(samples.iter().all(|&s| s == expected));
+        }
+        assert_eq!(arrivals(&server, 2), ["tone 2048", "tone 4096"]);
+        assert!(server.max_live.load(Ordering::SeqCst) <= HTTP_SLOTS);
+        assert_quiet(&worker, Duration::from_millis(100));
+    }
+    #[test]
+    fn http_prefetch_cancel_suppresses_whole_turn_and_frees_slots() {
+        let server = stream_server();
+        let config = stream_config(&server.url);
+        let worker = VoiceWorker::new();
+        worker
+            .enqueue(1, config.clone(), "hold".into(), None)
+            .unwrap();
+        worker
+            .enqueue(1, config.clone(), "tone 16384".into(), None)
+            .unwrap();
+        worker
+            .enqueue(1, config.clone(), "tone 4096".into(), None)
+            .unwrap();
+        let first = next_stream(&worker);
+        assert_eq!(arrivals(&server, 2), ["hold", "tone 16384"]);
+        worker.cancel();
+        assert!(first.is_failed());
+        server.release.send(()).unwrap();
+        assert_quiet(&worker, Duration::from_millis(300));
+        // The queued third chunk belonged to the cancelled turn.
+        assert!(
+            server
+                .requests
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        let wait = Duration::from_secs(10);
+        let deadline = Instant::now() + wait;
+        while !worker.can_prefetch() {
+            assert!(Instant::now() < deadline, "slots never released");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        worker.start(2, config, "tone 2048".into(), None).unwrap();
+        let event = next_event(&worker);
+        assert_eq!(event.id(), 2);
+        let VoiceEvent::Streaming { audio, .. } = event else {
+            panic!("expected stream");
+        };
+        assert!(play(&audio).iter().all(|&s| s == 0.0625));
+        assert_eq!(server.requests.recv_timeout(wait).unwrap(), "tone 2048");
+    }
+    #[test]
+    fn http_prefetch_failure_is_reported_after_earlier_audio() {
+        let server = stream_server();
+        let config = stream_config(&server.url);
+        let worker = VoiceWorker::new();
+        worker
+            .enqueue(3, config.clone(), "hold".into(), None)
+            .unwrap();
+        worker.enqueue(3, config, "fail".into(), None).unwrap();
+        let first = next_stream(&worker);
+        assert_eq!(arrivals(&server, 2), ["fail", "hold"]);
+        assert_quiet(&worker, Duration::from_millis(200));
+        server.release.send(()).unwrap();
+        assert_eq!(play(&first).len(), 3200);
+        match next_event(&worker) {
+            VoiceEvent::Failed { id, message } => {
+                assert_eq!(id, 3);
+                assert_eq!(message, "Speech provider returned HTTP 500");
+            }
+            other => panic!("expected failure, got {other:?}"),
+        }
+    }
     #[test]
     fn hosted_request_and_audio() {
         let (endpoint, task) = server(200, "audio/wav", b"RIFFtest");
@@ -792,7 +1242,7 @@ mod tests {
     #[test]
     fn busy_speech_keeps_only_newest_and_cancel_clears_queue() {
         let worker = VoiceWorker::new();
-        worker.busy.store(true, Ordering::SeqCst);
+        worker.slots.store(HTTP_SLOTS, Ordering::SeqCst);
         worker
             .start(
                 1,
@@ -815,16 +1265,19 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(worker.pending.lock().unwrap().as_ref().unwrap().id, 2);
+        let pending = worker.pending.lock().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, 2);
+        drop(pending);
         worker.cancel();
-        assert!(worker.pending.lock().unwrap().is_none());
-        worker.busy.store(false, Ordering::SeqCst);
+        assert!(worker.pending.lock().unwrap().is_empty());
+        worker.slots.store(0, Ordering::SeqCst);
         assert!(worker.try_recv().is_none());
     }
     #[test]
     fn pending_speech_starts_after_previous_worker_releases_slot() {
         let worker = VoiceWorker::new();
-        worker.busy.store(true, Ordering::SeqCst);
+        worker.slots.store(HTTP_SLOTS, Ordering::SeqCst);
         let config = VoiceConfig {
             format: "unsupported".into(),
             delivery: VoiceDelivery::Buffered,
@@ -834,7 +1287,7 @@ mod tests {
         worker.start(2, config, "new".into(), None).unwrap();
         // Invalid format returns locally without any network access, allowing
         // deterministic observation of the queued request that actually ran.
-        worker.busy.store(false, Ordering::SeqCst);
+        worker.slots.store(0, Ordering::SeqCst);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             if let Some(event) = worker.try_recv() {
@@ -848,7 +1301,7 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(worker.pending.lock().unwrap().is_none());
+        assert!(worker.pending.lock().unwrap().is_empty());
     }
     #[test]
     fn cancel_and_stale_events_are_suppressed() {
