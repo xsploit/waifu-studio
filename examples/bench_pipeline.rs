@@ -1,6 +1,8 @@
 //! Explicit, bounded live benchmark of the production adapters. No speaker opens.
 //! --phase llm|speech|pipeline --models ID,ID --speech-models ID,ID
 //! --modes buffered,http,sse,ws,ws-timestamps --repeat 3 --run --output FILE.json
+//! --app-path drives spawn_chat ProviderEvents polled every --frame-ms (default 16)
+//! like the Bevy app; the default direct path reads stream_chat_observed per ms.
 //! All requests retain the configured proxy; results contain no keys or chat history.
 use bevy::audio::Decodable;
 use rodio::Source;
@@ -21,7 +23,9 @@ use waifu_studio::{
     fish_live::{FishLiveState, LiveEvent},
     fish_ws::FishWsState,
     listen::{ListenConfig, SttBackend},
-    provider::{self, GatewayRoute, ProviderConfig, ReasoningEffort, RoutingSort},
+    provider::{
+        self, ChatJob, GatewayRoute, ProviderConfig, ProviderEvent, ReasoningEffort, RoutingSort,
+    },
     voice::{VoiceAdapter, VoiceConfig, VoiceDelivery, VoiceEvent, VoiceWorker},
     voice_stream::StreamingVoice,
 };
@@ -166,6 +170,52 @@ fn route_cases() -> Result<Vec<RouteCase>, String> {
             Ok(RouteCase { name, routing })
         })
         .collect()
+}
+enum Chat {
+    Direct(
+        mpsc::Receiver<Result<Option<String>, String>>,
+        std::thread::JoinHandle<()>,
+    ),
+    App(mpsc::Receiver<ProviderEvent>, ChatJob),
+}
+impl Chat {
+    fn events(&self) -> Vec<Result<Option<String>, String>> {
+        match self {
+            Chat::Direct(rx, _) => rx.try_iter().collect(),
+            Chat::App(rx, job) => rx
+                .try_iter()
+                .filter_map(|event| match event {
+                    ProviderEvent::Delta(id, delta) if id == job.id => Some(Ok(Some(delta))),
+                    ProviderEvent::Finished(id) if id == job.id => Some(Ok(None)),
+                    ProviderEvent::Failed(id, error) if id == job.id => Some(Err(error)),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+    // Cancel, then wait for the worker. The app worker is detached, so it is closed
+    // once it drops its sender; a canceled blocking read may outlive the bound.
+    fn close(self, cancel: &AtomicBool) -> Result<bool, String> {
+        cancel.store(true, Ordering::Relaxed);
+        match self {
+            Chat::Direct(_, worker) => worker
+                .join()
+                .map(|_| true)
+                .map_err(|_| "Benchmark chat worker panicked".into()),
+            Chat::App(rx, job) => {
+                job.cancel();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match rx.recv_timeout(left) {
+                        Ok(_) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(true),
+                        Err(mpsc::RecvTimeoutError::Timeout) => return Ok(false),
+                    }
+                }
+            }
+        }
+    }
 }
 fn mode(name: &str) -> Result<VoiceDelivery, String> {
     match name {
@@ -357,10 +407,22 @@ impl Speech {
 fn main() -> Result<(), String> {
     if !std::env::args().any(|arg| arg == "--run") {
         println!(
-            "Explicit live benchmark: --run --phase llm|speech|pipeline --repeat 3 --models google/gemini-3.5-flash --speech-models s2.1-pro-free --modes ws,http,sse,buffered --output /absolute/results.json. No speaker or saved-setting changes."
+            "Explicit live benchmark: --run --phase llm|speech|pipeline --repeat 3 --models google/gemini-3.5-flash --speech-models s2.1-pro-free --modes ws,http,sse,buffered [--app-path --frame-ms 16] --output /absolute/results.json. No speaker or saved-setting changes."
         );
         return Ok(());
     }
+    let app_path = std::env::args().any(|arg| arg == "--app-path");
+    let frame_ms = arg("--frame-ms", "16")
+        .parse::<u64>()
+        .map_err(|_| "Invalid frame duration")?;
+    if !(1..=100).contains(&frame_ms) {
+        return Err("Frame duration must be 1–100 ms".into());
+    }
+    let (result_path, tick) = if app_path {
+        ("app", Duration::from_millis(frame_ms))
+    } else {
+        ("direct", Duration::from_millis(1))
+    };
     if !["https_proxy", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]
         .iter()
         .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
@@ -495,8 +557,7 @@ fn main() -> Result<(), String> {
                         let mut first_token = None;
                         let mut llm_end = None;
                         let mut text = String::new();
-                        let (tx, rx) = mpsc::channel();
-                        let mut llm_worker = None;
+                        let mut chat = None;
                         let observation = Arc::new(Mutex::new(json!({})));
                         let mut asr_done = None;
                         let mut transcript_chars = None;
@@ -543,22 +604,31 @@ fn main() -> Result<(), String> {
                                     }
                                 });
                             config.routing = route.routing.clone();
-                            let stop = cancel.clone();
-                            let observed = observation.clone();
-                            llm_worker = Some(std::thread::spawn(move || {
-                                let turns = vec![Turn { role:"system".into(), content:"You are a friendly VTuber. Answer in two brief spoken sentences, 20 to 30 words total. No formatting, stage directions, or metadata.".into() },
+                            let turns = vec![Turn { role:"system".into(), content:"You are a friendly VTuber. Answer in two brief spoken sentences, 20 to 30 words total. No formatting, stage directions, or metadata.".into() },
                         Turn { role:"user".into(), content:user_text }];
-                                let result = provider::stream_chat_observed(
-                                    &config,
-                                    &turns,
-                                    &stop,
-                                    |delta| {
-                                        let _ = tx.send(Ok(Some(delta)));
-                                    },
-                                    |event| observe_event(event, start, &observed),
-                                );
-                                let _ = tx.send(result.map(|_| None));
-                            }));
+                            if app_path {
+                                let (tx, rx) = mpsc::channel();
+                                chat = Some(Chat::App(rx, provider::spawn_chat(config, turns, tx)));
+                            } else {
+                                let (tx, rx) = mpsc::channel();
+                                let stop = cancel.clone();
+                                let observed = observation.clone();
+                                chat = Some(Chat::Direct(
+                                    rx,
+                                    std::thread::spawn(move || {
+                                        let result = provider::stream_chat_observed(
+                                            &config,
+                                            &turns,
+                                            &stop,
+                                            |delta| {
+                                                let _ = tx.send(Ok(Some(delta)));
+                                            },
+                                            |event| observe_event(event, start, &observed),
+                                        );
+                                        let _ = tx.send(result.map(|_| None));
+                                    }),
+                                ));
+                            }
                             if phase == "pipeline" {
                                 speech.open()?;
                             }
@@ -568,7 +638,8 @@ fn main() -> Result<(), String> {
                             speech.finish_text(&text)?;
                         }
                         while start.elapsed() < Duration::from_secs(40) {
-                            for event in rx.try_iter() {
+                            // App path: events and speech are only serviced once per frame.
+                            for event in chat.as_ref().map(Chat::events).unwrap_or_default() {
                                 match event {
                                     Ok(Some(delta)) => {
                                         if !delta.is_empty() {
@@ -601,7 +672,7 @@ fn main() -> Result<(), String> {
                             {
                                 break;
                             }
-                            std::thread::sleep(Duration::from_millis(1));
+                            std::thread::sleep(tick);
                         }
                         if speech.error.is_none()
                             && ((phase == "llm" && llm_end.is_none())
@@ -610,6 +681,9 @@ fn main() -> Result<(), String> {
                             speech.error = Some("Benchmark exceeded 40 seconds; no retry".into());
                         }
                         cancel.store(true, Ordering::Relaxed);
+                        if let Some(Chat::App(_, job)) = &chat {
+                            job.cancel();
+                        }
                         let mut row = speech.result();
                         row["phase"] = phase.clone().into();
                         row["llm_model"] = llm_model.clone().into();
@@ -617,7 +691,12 @@ fn main() -> Result<(), String> {
                         row["mode"] = delivery.clone().into();
                         row["routing_case"] = route.name.clone().into();
                         row["provider_routing"] = json!(route.routing);
-                        row["llm_observation"] = observation.lock().unwrap().clone();
+                        row["result_path"] = result_path.into();
+                        row["frame_ms"] = json!(app_path.then_some(frame_ms));
+                        // spawn_chat exposes no raw events; never fabricate observation metadata.
+                        if !app_path {
+                            row["llm_observation"] = observation.lock().unwrap().clone();
+                        }
                         row["run"] = (iteration + 1).into();
                         row["first_token_ms"] = json!(first_token);
                         row["llm_done_ms"] = json!(llm_end);
@@ -629,18 +708,16 @@ fn main() -> Result<(), String> {
                         if let Some(error) = &speech.error {
                             row["error"] = waifu_studio::mcp::redact(error, None).into();
                         }
-                        println!("{}", serde_json::to_string(&row).unwrap());
                         speech.cancel();
-                        if let Some(worker) = llm_worker {
-                            worker
-                                .join()
-                                .map_err(|_| "Benchmark chat worker panicked")?;
+                        if let Some(chat) = chat {
+                            row["chat_worker_closed"] = chat.close(&cancel)?.into();
                         }
+                        println!("{}", serde_json::to_string(&row).unwrap());
                         rows.push(row);
                         let result = json!({"version":1,"method":"production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
                 "voice_tuning":{"latency":voice.latency,"chunk_length":voice.chunk_length,"min_chunk_length":voice.min_chunk_length,"condition_on_previous_chunks":voice.condition_on_previous_chunks},
                 "prerecorded_asr":input_audio.is_some(),"asr_backend":arg("--asr-backend","fish"),"asr_model":asr_config.model,
-                "routing":arg("--routing","default"),"routing_matrix":arg("--routing-matrix",""),"provider_only":arg("--provider-only",""),"provider_order":arg("--provider-order",""),"max_tokens":arg("--max-tokens","1024"),"reasoning":arg("--reasoning","low"),"prewarm_ms":arg("--prewarm-ms","0"),"rows":rows});
+                "routing":arg("--routing","default"),"routing_matrix":arg("--routing-matrix",""),"provider_only":arg("--provider-only",""),"provider_order":arg("--provider-order",""),"max_tokens":arg("--max-tokens","1024"),"reasoning":arg("--reasoning","low"),"prewarm_ms":arg("--prewarm-ms","0"),"result_path":result_path,"frame_ms":app_path.then_some(frame_ms),"rows":rows});
                         std::fs::write(&output, serde_json::to_vec_pretty(&result).unwrap())
                             .map_err(|_| "Could not save benchmark")?;
                     }

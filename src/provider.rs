@@ -494,6 +494,56 @@ impl Drop for WorkerPermit<'_> {
     }
 }
 
+// Coalesce bursts so token-heavy streams do not flood the UI event queue, but
+// forward the first spoken phrase token-by-token: speech starts once Fish sees
+// a first-phrase boundary, so waiting out the window there only delays audio.
+// The eager phase is bounded by Fish's 68-character hard flush and an event cap.
+const COALESCE_WINDOW: Duration = Duration::from_millis(32);
+const COALESCE_BYTES: usize = 1024;
+const FIRST_PHRASE_CHARS: usize = 68;
+const FIRST_PHRASE_EVENTS: usize = 24;
+
+#[derive(Default)]
+struct DeltaCoalescer {
+    pending: String,
+    last_emit: Option<Instant>,
+    first_phrase_chars: usize,
+    first_phrase_events: usize,
+    first_phrase_done: bool,
+}
+impl DeltaCoalescer {
+    fn push(&mut self, text: &str, now: Instant) -> Option<String> {
+        self.pending.push_str(text);
+        let eager = !self.first_phrase_done;
+        if eager {
+            for ch in text.chars() {
+                self.first_phrase_chars += 1;
+                let count = self.first_phrase_chars;
+                if (count >= 10 && matches!(ch, '.' | '!' | '?' | '\n' | '。' | '！' | '？'))
+                    || (count >= 24 && ch.is_whitespace())
+                    || count >= FIRST_PHRASE_CHARS
+                {
+                    self.first_phrase_done = true;
+                    break;
+                }
+            }
+            self.first_phrase_events += 1;
+            self.first_phrase_done |= self.first_phrase_events >= FIRST_PHRASE_EVENTS;
+        }
+        let due = self
+            .last_emit
+            .is_none_or(|last| now.duration_since(last) >= COALESCE_WINDOW);
+        if self.pending.is_empty() || !(eager || due || self.pending.len() >= COALESCE_BYTES) {
+            return None;
+        }
+        self.last_emit = Some(now);
+        Some(std::mem::take(&mut self.pending))
+    }
+    fn finish(self) -> Option<String> {
+        (!self.pending.is_empty()).then_some(self.pending)
+    }
+}
+
 pub fn spawn_chat(config: ProviderConfig, turns: Vec<Turn>, tx: Sender<ProviderEvent>) -> ChatJob {
     spawn_chat_with_images(config, turns, Vec::new(), tx)
 }
@@ -520,34 +570,22 @@ pub fn spawn_chat_with_images(
         .spawn(move || {
             let _permit = permit;
             let secrets = config.secrets();
-            // Coalesce bursts so token-heavy streams do not flood the UI event queue.
-            let mut pending = String::new();
-            let mut last_emit = Instant::now();
-            let mut first = true;
+            let mut deltas = DeltaCoalescer::default();
             let result = stream_chat_with_images(&config, &turns, &images, &stopped, |text| {
                 if stopped.load(Ordering::Relaxed) {
                     return;
                 }
-                pending.push_str(&text);
-                if first
-                    || pending.len() >= 1024
-                    || last_emit.elapsed() >= Duration::from_millis(32)
+                if let Some(delta) = deltas.push(&text, Instant::now())
+                    && tx.send(ProviderEvent::Delta(id, delta)).is_err()
                 {
-                    first = false;
-                    if tx
-                        .send(ProviderEvent::Delta(id, std::mem::take(&mut pending)))
-                        .is_err()
-                    {
-                        stopped.store(true, Ordering::Relaxed);
-                    }
-                    last_emit = Instant::now();
+                    stopped.store(true, Ordering::Relaxed);
                 }
             });
             if stopped.load(Ordering::Relaxed) {
                 return;
             }
-            if !pending.is_empty() {
-                let _ = tx.send(ProviderEvent::Delta(id, pending));
+            if let Some(delta) = deltas.finish() {
+                let _ = tx.send(ProviderEvent::Delta(id, delta));
             }
             let event = match result {
                 Ok(()) => ProviderEvent::Finished(id),
@@ -1428,6 +1466,116 @@ mod tests {
                 .unwrap_err()
                 .contains("limit")
         );
+    }
+
+    #[test]
+    fn first_spoken_phrase_streams_immediately_then_later_tokens_coalesce() {
+        let start = Instant::now();
+        let mut deltas = DeltaCoalescer::default();
+        // Every first-phrase token is forwarded at once, even inside the window.
+        for token in ["Hel", "lo", " the", "re!"] {
+            assert_eq!(deltas.push(token, start).as_deref(), Some(token));
+        }
+        // After the sentence boundary, bursts wait out the window.
+        assert_eq!(deltas.push(" How", start + Duration::from_millis(1)), None);
+        assert_eq!(deltas.push(" are", start + Duration::from_millis(31)), None);
+        assert_eq!(
+            deltas
+                .push(" you", start + Duration::from_millis(32))
+                .as_deref(),
+            Some(" How are you")
+        );
+        assert_eq!(deltas.push("?", start + Duration::from_millis(33)), None);
+        // The byte bound still flushes inside the window.
+        let big = "x".repeat(COALESCE_BYTES);
+        assert_eq!(
+            deltas.push(&big, start + Duration::from_millis(34)),
+            Some(format!("?{big}"))
+        );
+        assert_eq!(deltas.push(" bye", start + Duration::from_millis(35)), None);
+        assert_eq!(deltas.finish().as_deref(), Some(" bye"));
+    }
+
+    #[test]
+    fn first_phrase_eager_delivery_is_bounded_without_punctuation() {
+        let start = Instant::now();
+        let mut deltas = DeltaCoalescer::default();
+        // Single-character tokens with no boundary: the event cap ends the eager phase.
+        for _ in 0..FIRST_PHRASE_EVENTS {
+            assert_eq!(deltas.push("a", start).as_deref(), Some("a"));
+        }
+        assert_eq!(deltas.push("a", start), None);
+        // A long unbroken first token hits Fish's hard flush length instead.
+        let mut deltas = DeltaCoalescer::default();
+        let long = "b".repeat(FIRST_PHRASE_CHARS);
+        assert_eq!(deltas.push(&long, start), Some(long));
+        assert_eq!(deltas.push("c", start), None);
+        // A first-phrase word boundary after 24 characters also ends it.
+        let mut deltas = DeltaCoalescer::default();
+        let words = format!("{} ", "d".repeat(23));
+        assert_eq!(deltas.push(&words, start), Some(words));
+        assert_eq!(deltas.push("e", start), None);
+        // Short early punctuation does not end the eager phase.
+        let mut deltas = DeltaCoalescer::default();
+        assert_eq!(deltas.push("Oh.", start).as_deref(), Some("Oh."));
+        assert_eq!(deltas.push(" I", start).as_deref(), Some(" I"));
+    }
+
+    #[test]
+    fn spawned_chat_delivers_first_phrase_tokens_and_stops_on_cancel() {
+        use std::{io::Write, net::TcpListener, sync::mpsc};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release, gate) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            while line != "\r\n" {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+            }
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            for token in ["Hi", " there", "!"] {
+                write!(
+                    socket,
+                    "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{token}\"}}}}]}}\n\n"
+                )
+                .unwrap();
+                socket.flush().unwrap();
+            }
+            // Hold the stream open so the first phrase must arrive before completion.
+            let _ = gate.recv_timeout(Duration::from_secs(10));
+            let _ = write!(
+                socket,
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\" late\"}}}}]}}\n\ndata: [DONE]\n\n"
+            );
+        });
+        let config = ProviderConfig {
+            base_url: format!("http://{addr}/v1"),
+            model: "local-test".into(),
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel();
+        let job = spawn_chat(config, Vec::new(), tx);
+        let mut text = String::new();
+        while text != "Hi there!" {
+            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                ProviderEvent::Delta(id, delta) if id == job.id => text.push_str(&delta),
+                other => panic!("unexpected event before stream end: {other:?}"),
+            }
+        }
+        job.cancel();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        // Cancellation suppresses the coalesced tail and the terminal event.
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+            panic!("event after cancellation: {event:?}");
+        }
     }
 
     #[test]

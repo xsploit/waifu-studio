@@ -262,3 +262,19 @@ From the app directory, build `cargo build --example bench_pipeline`, then expli
 Use `--phase speech`, `--reasoning none|low|minimal`, `--routing default|latency|throughput|cost`, `--provider-only SLUG`, `--provider-order SLUG,SLUG`, `--routing-matrix default,latency,pin:baseten`, `--latency normal|balanced|low`, `--chunk-length`, `--min-chunk` and `--condition` to compare supported combinations. Preserve the configured proxy; the executable refuses to benchmark when none is configured. The per-sample40-second loop limit cannot forcibly interrupt an already-blocked provider read.
 
 Raw JSON files here contain timings and errors, never API keys, chat transcripts or voice IDs. `llm-baseline.json` is an exploratory100-token screening with an obsolete error-label bug; `llm-corrected.json` used256 tokens and could still exhaust reasoning budget. Neither is used to rank the final1024-token whole-pipeline results.
+
+
+## Production chat event path (16 ms polling)
+
+This follow-up uses `--app-path`: the real `spawn_chat` coalescer and worker limits, with both event delivery and speech serviced every 16 ms. DeepSeek V4.1 Flash, explicit Baseten-only routing, reasoning none, Fish Low latency, three samples per combination. All 12 requests succeeded and all chat workers closed.
+
+| Fish model | Mode | Success | First text ms | First decoded audio ms |
+|---|---|---:|---:|---:|
+| drama-3 | ws | 3/3 | 790 | 1434 |
+| drama-3 | http | 3/3 | 321 | 1365 |
+| s2.1-pro | ws | 3/3 | 386 | 1159 |
+| s2.1-pro | http | 3/3 | 312 | 1205 |
+
+Raw results: [pipeline-app-path-low.json](pipeline-app-path-low.json). The first phrase now bypasses the later 32 ms delta batching, bounded to 68 characters or 24 events. The run includes this fix; it is not a controlled before/after measurement of its network benefit. HTTP waits for the complete reply; WebSocket can overlap generation. Three sequential samples do not establish a universal transport winner.
+
+This models frame cadence, not real render jitter or audio-device scheduling. First decoded audio is decoder readiness, not audible speaker onset. Startup-buffer protections remain intact. No raw gateway observation metadata is available through the app event API, so these rows record the requested strict pin without claiming independent served-provider attribution. The repeatable 500–700 ms target remains unmet.
