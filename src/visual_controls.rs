@@ -76,6 +76,14 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
                 .text("Chromatic aberration"),
         );
         ui.small("Gamma is an exponent: values above 1 darken midtones. Chromatic aberration uses at most 8 samples.");
+        ui.checkbox(&mut state.settings.rgb_correction, "WebWaifu4 RGB color correction");
+        ui.add_enabled_ui(state.settings.rgb_correction, |ui| {
+            ui.small("Linear RGB power and gain before tonemapping. WebWaifu4 defaults: power 1.40 / 1.45 / 1.45, gain 1.10 each.");
+            for (index, channel) in ["Red", "Green", "Blue"].into_iter().enumerate() {
+                ui.add(egui::Slider::new(&mut state.settings.rgb_power[index], 0.1..=4.0).text(format!("{channel} power")));
+                ui.add(egui::Slider::new(&mut state.settings.rgb_gain[index], 0.0..=4.0).text(format!("{channel} gain")));
+            }
+        });
     });
 
     let m = &mut state.settings.material;

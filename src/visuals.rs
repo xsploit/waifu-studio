@@ -46,6 +46,9 @@ pub struct VisualSettings {
     pub gamma: f32,
     pub bloom: f32,
     pub chromatic_aberration: f32,
+    pub rgb_correction: bool,
+    pub rgb_power: [f32; 3],
+    pub rgb_gain: [f32; 3],
     /// Avatar material tuning; applied by `shaders` even when camera effects are off.
     pub material: MaterialTuning,
 }
@@ -177,6 +180,9 @@ impl Default for VisualSettings {
             gamma: 1.0,
             bloom: 0.0,
             chromatic_aberration: 0.0,
+            rgb_correction: false,
+            rgb_power: [1.4, 1.45, 1.45],
+            rgb_gain: [1.1; 3],
             material: MaterialTuning::default(),
         }
     }
@@ -184,6 +190,12 @@ impl Default for VisualSettings {
 impl VisualSettings {
     pub fn sanitized(mut self) -> Self {
         self.material = self.material.sanitized();
+        for channel in &mut self.rgb_power {
+            *channel = bounded(*channel, 0.1, 4., 1.);
+        }
+        for channel in &mut self.rgb_gain {
+            *channel = bounded(*channel, 0., 4., 1.);
+        }
         self.exposure = bounded(self.exposure, -3.0, 3.0, 0.0);
         self.saturation = bounded(self.saturation, 0.0, 2.0, 1.0);
         self.contrast = bounded(self.contrast, 0.5, 1.8, 1.0);
@@ -276,6 +288,7 @@ pub struct VisualPlugin;
 impl Plugin for VisualPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VisualState>()
+            .add_plugins(crate::color_correction::ColorCorrectionPlugin)
             .add_systems(PostUpdate, sync);
     }
 }
@@ -354,6 +367,15 @@ fn sync(
                 camera.insert(Hdr);
             }
             camera.insert((render.tone, render.grading.clone()));
+            let corrected = current.0.clone().sanitized();
+            if corrected.rgb_correction {
+                camera.insert(crate::color_correction::ColorCorrection {
+                    power: Vec3::from_array(corrected.rgb_power).extend(0.),
+                    gain: Vec3::from_array(corrected.rgb_gain).extend(0.),
+                });
+            } else {
+                camera.remove::<crate::color_correction::ColorCorrection>();
+            }
             if let Some(bloom) = &render.bloom {
                 camera.insert(bloom.clone());
             } else {
@@ -365,6 +387,7 @@ fn sync(
                 camera.remove::<ChromaticAberration>();
             }
         } else {
+            camera.remove::<crate::color_correction::ColorCorrection>();
             camera.remove::<(Bloom, ChromaticAberration)>();
             if original.hdr && !state.suppressed {
                 camera.insert(Hdr);
@@ -482,17 +505,54 @@ mod tests {
         let unmarked = app.world_mut().spawn(Tonemapping::AcesFitted).id();
         app.world_mut().resource_mut::<VisualState>().settings =
             VisualSettings::preset(VisualPreset::Neon);
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .rgb_correction = true;
         app.update();
         assert!(app.world().entity(marked).contains::<Bloom>());
         assert!(app.world().entity(marked).contains::<Hdr>());
+        let correction = app
+            .world()
+            .entity(marked)
+            .get::<crate::color_correction::ColorCorrection>()
+            .unwrap();
+        assert_eq!(correction.power, Vec4::new(1.4, 1.45, 1.45, 0.));
+        assert_eq!(correction.gain, Vec4::new(1.1, 1.1, 1.1, 0.));
+        assert!(
+            !app.world()
+                .entity(unmarked)
+                .contains::<crate::color_correction::ColorCorrection>()
+        );
         assert!(!app.world().entity(unmarked).contains::<Bloom>());
         app.world_mut().resource_mut::<VisualState>().suppressed = true;
         app.update();
         assert!(!app.world().entity(marked).contains::<Bloom>());
         assert!(!app.world().entity(marked).contains::<Hdr>());
+        assert!(
+            !app.world()
+                .entity(marked)
+                .contains::<crate::color_correction::ColorCorrection>()
+        );
         assert_eq!(
             *app.world().entity(marked).get::<Tonemapping>().unwrap(),
             Tonemapping::Reinhard
         );
+    }
+
+    #[test]
+    fn rgb_correction_loads_disabled_and_bounds_invalid_channels() {
+        let old: VisualSettings = serde_json::from_str("{}").unwrap();
+        assert!(!old.rgb_correction);
+        assert_eq!(old.rgb_power, [1.4, 1.45, 1.45]);
+        assert_eq!(old.rgb_gain, [1.1; 3]);
+        let corrected = VisualSettings {
+            rgb_power: [f32::NAN, -1., 100.],
+            rgb_gain: [f32::INFINITY, -2., 50.],
+            ..old
+        }
+        .sanitized();
+        assert_eq!(corrected.rgb_power, [1., 0.1, 4.]);
+        assert_eq!(corrected.rgb_gain, [1., 0., 4.]);
     }
 }

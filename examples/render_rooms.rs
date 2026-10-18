@@ -1,5 +1,5 @@
 //! Genuine offscreen GPU room preview; never creates a desktop window.
-//! Run from the crate directory: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel]
+//! Run from the crate directory: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel] [--rgb-correction]
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
     asset::{AssetPath, UnapprovedPathMode},
@@ -46,7 +46,7 @@ fn main() -> AppExit {
         Some("cyan") => RoomTheme::Cyan,
         _ => {
             eprintln!(
-                "Usage: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel]"
+                "Usage: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel] [--rgb-correction]"
             );
             return AppExit::error();
         }
@@ -63,6 +63,7 @@ fn main() -> AppExit {
     let mut avatar = None;
     let mut sitting = false;
     let mut cel = false;
+    let mut rgb_correction = false;
     while let Some(option) = args.next() {
         match option.as_str() {
             "--frames" => {
@@ -89,6 +90,7 @@ fn main() -> AppExit {
             }
             "--sitting" => sitting = true,
             "--cel" => cel = true,
+            "--rgb-correction" => rgb_correction = true,
             _ => {
                 eprintln!("Unexpected argument: {option}");
                 return AppExit::error();
@@ -160,6 +162,7 @@ fn main() -> AppExit {
                     settings.material =
                         waifu_studio::anime_look::AnimeLook::Cel.apply(&settings.material);
                 }
+                settings.rgb_correction = rgb_correction;
                 settings
             },
             suppressed: false,
