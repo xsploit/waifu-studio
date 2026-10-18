@@ -3,9 +3,6 @@
 //! is UNLICENSED, so its folder is only used when it already exists on this
 //! machine (the user's own checkout). `WAIFU_MOTION_LIBRARY` adds more folders
 //! (`:`-separated).
-// The category/catalog API below is not wired into the UI or runtime yet;
-// drop this allow once a caller uses it.
-#![allow(dead_code)]
 use std::path::{Path, PathBuf};
 
 const WEBWAIFU4_ANIMATIONS: &str = "/home/subsect/Documents/Codex/2026-10-11/files-pasted-by-the-user-review-2/work/WebWaifu4/public/assets/animations";

@@ -1428,6 +1428,126 @@ mod tests {
         );
     }
     #[test]
+    fn calibrated_vowels_reach_focused_morphs_only_for_the_speaker_and_respect_overrides() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ExpressionsPlugin)
+            .init_resource::<AvatarLoadState>()
+            .init_resource::<crate::viseme_audio::VisemeState>()
+            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(100),
+            ));
+        let character = Uuid::from_u128(5);
+        let root = app
+            .world_mut()
+            .spawn((
+                SceneMemberFacial {
+                    character,
+                    config: FacialConfig::default(),
+                },
+                ExpressionCatalog {
+                    expressions: vec![
+                        ExpressionMeta {
+                            name: "aa".into(),
+                            ..default()
+                        },
+                        ExpressionMeta {
+                            name: "ih".into(),
+                            ..default()
+                        },
+                        ExpressionMeta {
+                            name: "happy".into(),
+                            mouth_override: 1,
+                            ..default()
+                        },
+                    ],
+                },
+            ))
+            .id();
+        let node = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                ExpressionNode {
+                    binds: (0..3)
+                        .map(|i| NodeBind {
+                            expression: i,
+                            index: i,
+                            weight: 1.0,
+                        })
+                        .collect(),
+                },
+                MorphWeights::new(vec![0.0; 3], None).unwrap(),
+            ))
+            .id();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let morphs = |app: &App| {
+            app.world()
+                .get::<MorphWeights>(node)
+                .unwrap()
+                .weights()
+                .to_vec()
+        };
+        let publish = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<crate::viseme_audio::VisemeState>()
+                .publish_for_test([0.4, 0.2, 0.0, 0.0, 0.0]);
+        };
+        app.world_mut().resource_mut::<SpeechTarget>().0 = Some(character);
+        publish(&mut app);
+        app.update();
+        let open = morphs(&app);
+        assert!(
+            (open[0] - 0.8).abs() < 0.001 && (open[1] - 0.4).abs() < 0.001,
+            "{open:?}"
+        );
+        assert_eq!(open[2], 0.0);
+
+        app.world_mut().resource_mut::<SpeechTarget>().0 = Some(Uuid::from_u128(6));
+        publish(&mut app);
+        app.update();
+        assert_eq!(
+            morphs(&app),
+            vec![0.0; 3],
+            "another speaker must not move this mouth"
+        );
+
+        app.world_mut().resource_mut::<SpeechTarget>().0 = Some(character);
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .selected_expression = "happy".into();
+        publish(&mut app);
+        app.update();
+        assert_eq!(
+            morphs(&app),
+            vec![0.0, 0.0, 1.0],
+            "a selected mouth-blocking expression silences vowels"
+        );
+
+        {
+            let mut facial = app.world_mut().resource_mut::<FacialState>();
+            facial.config.selected_expression.clear();
+            facial.config.weights.insert("aa".into(), 0.3);
+        }
+        publish(&mut app);
+        app.update();
+        let manual = morphs(&app);
+        assert!(
+            (manual[0] - 0.3).abs() < 0.001 && (manual[1] - 0.4).abs() < 0.001,
+            "{manual:?}"
+        );
+
+        {
+            let mut facial = app.world_mut().resource_mut::<FacialState>();
+            facial.config.weights.clear();
+            facial.config.lip_sync = false;
+        }
+        publish(&mut app);
+        app.update();
+        assert_eq!(morphs(&app), vec![0.0; 3]);
+    }
+    #[test]
     fn unavailable_visemes_fall_back_to_selected_amplitude_mouth() {
         let expressions: Vec<_> = ["aa", "ih", "custom"]
             .into_iter()

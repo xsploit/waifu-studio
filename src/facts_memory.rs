@@ -3,6 +3,12 @@
 //! Pending candidates are transient unless the separate "retain pending" opt-in is on. Then
 //! they also live in root/<uuid>/candidates.jsonl, which older binaries never read. Pending
 //! candidates are never part of recall; only accepted records in facts.jsonl are.
+//!
+//! A failed pending write is remembered per character with the snapshot that failed, so
+//! reselecting a character never trusts an older disk copy over it. Writes then stop for
+//! that character until the user retries or opts out; nothing retries automatically.
+#[path = "memory_reflection.rs"]
+pub mod reflection;
 use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,6 +33,10 @@ const MAX_PENDING_BYTES: u64 = 256 * 1024;
 pub const CANDIDATE_TTL_SECS: u64 = 14 * 24 * 60 * 60;
 const FACTS_FILE: &str = "facts.jsonl";
 const PENDING_FILE: &str = "candidates.jsonl";
+/// The only source a pending Reflection may carry. Reflections cite ledger records, not a
+/// user turn, so they have no turn id; every other pending candidate must have one.
+pub const REFLECTION_SOURCE: &str = "reflection draft from accepted records (review required)";
+const REVIEWED_REFLECTION_SOURCE: &str = "reflection draft, reviewed";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordKind {
     Fact,
@@ -119,7 +129,12 @@ pub struct FactsMemoryState {
     needs_load: bool,
     /// Latest unsent pending-file state per character; replaced, never appended.
     outbox: HashMap<Uuid, Pending>,
-    pending_in_flight: bool,
+    /// Character and snapshot of the pending write the worker is running.
+    in_flight: Option<(Uuid, Pending)>,
+    /// Failed pending writes by character: error plus the snapshot that did not land.
+    failed: HashMap<Uuid, (String, Pending)>,
+    /// Manual reflection drafts; results only ever become pending candidates.
+    pub reflection: reflection::ReflectionWorker,
     commands: SyncSender<Command>,
     events: Mutex<Receiver<Event>>,
     trace: Mutex<Option<FactsRecallTrace>>,
@@ -186,7 +201,9 @@ impl FactsMemoryState {
             generation: 0,
             needs_load: false,
             outbox: HashMap::new(),
-            pending_in_flight: false,
+            in_flight: None,
+            failed: HashMap::new(),
+            reflection: reflection::ReflectionWorker::default(),
             commands: tx,
             events: Mutex::new(erx),
             trace: Mutex::new(None),
@@ -207,11 +224,36 @@ impl FactsMemoryState {
     }
     /// True while a pending-file write or removal is queued or in flight.
     pub fn pending_saving(&self) -> bool {
-        self.pending_in_flight || !self.outbox.is_empty()
+        self.in_flight.is_some() || !self.outbox.is_empty()
+    }
+    /// The selected character's last pending write failed; `retry_pending` resends it.
+    pub fn pending_write_failed(&self) -> bool {
+        self.selected
+            .is_some_and(|id| self.failed.contains_key(&id))
+    }
+    /// Other characters whose pending write failed; shown when they are reselected.
+    pub fn failed_pending_elsewhere(&self) -> usize {
+        self.failed
+            .keys()
+            .filter(|id| Some(**id) != self.selected)
+            .count()
+    }
+    /// Changes whenever the selected character changes; stale async results compare it.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
     pub fn select_character(&mut self, id: Option<Uuid>) {
         if self.selected == id {
             return;
+        }
+        // Keep suggestions made after a failed write; they are only in memory.
+        if let Some(old) = self.selected
+            && self.loaded
+            && let Some((_, Some(_))) = self.failed.get(&old)
+        {
+            let snapshot = self.snapshot();
+            self.failed
+                .insert(old, (self.failed[&old].0.clone(), Some(snapshot)));
         }
         self.generation = self.generation.wrapping_add(1);
         self.selected = id;
@@ -241,16 +283,24 @@ impl FactsMemoryState {
                     pending,
                 }) => self.ledger_event(generation, result, pending),
                 Some(Event::Pending { id, result }) => {
-                    self.pending_in_flight = false;
-                    if let Err(e) = result
-                        && self.selected == Some(id)
-                    {
-                        self.pending_error = Some(e);
+                    let sent = self.in_flight.take().filter(|(sent, _)| *sent == id);
+                    match result {
+                        Ok(()) => {
+                            self.failed.remove(&id);
+                        }
+                        Err(e) => {
+                            // Recorded for every character, selected or not.
+                            if self.selected == Some(id) {
+                                self.pending_error = Some(e.clone());
+                            }
+                            self.failed.insert(id, (e, sent.and_then(|(_, p)| p)));
+                        }
                     }
                 }
                 None => break,
             }
         }
+        self.poll_reflection();
         if self.loaded && self.prune_expired() {
             self.queue_pending();
         }
@@ -308,9 +358,17 @@ impl FactsMemoryState {
             }
         }
     }
-    /// Unsent local state beats the disk copy, which may predate it.
+    /// Unsent local state beats a failed write, which beats the disk copy that predates both.
     fn restore_pending(&mut self, disk: Result<Pending, String>) {
         let Some(id) = self.selected else { return };
+        if let Some((e, failed)) = self.failed.get(&id).cloned() {
+            // Show what failed to persist, but write nothing until an explicit retry.
+            self.retain_pending = failed.is_some();
+            self.candidates = failed.map(|list| self.reconcile(list)).unwrap_or_default();
+            self.prune_expired();
+            self.pending_error = Some(e);
+            return;
+        }
         let pending = match self.outbox.get(&id) {
             Some(queued) => Ok(queued.clone()),
             None => disk,
@@ -324,23 +382,8 @@ impl FactsMemoryState {
                 self.retain_pending = true;
                 self.pending_error = None;
                 let before = list.len();
-                let superseded: HashSet<_> =
-                    self.records.iter().filter_map(|r| r.supersedes).collect();
-                let mut kept: Vec<MemoryRecord> = Vec::new();
-                for c in list {
-                    let duplicate = self.records.iter().any(|r| {
-                        r.id == c.id
-                            || (!superseded.contains(&r.id)
-                                && normalized(&r.text) == normalized(&c.text))
-                    }) || kept
-                        .iter()
-                        .any(|k| normalized(&k.text) == normalized(&c.text));
-                    if !duplicate && kept.len() < MAX_CANDIDATES {
-                        kept.push(c);
-                    }
-                }
-                let changed = kept.len() != before;
-                self.candidates = kept;
+                self.candidates = self.reconcile(list);
+                let changed = self.candidates.len() != before;
                 if self.prune_expired() || changed {
                     self.queue_pending();
                 }
@@ -352,6 +395,23 @@ impl FactsMemoryState {
             }
         }
     }
+    /// Drops candidates already in the ledger or duplicated, keeping at most the cap.
+    fn reconcile(&self, list: Vec<MemoryRecord>) -> Vec<MemoryRecord> {
+        let superseded: HashSet<_> = self.records.iter().filter_map(|r| r.supersedes).collect();
+        let mut kept: Vec<MemoryRecord> = Vec::new();
+        for c in list {
+            let duplicate = self.records.iter().any(|r| {
+                r.id == c.id
+                    || (!superseded.contains(&r.id) && normalized(&r.text) == normalized(&c.text))
+            }) || kept
+                .iter()
+                .any(|k| normalized(&k.text) == normalized(&c.text));
+            if !duplicate && kept.len() < MAX_CANDIDATES {
+                kept.push(c);
+            }
+        }
+        kept
+    }
     fn prune_expired(&mut self) -> bool {
         let now = now();
         let before = self.candidates.len();
@@ -359,23 +419,25 @@ impl FactsMemoryState {
             .retain(|c| c.expires_at.is_none_or(|t| t > now));
         self.candidates.len() != before
     }
-    /// Snapshot includes a candidate whose acceptance is still being saved.
+    /// Includes a candidate whose acceptance is still being saved.
+    fn snapshot(&self) -> Vec<MemoryRecord> {
+        self.candidates
+            .iter()
+            .chain(self.accepting.as_ref())
+            .take(MAX_CANDIDATES)
+            .cloned()
+            .collect()
+    }
     fn queue_pending(&mut self) {
         let Some(id) = self.selected else { return };
         if !self.retain_pending || self.pending_error.is_some() {
             return;
         }
-        let snapshot = self
-            .candidates
-            .iter()
-            .chain(self.accepting.as_ref())
-            .take(MAX_CANDIDATES)
-            .cloned()
-            .collect();
+        let snapshot = self.snapshot();
         self.outbox.insert(id, Some(snapshot));
     }
     fn flush_pending(&mut self) {
-        if self.pending_in_flight {
+        if self.in_flight.is_some() {
             return;
         }
         let Some(id) = self.outbox.keys().next().copied() else {
@@ -384,13 +446,34 @@ impl FactsMemoryState {
         let Some(p) = self.outbox.remove(&id) else {
             return;
         };
-        match self.commands.try_send(Command::WritePending(id, p)) {
-            Ok(()) => self.pending_in_flight = true,
+        match self.commands.try_send(Command::WritePending(id, p.clone())) {
+            Ok(()) => self.in_flight = Some((id, p)),
             Err(TrySendError::Full(Command::WritePending(id, p))) => {
                 self.outbox.entry(id).or_insert(p);
             }
             Err(e) => self.pending_error = Some(e.to_string()),
         }
+    }
+    /// Explicitly resend the selected character's failed pending write with the current
+    /// suggestions. One attempt per call; a new failure is reported the same way.
+    pub fn retry_pending(&mut self) -> Result<(), String> {
+        let id = self.selected.ok_or("Select a character first")?;
+        if !self.loaded {
+            return Err("Wait for memory loading".into());
+        }
+        let (_, failed) = self
+            .failed
+            .remove(&id)
+            .ok_or("No failed pending write to retry")?;
+        self.pending_error = None;
+        if failed.is_some() {
+            self.retain_pending = true;
+            self.queue_pending();
+        } else {
+            self.outbox.insert(id, None);
+        }
+        self.poll();
+        Ok(())
     }
     /// Opt in or out of retaining pending candidates across restarts. Opting out
     /// deletes candidates.jsonl; current suggestions stay until restart.
@@ -408,6 +491,7 @@ impl FactsMemoryState {
         } else {
             self.retain_pending = false;
             self.pending_error = None;
+            self.failed.remove(&id);
             self.outbox.insert(id, None);
         }
         self.poll();
@@ -539,9 +623,109 @@ impl FactsMemoryState {
             .ok_or("Candidate no longer exists")?;
         let pending = r.clone();
         r.expires_at = None;
+        if r.kind == RecordKind::Reflection {
+            REVIEWED_REFLECTION_SOURCE.clone_into(&mut r.source);
+        }
         self.insert(r)?;
         self.candidates.retain(|r| r.id != id);
         self.accepting = Some(pending);
+        Ok(())
+    }
+    /// Adds a reviewed-later Reflection candidate. `cited` pairs each source record id with
+    /// the exact text that was offered; any record that is gone, superseded, expired or
+    /// changed since then makes the draft stale. Evidence is quoted by this code, never by
+    /// the model, so it can only contain accepted ledger text.
+    pub fn add_reflection_candidate(
+        &mut self,
+        character: Uuid,
+        generation: u64,
+        text: &str,
+        cited: &[(Uuid, String)],
+    ) -> Result<Uuid, String> {
+        if self.selected != Some(character) || self.generation != generation || !self.loaded {
+            return Err("Reflection draft is stale: the character changed".into());
+        }
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > 1000 {
+            return Err("Reflection text requires 1–1000 characters".into());
+        }
+        if cited.is_empty() || cited.len() > reflection::MAX_CITED {
+            return Err("Reflection must cite between one and six records".into());
+        }
+        let superseded: HashSet<_> = self.records.iter().filter_map(|r| r.supersedes).collect();
+        let now = now();
+        let mut seen = HashSet::new();
+        for (id, offered) in cited {
+            let current = self.records.iter().any(|r| {
+                r.id == *id
+                    && r.text == *offered
+                    && r.kind != RecordKind::Reflection
+                    && !superseded.contains(id)
+                    && r.expires_at.is_none_or(|t| t > now)
+            });
+            if !seen.insert(*id) || !current {
+                return Err("Reflection draft is stale: a cited record changed".into());
+            }
+        }
+        if self.candidates.len() + usize::from(self.accepting.is_some()) >= MAX_CANDIDATES {
+            return Err(format!("At most {MAX_CANDIDATES} pending candidates"));
+        }
+        if self
+            .records
+            .iter()
+            .chain(self.candidates.iter())
+            .chain(self.accepting.as_ref())
+            .any(|r| normalized(&r.text) == normalized(text))
+        {
+            return Err("Duplicate reflection".into());
+        }
+        let per = (1000 - cited.len() * 42) / cited.len();
+        let evidence = cited
+            .iter()
+            .map(|(id, t)| {
+                let quoted: String = t.chars().take(per).collect();
+                format!("{id}: {quoted}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let created_at = now;
+        let id = Uuid::new_v4();
+        self.candidates.push(MemoryRecord {
+            id,
+            kind: RecordKind::Reflection,
+            text: text.into(),
+            turn_id: None,
+            source: REFLECTION_SOURCE.into(),
+            evidence,
+            created_at,
+            expires_at: Some(created_at.saturating_add(CANDIDATE_TTL_SECS)),
+            supersedes: None,
+        });
+        self.queue_pending();
+        Ok(id)
+    }
+    /// Reviewers may reword a pending reflection; its quoted evidence stays code-attached.
+    pub fn edit_reflection_candidate(&mut self, id: Uuid, text: &str) -> Result<(), String> {
+        let text = text.trim();
+        if text.is_empty() || text.chars().count() > 1000 {
+            return Err("Reflection text requires 1–1000 characters".into());
+        }
+        if self
+            .records
+            .iter()
+            .chain(self.candidates.iter().filter(|c| c.id != id))
+            .chain(self.accepting.as_ref())
+            .any(|r| normalized(&r.text) == normalized(text))
+        {
+            return Err("Duplicate reflection".into());
+        }
+        let c = self
+            .candidates
+            .iter_mut()
+            .find(|c| c.id == id && c.kind == RecordKind::Reflection)
+            .ok_or("Reflection candidate no longer exists")?;
+        text.clone_into(&mut c.text);
+        self.queue_pending();
         Ok(())
     }
     pub fn dismiss_candidate(&mut self, id: Uuid) {
@@ -615,6 +799,7 @@ impl FactsMemoryState {
             .map_err(|e| e.to_string())?;
         // Earlier sent writes run first on the serialized worker; unsent ones are moot.
         self.outbox.remove(&id);
+        self.failed.remove(&id);
         self.busy = true;
         self.candidates.clear();
         self.accepting = None;
@@ -977,8 +1162,16 @@ fn validate_pending(candidates: &[MemoryRecord]) -> Result<(), String> {
         if !ids.insert(c.id) || !values.insert(normalized(&c.text)) {
             return Err("Duplicate pending candidate".into());
         }
-        if c.turn_id.is_none() || c.expires_at.is_none() || c.supersedes.is_some() {
-            return Err("Pending candidates need a turn id and explicit expiry".into());
+        let provenance = if c.kind == RecordKind::Reflection {
+            c.turn_id.is_none() && c.source == REFLECTION_SOURCE
+        } else {
+            c.turn_id.is_some()
+        };
+        if !provenance || c.expires_at.is_none() || c.supersedes.is_some() {
+            return Err(
+                "Pending candidates need a turn id (reflections: the reflection source) and explicit expiry"
+                    .into(),
+            );
         }
         if c.text.trim().is_empty()
             || c.text.chars().count() > 1000
@@ -1000,10 +1193,12 @@ fn read_pending(root: &Path, id: Uuid) -> Result<Pending, String> {
         return Ok(None);
     };
     let mut lines = data.lines();
-    match lines.next().map(serde_json::from_str::<PendingLine>) {
-        Some(Ok(PendingLine::Pending(PendingHeader { version: 1 }))) => {}
-        _ => return Err("candidates.jsonl must start with a version 1 header".into()),
-    }
+    let version = match lines.next().map(serde_json::from_str::<PendingLine>) {
+        Some(Ok(PendingLine::Pending(PendingHeader {
+            version: v @ (1 | 2),
+        }))) => v,
+        _ => return Err("candidates.jsonl must start with a version 1 or 2 header".into()),
+    };
     let mut candidates = Vec::new();
     for (i, line) in lines.enumerate() {
         if i >= MAX_CANDIDATES {
@@ -1017,6 +1212,9 @@ fn read_pending(root: &Path, id: Uuid) -> Result<Pending, String> {
         }
     }
     validate_pending(&candidates)?;
+    if version != pending_version(&candidates) {
+        return Err("candidates.jsonl version does not match its candidates".into());
+    }
     Ok(Some(candidates))
 }
 /// Temp file, fsync, rename, then directory fsync.
@@ -1059,10 +1257,20 @@ fn write(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     }
     atomic_write(&dir, FACTS_FILE, &data)
 }
+/// Version 2 only when a reflection is present, so builds that predate reflections keep
+/// reading files without them and fail closed (leaving the file untouched) on the rest.
+fn pending_version(candidates: &[MemoryRecord]) -> u32 {
+    if candidates.iter().any(|c| c.kind == RecordKind::Reflection) {
+        2
+    } else {
+        1
+    }
+}
 fn write_pending(root: &Path, id: Uuid, candidates: &[MemoryRecord]) -> Result<(), String> {
     validate_pending(candidates)?;
     let dir = directory(root, id)?;
-    let mut data = serde_json::to_vec(&PendingLine::Pending(PendingHeader { version: 1 }))
+    let version = pending_version(candidates);
+    let mut data = serde_json::to_vec(&PendingLine::Pending(PendingHeader { version }))
         .map_err(|e| e.to_string())?;
     data.push(b'\n');
     for c in candidates {
@@ -1735,6 +1943,170 @@ mod tests {
         assert_eq!(s.candidates()[0].id, c);
         assert!(s.context("tea").is_none());
         assert_eq!(read_pending(&root, id).unwrap().unwrap()[0].id, c);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    fn lock_dir(root: &Path, id: Uuid, locked: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if locked { 0o500 } else { 0o700 };
+        fs::set_permissions(root.join(id.to_string()), fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(unix)]
+    fn texts(s: &FactsMemoryState) -> Vec<String> {
+        let mut t: Vec<_> = s.candidates().iter().map(|c| c.text.clone()).collect();
+        t.sort();
+        t
+    }
+    /// Fable F1: a failed write survives reselection and reload instead of the older disk copy.
+    #[cfg(unix)]
+    #[test]
+    fn failed_pending_write_survives_reselect_until_explicit_retry() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let root = temp_root("failed-selected");
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        drop(suggesting(&root, b, false));
+        let mut s = suggesting(&root, a, true);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like apples");
+        settle(&mut s);
+        lock_dir(&root, a, true);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like pears");
+        settle(&mut s);
+        assert!(s.pending_error.is_some() && s.pending_write_failed());
+        // Suggested after the failure: kept in memory with the failed snapshot.
+        s.observe_user_turn(a, Uuid::new_v4(), "I like plums");
+        s.select_character(Some(b));
+        settle(&mut s);
+        assert_eq!(s.failed_pending_elsewhere(), 1);
+        assert!(s.pending_error.is_none());
+        s.select_character(Some(a));
+        settle(&mut s);
+        assert!(
+            s.pending_error.is_some(),
+            "must not trust the older disk copy"
+        );
+        assert!(s.pending_write_failed());
+        assert_eq!(texts(&s), ["I like apples", "I like pears", "I like plums"]);
+        assert_eq!(read_pending(&root, a).unwrap().unwrap().len(), 1);
+        // No automatic retries while it stays broken.
+        for _ in 0..20 {
+            s.poll();
+        }
+        assert!(!s.pending_saving());
+        // An explicit retry that fails again is reported the same way.
+        s.retry_pending().unwrap();
+        settle(&mut s);
+        assert!(s.pending_write_failed());
+        lock_dir(&root, a, false);
+        s.retry_pending().unwrap();
+        settle(&mut s);
+        assert!(s.pending_error.is_none() && !s.pending_write_failed());
+        assert!(s.retry_pending().is_err());
+        drop(s);
+        let s = reopen(&root, a);
+        assert_eq!(texts(&s), ["I like apples", "I like pears", "I like plums"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_write_for_unselected_character_surfaces_on_return() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let root = temp_root("failed-other");
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        drop(suggesting(&root, b, false));
+        let mut s = suggesting(&root, a, true);
+        lock_dir(&root, a, true);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like figs");
+        // The write is flushed and fails only after b is selected.
+        s.select_character(Some(b));
+        settle(&mut s);
+        assert!(s.pending_error.is_none());
+        assert_eq!(s.failed_pending_elsewhere(), 1);
+        s.select_character(Some(a));
+        settle(&mut s);
+        assert!(s.pending_error.is_some() && s.retain_pending);
+        assert_eq!(texts(&s), ["I like figs"]);
+        // Opting out clears the failure and removes whatever file exists.
+        lock_dir(&root, a, false);
+        s.set_retain_pending(false).unwrap();
+        settle(&mut s);
+        assert!(!s.pending_write_failed() && s.pending_error.is_none());
+        assert!(!pending_path(&root, a).exists());
+        assert_eq!(s.failed_pending_elsewhere(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn reflection_candidates_use_their_own_provenance_and_header() {
+        let root = temp_root("reflection-pending");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        s.add_record(
+            RecordKind::Fact,
+            "Owns a red bike".into(),
+            "my bike is red".into(),
+        )
+        .unwrap();
+        settle(&mut s);
+        let fact = s.records()[0].clone();
+        let generation = s.generation();
+        let cid = s
+            .add_reflection_candidate(
+                id,
+                generation,
+                "Likes cycling",
+                &[(fact.id, fact.text.clone())],
+            )
+            .unwrap();
+        settle(&mut s);
+        let raw = fs::read_to_string(pending_path(&root, id)).unwrap();
+        assert!(raw.starts_with(r#"{"entry":"Pending","value":{"version":2}}"#));
+        drop(s);
+        let mut s = reopen(&root, id);
+        assert_eq!(s.candidates()[0].id, cid);
+        s.accept_candidate(cid).unwrap();
+        settle(&mut s);
+        let accepted = &s.records()[1];
+        assert_eq!(accepted.kind, RecordKind::Reflection);
+        assert_eq!(accepted.source, REVIEWED_REFLECTION_SOURCE);
+        assert!(accepted.evidence.contains(&fact.id.to_string()));
+        assert!(
+            fs::read_to_string(pending_path(&root, id))
+                .unwrap()
+                .contains(r#""version":1"#)
+        );
+        // Contract: user-turn candidates need a turn id; reflections need the reflection
+        // source and no turn id; the header version must match.
+        let mut c = s.records()[1].clone();
+        c.expires_at = Some(u64::MAX);
+        c.source = REFLECTION_SOURCE.into();
+        assert!(validate_pending(std::slice::from_ref(&c)).is_ok());
+        let mut bad = c.clone();
+        bad.turn_id = Some(Uuid::new_v4());
+        assert!(validate_pending(&[bad]).is_err());
+        let mut bad = c.clone();
+        bad.source = "user turn candidate (review required before recall)".into();
+        assert!(validate_pending(&[bad]).is_err());
+        let mut bad = c.clone();
+        bad.kind = RecordKind::Fact;
+        assert!(validate_pending(&[bad]).is_err());
+        let line = serde_json::to_string(&PendingLine::Candidate(c)).unwrap();
+        for header in [1, 3] {
+            fs::write(
+                pending_path(&root, id),
+                format!("{{\"entry\":\"Pending\",\"value\":{{\"version\":{header}}}}}\n{line}\n"),
+            )
+            .unwrap();
+            assert!(read_pending(&root, id).is_err());
+        }
+        fs::write(
+            pending_path(&root, id),
+            "{\"entry\":\"Pending\",\"value\":{\"version\":2}}\n",
+        )
+        .unwrap();
+        assert!(read_pending(&root, id).is_err(), "v2 requires a reflection");
         fs::remove_dir_all(root).unwrap();
     }
 }

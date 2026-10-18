@@ -642,8 +642,18 @@ fn handle_command(
             {
                 active.settings = settings;
                 active.revision = revision;
-                active.analyzer = None;
-                active.session.ring.clear();
+                // Retune in place so dragging a slider mid-speech keeps the
+                // analysis window, smoothing state and buffered PCM. Only an
+                // unretunable analyzer restarts from silence.
+                if !active
+                    .analyzer
+                    .as_mut()
+                    .is_some_and(|analyzer| analyzer.set_settings(settings).is_ok())
+                {
+                    active.analyzer = None;
+                    active.session.ring.clear();
+                }
+                // Already hidden by the revision gate; also drop it for pollers.
                 active.session.output.invalidate();
             }
         }
@@ -652,19 +662,34 @@ fn handle_command(
 fn worker(commands: Receiver<Command>, events: SyncSender<Event>) {
     let mut active: Option<ActiveAnalysis> = None;
     let mut scratch = [0.0f32; 1024];
+    // While PCM is flowing, poll commands between every block so a tuning
+    // change or cancel is never starved behind continuous audio.
+    let mut idle = true;
     loop {
-        match commands.recv_timeout(if active.is_some() {
-            Duration::from_millis(3)
+        let command = if idle {
+            match commands.recv_timeout(if active.is_some() {
+                Duration::from_millis(3)
+            } else {
+                Duration::from_millis(100)
+            }) {
+                Ok(command) => Some(command),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+            }
         } else {
-            Duration::from_millis(100)
-        }) {
-            Ok(command) => handle_command(command, &mut active, &events),
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            match commands.try_recv() {
+                Ok(command) => Some(command),
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => None,
+            }
+        };
+        if let Some(command) = command {
+            handle_command(command, &mut active, &events);
         }
         while let Ok(command) = commands.try_recv() {
             handle_command(command, &mut active, &events);
         }
+        idle = true;
         let Some(current) = &mut active else {
             continue;
         };
@@ -697,35 +722,31 @@ fn worker(commands: Receiver<Command>, events: SyncSender<Event>) {
                 }
             }
         }
-        for _ in 0..8 {
-            if !current.session.current() {
-                break;
-            }
-            let overflow = current.session.ring.dropped.load(Ordering::Acquire);
-            if overflow != current.overflow {
-                current.overflow = overflow;
-                current.session.ring.clear();
-                current.analyzer.as_mut().unwrap().reset();
-                current.session.output.invalidate();
-                break;
-            }
-            let count = current.session.ring.pop(&mut scratch);
-            if count == 0 {
-                break;
-            }
-            let analyzer = current.analyzer.as_mut().unwrap();
-            let frames = analyzer.push_mono(&scratch[..count]).unwrap_or(0);
-            if frames > 0
-                && current.session.current()
-                && current.session.revision.load(Ordering::Acquire) == current.revision
-                && current.session.ring.dropped.load(Ordering::Acquire) == current.overflow
-            {
-                current.session.output.publish(
-                    analyzer.output().vowels,
-                    current.session.now(),
-                    current.revision,
-                );
-            }
+        let overflow = current.session.ring.dropped.load(Ordering::Acquire);
+        if overflow != current.overflow {
+            current.overflow = overflow;
+            current.session.ring.clear();
+            current.analyzer.as_mut().unwrap().reset();
+            current.session.output.invalidate();
+            continue;
+        }
+        let count = current.session.ring.pop(&mut scratch);
+        if count == 0 {
+            continue;
+        }
+        idle = false;
+        let analyzer = current.analyzer.as_mut().unwrap();
+        let frames = analyzer.push_mono(&scratch[..count]).unwrap_or(0);
+        if frames > 0
+            && current.session.current()
+            && current.session.revision.load(Ordering::Acquire) == current.revision
+            && current.session.ring.dropped.load(Ordering::Acquire) == current.overflow
+        {
+            current.session.output.publish(
+                analyzer.output().vowels,
+                current.session.now(),
+                current.revision,
+            );
         }
     }
 }
@@ -739,6 +760,23 @@ impl Plugin for VisemePlugin {
 }
 fn poll_visemes(mut state: ResMut<VisemeState>) {
     state.poll();
+}
+
+#[cfg(test)]
+impl VisemeState {
+    /// Test-only: expose vowel weights exactly as a live worker session would,
+    /// so consumers can be exercised without audio hardware or a profile.
+    pub fn publish_for_test(&mut self, weights: [f32; 5]) {
+        self.config.enabled = true;
+        self.applied.enabled = true;
+        if self.session.is_none() {
+            let expected = self.generation.load(Ordering::Acquire);
+            self.session = Some(Arc::new(Session::new(self.generation.clone(), expected)));
+        }
+        let session = self.session.as_ref().unwrap();
+        let revision = session.revision.load(Ordering::Acquire);
+        session.output.publish(weights, session.now(), revision);
+    }
 }
 
 #[cfg(test)]
@@ -885,6 +923,146 @@ mod tests {
             meter.level() > 0.1,
             "existing RMS remains available on unsupported analysis rate"
         );
+    }
+    #[test]
+    fn dragging_tuning_sliders_mid_speech_keeps_vowels_flowing_on_the_same_session() {
+        use crate::metered_audio::SpeechMeter;
+        use bevy::audio::Decodable;
+        let mut state = fixture_state();
+        let tap = state.begin_speech();
+        let meter = SpeechMeter::default();
+        let source = meter.buffered_with_visemes(
+            AudioSource {
+                bytes: sine_wave(16_000, 65_536).into(),
+            },
+            tap,
+        );
+        let mut decoder = source.decoder();
+        decoder.by_ref().take(4096).for_each(drop);
+        wait_until(|| {
+            state.poll();
+            state.weights().is_some()
+        });
+        let expected = state.session.as_ref().unwrap().expected;
+        // A slider drag retunes repeatedly while playback keeps delivering PCM.
+        // Each retune must come back under its own revision before the next.
+        for step in 0..8 {
+            state.config.smoothness = 0.1 + step as f32 * 0.01;
+            state.poll();
+            assert_eq!(
+                state.weights(),
+                None,
+                "pre-tuning output must not be shown under the new tuning"
+            );
+            let mut fed = 0;
+            wait_until(|| {
+                state.poll();
+                if state.weights().is_some() {
+                    return true;
+                }
+                fed += 512;
+                assert!(fed <= 4096, "vowels never resumed after retune {step}");
+                decoder.by_ref().take(512).for_each(drop);
+                std::thread::sleep(Duration::from_millis(2));
+                false
+            });
+        }
+        let session = state.session.as_ref().unwrap();
+        assert!(
+            session.current() && session.expected == expected,
+            "a tuning change must not end or replace the speech session"
+        );
+        assert!(state.weights().unwrap()[0] > 0.9);
+        assert!(state.status.contains("active"), "{}", state.status);
+    }
+    #[test]
+    fn worker_retunes_in_place_without_restarting_smoothing_from_silence() {
+        let (send, receive) = mpsc::sync_channel(4);
+        let (events, _receive_events) = mpsc::sync_channel(8);
+        let generation = Arc::new(AtomicU64::new(1));
+        let session = Arc::new(Session::new(generation, 1));
+        session.rate.store(16_000, Ordering::Release);
+        let settings = |smoothness| {
+            VisemeConfig {
+                smoothness,
+                min_volume: -5.0,
+                max_volume: -3.0,
+                ..Default::default()
+            }
+            .settings()
+            .unwrap()
+        };
+        send.send(Command::Start {
+            session: session.clone(),
+            profile: fixture_profile(),
+            settings: settings(0.0),
+        })
+        .unwrap();
+        let worker = std::thread::spawn(move || worker(receive, events));
+        for i in 0..4096 {
+            session.ring.push((i as f32 * 0.17).sin() * 0.5);
+        }
+        wait_until(|| {
+            session
+                .output
+                .snapshot(session.now(), 0)
+                .is_some_and(|w| w[0] > 0.9)
+        });
+        session.revision.store(1, Ordering::Release);
+        send.send(Command::Settings {
+            expected: 1,
+            revision: 1,
+            settings: settings(0.3),
+        })
+        .unwrap();
+        wait_until(|| !session.output.valid.load(Ordering::Acquire));
+        assert_eq!(session.output.snapshot(session.now(), 0), None);
+        // One more hop of audio: a restarted analyzer would need ~0.3 s of
+        // smoothing to reopen, whereas retuning in place stays open.
+        for i in 4096..4608 {
+            session.ring.push((i as f32 * 0.17).sin() * 0.5);
+        }
+        wait_until(|| session.output.snapshot(session.now(), 1).is_some());
+        assert!(
+            session.output.snapshot(session.now(), 1).unwrap()[0] > 0.9,
+            "{:?}",
+            session.output.snapshot(session.now(), 1)
+        );
+        session.finished.store(true, Ordering::Release);
+        drop(send);
+        worker.join().unwrap();
+    }
+    #[test]
+    fn playback_gap_ages_out_vowels_and_resumed_samples_revive_the_same_session() {
+        use crate::metered_audio::SpeechMeter;
+        use bevy::audio::Decodable;
+        let mut state = fixture_state();
+        let tap = state.begin_speech();
+        let meter = SpeechMeter::default();
+        let source = meter.buffered_with_visemes(
+            AudioSource {
+                bytes: sine_wave(16_000, 32_768).into(),
+            },
+            tap,
+        );
+        let mut decoder = source.decoder();
+        decoder.by_ref().take(4096).for_each(drop);
+        wait_until(|| {
+            state.poll();
+            state.weights().is_some()
+        });
+        std::thread::sleep(Duration::from_micros(OUTPUT_MAX_AGE_US + 50_000));
+        assert_eq!(
+            state.weights(),
+            None,
+            "a stalled stream must not hold the mouth open"
+        );
+        assert!(state.session.as_ref().is_some_and(|s| s.current()));
+        decoder.by_ref().take(4096).for_each(drop);
+        wait_until(|| {
+            state.poll();
+            state.weights().is_some()
+        });
     }
     #[test]
     fn worker_discards_overflow_and_requires_new_pcm_before_publishing() {

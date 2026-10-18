@@ -1,6 +1,7 @@
 use bevy_egui::egui;
 use waifu_studio::facts_memory::{
     CANDIDATE_TTL_SECS, FactsMemoryState, FactsRecallOutcome, MAX_CANDIDATES, RecordKind,
+    reflection::{MAX_CITED, MAX_SOURCE_CHARS, ReflectionStatus},
 };
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
@@ -36,6 +37,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             state.error = Some(e);
         }
         pending_retention(ui, state);
+        reflection_drafts(ui, state);
         ui.add(
             egui::TextEdit::multiline(&mut state.draft)
                 .hint_text("Record text (up to 1000 characters)"),
@@ -72,7 +74,12 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                     "Candidate {:?}: {}",
                     candidate.kind, candidate.text
                 ));
-                ui.label(format!("Quoted evidence: {}", candidate.evidence));
+                if candidate.kind == RecordKind::Reflection {
+                    reflection_editor(ui, state, &candidate);
+                    ui.label(format!("Cited accepted records: {}", candidate.evidence));
+                } else {
+                    ui.label(format!("Quoted evidence: {}", candidate.evidence));
+                }
                 ui.weak(format!(
                     "Turn: {:?} · pending expiry: {:?} · not used in chat until accepted",
                     candidate.turn_id, candidate.expires_at
@@ -208,11 +215,26 @@ fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
     if state.pending_saving() {
         ui.weak("Saving pending candidates…");
     }
+    let elsewhere = state.failed_pending_elsewhere();
+    if elsewhere > 0 {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            format!("Saving pending candidates failed for {elsewhere} other character(s); select them to retry."),
+        );
+    }
     if let Some(e) = state.pending_error.clone() {
         ui.colored_label(
             egui::Color32::RED,
             format!("Pending candidate file unavailable; nothing is written to it: {e}"),
         );
+        if state.pending_write_failed() {
+            ui.weak("The suggestions shown were not saved. Retry once, or stop retaining them.");
+            if ui.button("Retry saving pending candidates").clicked()
+                && let Err(e) = state.retry_pending()
+            {
+                state.error = Some(e);
+            }
+        }
         if ui
             .button("Remove pending candidate file")
             .on_hover_text("Deletes candidates.jsonl only; the accepted ledger is untouched.")
@@ -261,4 +283,115 @@ fn recall_inspector(ui: &mut egui::Ui, state: &FactsMemoryState) {
                 .on_hover_text(hit.record.to_string());
             }
         });
+}
+
+/// Manual reflection drafts: shows exactly which accepted records would be sent, needs a
+/// per-character confirmation, and only ever produces a pending candidate.
+fn reflection_drafts(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
+    egui::CollapsingHeader::new("Reflection draft (manual, opt in)")
+        .id_salt("facts-reflection")
+        .default_open(false)
+        .show(ui, |ui| {
+            let sources = state.reflection_sources();
+            let config = &mut state.reflection.config;
+            ui.weak(format!(
+                "Sends up to {} current accepted facts, preferences and questions (first {MAX_SOURCE_CHARS} \
+                 characters each, never transcripts, pending suggestions or earlier reflections) to the \
+                 endpoint below. The reply must cite at most {MAX_CITED} offered records; anything else is \
+                 rejected. The result is a pending reflection you review, edit, accept or dismiss.",
+                sources.len()
+            ));
+            ui.horizontal(|ui| {
+                ui.label("Chat completions URL");
+                ui.text_edit_singleline(&mut config.endpoint);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Model");
+                ui.text_edit_singleline(&mut config.model);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Key variable");
+                ui.text_edit_singleline(&mut config.key_env);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Session key");
+                ui.add(egui::TextEdit::singleline(&mut config.session_key).password(true))
+                    .on_hover_text("Kept in memory for this session only.");
+            });
+            egui::CollapsingHeader::new(format!("Records that would be sent ({})", sources.len()))
+                .id_salt("facts-reflection-sources")
+                .show(ui, |ui| {
+                    for source in &sources {
+                        let text: String = source.text.chars().take(MAX_SOURCE_CHARS).collect();
+                        ui.label(format!("{:?} {} · {text}", source.kind, &source.id.to_string()[..8]))
+                            .on_hover_text(source.id.to_string());
+                    }
+                });
+            let confirm_id = ui
+                .id()
+                .with(("reflection-consent", state.selected_character()));
+            let mut confirm = ui
+                .data_mut(|d| d.get_temp::<bool>(confirm_id))
+                .unwrap_or(false);
+            ui.checkbox(
+                &mut confirm,
+                "I confirm sending these records to this endpoint for one draft",
+            );
+            ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
+            let running = state.reflection.running();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        confirm && !running && !state.reflection.shutting_down() && !sources.is_empty(),
+                        egui::Button::new("Draft reflection"),
+                    )
+                    .clicked()
+                {
+                    match state.start_reflection() {
+                        // One confirmation per request.
+                        Ok(()) => ui.data_mut(|d| {
+ d.insert_temp(confirm_id, false);
+ }),
+                        Err(e) => state.error = Some(e),
+                    }
+                }
+                if ui.add_enabled(running, egui::Button::new("Cancel")).clicked() {
+                    state.reflection.cancel();
+                }
+            });
+            let status = match state.reflection.status() {
+                ReflectionStatus::Idle => "No reflection requested yet.".into(),
+                ReflectionStatus::Running => "Drafting…".into(),
+                ReflectionStatus::Proposed(_) => "Draft added below as a pending reflection.".into(),
+                ReflectionStatus::NoReflection => "The records did not support a reflection.".into(),
+                ReflectionStatus::Cancelled => "Cancelled; any late reply is discarded.".into(),
+                ReflectionStatus::Stale(e) => format!("Discarded: {e}"),
+                ReflectionStatus::Failed(e) => format!("Failed: {e}"),
+            };
+            ui.weak(status);
+        });
+}
+
+/// Rewording keeps the code-attached citations; the draft stays pending until accepted.
+fn reflection_editor(
+    ui: &mut egui::Ui,
+    state: &mut FactsMemoryState,
+    candidate: &waifu_studio::facts_memory::MemoryRecord,
+) {
+    let text_id = ui.id().with(("reflection-edit", candidate.id));
+    let mut text = ui
+        .data_mut(|d| d.get_temp::<String>(text_id))
+        .unwrap_or(candidate.text.clone());
+    ui.add(egui::TextEdit::multiline(&mut text));
+    ui.data_mut(|d| d.insert_temp(text_id, text.clone()));
+    if ui
+        .add_enabled(
+            text != candidate.text,
+            egui::Button::new("Save reflection edit"),
+        )
+        .clicked()
+        && let Err(e) = state.edit_reflection_candidate(candidate.id, &text)
+    {
+        state.error = Some(e);
+    }
 }

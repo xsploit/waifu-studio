@@ -1,5 +1,7 @@
 //! Studio chrome: conversation overlays the avatar; settings occupy an opaque full page.
 // UI-only catalogs live beside this file; declared here so main.rs stays untouched.
+#[path = "motion_decision.rs"]
+mod motion_decision;
 #[path = "motion_library.rs"]
 mod motion_library;
 #[path = "personality_catalog.rs"]
@@ -413,6 +415,21 @@ pub fn studio_ui(
                     memory.select_character(studio.library.selected);
                     crate::memory_controls::ui(ui, &mut memory);
                     group(ui, "Facts, preferences & evidence", |ui| {
+                        if ui
+                            .add_enabled(
+                                !studio.facts.reflection.running()
+                                    && !studio.facts.reflection.shutting_down(),
+                                egui::Button::new("Copy chat connection for reflection drafts"),
+                            )
+                            .on_hover_text("Copies the endpoint, model and key source. Provider routing and BYOK overrides are not copied. Review the reflection connection before requesting a draft.")
+                            .clicked()
+                            && let Some(provider) = studio.library.providers.get(studio.library.provider)
+                        {
+                            match waifu_studio::facts_memory::reflection::ReflectionConfig::from_provider(provider) {
+                                Ok(config) => studio.facts.reflection.config = config,
+                                Err(error) => studio.error = Some(error),
+                            }
+                        }
                         crate::facts_memory_controls::ui(ui, &mut studio.facts);
                     });
                     ui.separator();
@@ -1348,6 +1365,174 @@ fn motion_picker(
     picked
 }
 
+/// Categories a suggestion may pick from; locomotion and unnamed motions are left out.
+const SUGGESTED_CATEGORIES: [motion_library::MotionCategory; 6] = [
+    motion_library::MotionCategory::Greeting,
+    motion_library::MotionCategory::Talking,
+    motion_library::MotionCategory::Thinking,
+    motion_library::MotionCategory::Celebration,
+    motion_library::MotionCategory::Idle,
+    motion_library::MotionCategory::Dance,
+];
+
+enum SuggestAction {
+    Start(motion_decision::SuggestRequest),
+    Play(std::path::PathBuf),
+    Error(String),
+}
+
+/// Collapsible opt-in panel. Nothing is requested until "Suggest motion" and
+/// nothing plays until the reviewed suggestion's "Play" is pressed.
+fn motion_suggestion(
+    ui: &mut egui::Ui,
+    suggester: &mut motion_decision::MotionSuggester,
+    entries: &[motion_library::MotionEntry],
+    character: Option<(uuid::Uuid, &str)>,
+    draft: &str,
+    reply: Option<&str>,
+) -> Option<SuggestAction> {
+    let source_id = egui::Id::new("motion_suggest_use_reply");
+    let mut use_reply = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(source_id))
+        .unwrap_or(false);
+    let mut action = None;
+    egui::CollapsingHeader::new("Motion suggestion (optional)")
+        .id_salt("motion_suggest")
+        .show(ui, |ui| {
+            ui.small("Asks the Scene chat decision model to pick one of up to 16 scanned motions, or none. Runs only when you click; review the pick, then press Play.");
+            egui::ComboBox::from_id_salt("motion_suggest_source")
+                .selected_text(if use_reply { "Latest reply" } else { "Composer draft" })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut use_reply, false, "Composer draft");
+                    ui.selectable_value(&mut use_reply, true, "Latest reply");
+                });
+            let context = if use_reply { reply.unwrap_or("") } else { draft };
+            let context = motion_decision::bounded_context(context);
+            match suggester.status().clone() {
+                motion_decision::SuggestStatus::Running => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Choosing a motion…");
+                        if ui.button("Cancel").clicked() {
+                            suggester.cancel();
+                        }
+                    });
+                }
+                motion_decision::SuggestStatus::Cancelling => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Cancelling; the result will be ignored.");
+                    });
+                }
+                status => {
+                    let ready = character.is_some() && !context.is_empty();
+                    let button = ui
+                        .add_enabled(ready, egui::Button::new("Suggest motion"))
+                        .on_disabled_hover_text("Select a character and write a draft or get a reply first.");
+                    if button.clicked()
+                        && let Some((id, name)) = character
+                    {
+                        action = Some(SuggestAction::Start(motion_decision::SuggestRequest {
+                            character: id,
+                            character_name: name.to_owned(),
+                            context: context.to_owned(),
+                            catalog: motion_library::MotionCatalog::offer(
+                                entries,
+                                &SUGGESTED_CATEGORIES,
+                                motion_library::MAX_OFFERED,
+                            ),
+                        }));
+                    }
+                    match status {
+                        motion_decision::SuggestStatus::Ready(suggestion) => {
+                            if let Some(label) = &suggestion.label {
+                                ui.label(format!("Suggested: {label}"));
+                                ui.horizontal(|ui| {
+                                    if ui.button("Play suggestion").clicked() {
+                                        action = Some(
+                                            match suggester.resolve_play(
+                                                character.map(|(id, _)| id),
+                                                entries,
+                                            ) {
+                                                Ok(path) => SuggestAction::Play(path),
+                                                Err(error) => SuggestAction::Error(error),
+                                            },
+                                        );
+                                    }
+                                    if ui.button("Dismiss").clicked() {
+                                        suggester.dismiss();
+                                    }
+                                });
+                            } else {
+                                ui.label(RichText::new("No offered motion fits.").color(MUTED));
+                            }
+                        }
+                        motion_decision::SuggestStatus::Failed(error) => {
+                            ui.colored_label(ACCENT, error);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+    ui.ctx().data_mut(|d| d.insert_temp(source_id, use_reply));
+    action
+}
+
+fn suggest_motion(
+    ui: &mut egui::Ui,
+    studio: &mut Studio,
+    animation: &mut AnimationState,
+    entries: &[motion_library::MotionEntry],
+) {
+    type Shared = std::sync::Arc<std::sync::Mutex<motion_decision::MotionSuggester>>;
+    let shared = ui.ctx().data_mut(|d| {
+        d.get_temp_mut_or_default::<Shared>(egui::Id::new("motion_suggester"))
+            .clone()
+    });
+    let mut suggester = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let selected = studio.library.selected;
+    suggester.poll(selected, entries);
+    let character = selected
+        .and_then(|id| studio.library.characters.iter().find(|c| c.id == id))
+        .map(|c| (c.id, c.name.as_str()));
+    let reply = studio
+        .turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role == "assistant")
+        .map(|turn| turn.content.as_str());
+    let action = motion_suggestion(
+        ui,
+        &mut suggester,
+        entries,
+        character,
+        &studio.composer,
+        reply,
+    );
+    match action {
+        Some(SuggestAction::Start(request)) => {
+            if let Err(error) = suggester.start(&studio.library.decision, request) {
+                studio.error = Some(error);
+            }
+        }
+        Some(SuggestAction::Play(path)) => {
+            if let Err(error) = animation.load_path(path) {
+                studio.error = Some(error);
+            }
+        }
+        Some(SuggestAction::Error(error)) => studio.error = Some(error),
+        None => {}
+    }
+    if suggester.busy() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
 fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut AnimationState) {
     let rescan = ui
         .horizontal_wrapped(|ui| {
@@ -1372,6 +1557,9 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
         && let Err(error) = animation.load_path(path)
     {
         studio.error = Some(error);
+    }
+    if !entries.is_empty() {
+        suggest_motion(ui, studio, animation, &entries);
     }
     if animation.loading {
         ui.horizontal(|ui| {
@@ -3173,5 +3361,77 @@ mod composer_tests {
             picked,
             Some(std::path::PathBuf::from("/lib/sachi-vrma/rightwave1"))
         );
+    }
+
+    #[test]
+    fn suggest_motion_is_opt_in_and_plays_only_the_reviewed_scanned_entry() {
+        let entry = |label: &str| motion_library::MotionEntry {
+            group: "lib".into(),
+            label: label.into(),
+            path: std::path::PathBuf::from(format!("/lib/{label}.bvh")),
+            format: "BVH",
+        };
+        let entries = vec![entry("Wave"), entry("Idle"), entry("walk")];
+        let character = uuid::Uuid::new_v4();
+        let mut suggester = motion_decision::MotionSuggester::default();
+        let ctx = egui::Context::default();
+        style(&ctx);
+        let frame = |events, suggester: &mut motion_decision::MotionSuggester| {
+            let mut action = None;
+            let output = render(&ctx, events, |ui| {
+                suggester.poll(Some(character), &entries);
+                if let Some(a) = motion_suggestion(
+                    ui,
+                    suggester,
+                    &entries,
+                    Some((character, "Hikari")),
+                    "Hi everyone!",
+                    None,
+                ) {
+                    action = Some(a);
+                }
+            });
+            (output, action)
+        };
+        frame(vec![], &mut suggester);
+        let (output, action) = frame(vec![], &mut suggester);
+        assert!(action.is_none(), "collapsed panel requests nothing");
+        let header = text_rect(&output, "Motion suggestion (optional)").center();
+        frame(click(header), &mut suggester);
+        for _ in 0..30 {
+            frame(vec![], &mut suggester);
+        }
+        let (output, _) = frame(vec![], &mut suggester);
+        let button = text_rect(&output, "Suggest motion").center();
+        let (_, action) = frame(click(button), &mut suggester);
+        let Some(SuggestAction::Start(request)) = action else {
+            panic!("Suggest motion should start a request");
+        };
+        assert_eq!(request.context, "Hi everyone!");
+        let labels: Vec<_> = request.catalog.options().map(|o| o.label.clone()).collect();
+        assert_eq!(labels, ["Wave", "Idle"], "locomotion is not offered");
+        suggester
+            .start_with(request, |request, _| {
+                Ok(request
+                    .catalog
+                    .options()
+                    .find(|o| o.label == "Wave")
+                    .map(|o| o.id.clone()))
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while suggester.busy() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            suggester.poll(Some(character), &entries);
+        }
+        let (output, action) = frame(vec![], &mut suggester);
+        assert!(action.is_none(), "a ready suggestion never plays by itself");
+        text_rect(&output, "Suggested: Wave");
+        let play = text_rect(&output, "Play suggestion").center();
+        let (_, action) = frame(click(play), &mut suggester);
+        let Some(SuggestAction::Play(path)) = action else {
+            panic!("Play suggestion should load the motion");
+        };
+        assert_eq!(path, std::path::PathBuf::from("/lib/Wave.bvh"));
     }
 }
