@@ -222,7 +222,14 @@ fn parse_snapshot(
         } else {
             2
         };
-        (layer, client.focus_history)
+        (
+            layer,
+            if client.focus_history < 0 {
+                i64::MAX
+            } else {
+                client.focus_history
+            },
+        )
     });
     let mut surfaces: Vec<DesktopSurface> = windows
         .into_iter()
@@ -375,19 +382,22 @@ mod linux {
         )?;
         let command = {
             let mut state = shared.lock().map_err(|_| "Desktop bridge unavailable")?;
-            let command = state
-                .pending_move
-                .take()
+            let target = state.pending_move;
+            let command = target
                 .and_then(|target| move_command(target, parsed.own.as_ref()?, &parsed.snapshot));
             state.snapshot = Some((parsed.snapshot, Instant::now()));
             state.own = parsed.own;
             state.error = None;
-            command
+            (target, command)
         };
-        if let Some(command) = command {
+        if let (target, Some(command)) = command {
             let reply = request(socket, &command)?;
             if reply.trim() != "ok" {
                 return Err("Hyprland refused to move the companion window".into());
+            }
+            let mut state = shared.lock().map_err(|_| "Desktop bridge unavailable")?;
+            if state.pending_move == target {
+                state.pending_move = None;
             }
         }
         Ok(())
@@ -429,9 +439,8 @@ mod linux {
                         if let Err(error) = poll(&socket, pid, &title, &worker_shared)
                             && let Ok(mut state) = worker_shared.lock()
                         {
-                            state.snapshot = None;
-                            state.own = None;
-                            state.pending_move = None;
+                            // Preserve the last good geometry for SNAPSHOT_TTL and
+                            // retry queued moves after a transient poll failure.
                             state.error = Some(error);
                         }
                         std::thread::sleep(POLL_INTERVAL.saturating_sub(started.elapsed()));
@@ -446,15 +455,15 @@ mod linux {
                 .shared
                 .lock()
                 .map_err(|_| "Desktop bridge unavailable")?;
-            if let Some(error) = &state.error {
-                return Err(error.clone());
-            }
             match &state.snapshot {
                 Some((snapshot, at)) if at.elapsed() <= SNAPSHOT_TTL => Ok(snapshot.clone()),
                 Some(_) => {
                     Err("Hyprland geometry snapshot expired; window sitting is paused".into())
                 }
-                None => Err("Waiting for the first Hyprland geometry snapshot".into()),
+                None => Err(state
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Waiting for the first Hyprland geometry snapshot".into())),
             }
         }
 
@@ -572,6 +581,20 @@ mod tests {
     }
 
     #[test]
+    fn never_focused_windows_sort_below_focused_windows() {
+        let clients = format!(
+            "[{},{}]",
+            client("0x1", [0, 30], [100, 100], 1, r#""focusHistoryID":-1"#),
+            client("0x2", [0, 30], [100, 100], 1, r#""focusHistoryID":0"#)
+        );
+        let parsed = parse(&clients).unwrap();
+        assert_eq!(
+            parsed.snapshot.surfaces[0].id,
+            SurfaceId::Window(surface_id("0x2"))
+        );
+    }
+
+    #[test]
     fn only_visible_workspace_windows_are_stacked_fullscreen_floating_tiled() {
         let clients = format!(
             "[{},{},{},{},{},{}]",
@@ -672,6 +695,8 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let commands = Arc::new(Mutex::new(Vec::<String>::new()));
         let own_client = own(true).replace("4242", &std::process::id().to_string());
+        let fail_next = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fail_worker = Arc::clone(&fail_next);
         let log = Arc::clone(&commands);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -682,6 +707,9 @@ mod tests {
                 let reply = match command.as_str() {
                     "j/version" => r#"{"tag":"v0.50.0"}"#.to_string(),
                     "j/monitors" => MONITORS.to_string(),
+                    "j/clients" if fail_worker.swap(false, std::sync::atomic::Ordering::SeqCst) => {
+                        "garbage".to_string()
+                    }
                     "j/clients" => format!("[{own_client}]"),
                     "j/cursorpos" => r#"{"x":1,"y":2}"#.to_string(),
                     _ => "ok".to_string(),
@@ -701,6 +729,7 @@ mod tests {
         };
         assert_eq!(snapshot.cursor, Vec2::new(1., 2.));
         assert!(snapshot.own_window_rect.is_some());
+        fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
         bridge.request_move(Vec2::new(40., 50.)).unwrap();
         let expected = "dispatch movewindowpixel exact 40 50,address:0xabc";
         while !commands.lock().unwrap().iter().any(|c| c == expected) {

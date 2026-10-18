@@ -328,8 +328,8 @@ fn apply_gaze(
     parents: Query<&ChildOf>,
     rests: Query<&HumanoidRestTransform>,
     mut transforms: Query<&mut Transform>,
-    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    cameras: Query<&Camera, With<crate::visuals::VisualCamera>>,
+    windows: Query<(Entity, &Window), With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &bevy::camera::RenderTarget), With<crate::visuals::VisualCamera>>,
 ) {
     let root = avatar.as_ref().and_then(|avatar| avatar.active);
     let config = state.config.sanitized();
@@ -396,12 +396,15 @@ fn apply_gaze(
     }
     let pointer = (config.target == GazeTarget::Pointer)
         .then(|| {
-            let window = windows.single().ok()?;
+            let (primary, window) = windows.single().ok()?;
             let cursor = window.cursor_position()?;
             cameras
                 .iter()
-                .filter(|camera| camera.is_active)
-                .find_map(|camera| pointer_target(cursor, camera.logical_viewport_rect()?))
+                .filter(|(camera, target)| camera.is_active && matches!(target,
+                    bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Primary))
+                    || camera.is_active && matches!(target,
+                    bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Entity(entity)) if *entity == primary))
+                .find_map(|(camera, _)| pointer_target(cursor, camera.logical_viewport_rect()?))
         })
         .flatten();
     let offsets = cache.motion.sample(&config, time.delta_secs(), pointer);

@@ -51,3 +51,10 @@ Settings occupy an opaque full page beside navigation, with dropdowns for compan
 - A bounded actual Vercel request streamed exact OK, and Fish authenticated read-only voice listing returned HTTP 200. Live Fish/Vercel pipeline timing results are in benchmarks/RESULTS.md; they do not establish speaker/audio-device acceptance, every Fish feature, live embeddings/STT/MCP, real agent tasks or SSH operation.
 - No current claim of headset support, universal avatar compatibility, long-duration leak freedom, release performance or fully tested desktop input behavior is made.
 - See [README.md](README.md) for operation, [VALIDATION.md](VALIDATION.md) for the current test receipt, and the customization/memory/decision/T3 research documents for proposed work. Research descriptions are not shipped-feature receipts.
+
+
+### Integration update — 2026-10-18
+
+Buffered and HTTP WAV single-character replies now speak sentence groups during LLM streaming. HTTP supports bounded two-request prefetch with ordered delivery; scene replies also emit filtered speech groups before completion. Timestamp SSE remains unchanged. Offline tests validate these paths, not a new latency result.
+
+Facts memory now rejects conservative filler-only duplicates and prunes expired correction trees on later saves, with an expiry tooltip explaining permanence. Fable's RGB disable, primary-window gaze, and Hyprland transient recovery/focus-sort findings are fixed. 471 tests and warnings-denied clippy pass; runtime/audio acceptance remains open.

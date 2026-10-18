@@ -1,5 +1,5 @@
-pub mod data;
 mod color_correction;
+pub mod data;
 pub mod desktop_interaction;
 pub mod desktop_platform;
 pub mod inspect;

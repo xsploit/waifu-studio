@@ -43,7 +43,10 @@ impl Plugin for ColorCorrectionPlugin {
         render.add_systems(RenderStartup, prepare);
         render.add_systems(
             Core3d,
-            apply.in_set(Core3dSystems::PostProcess).before(tonemapping),
+            apply
+                .in_set(Core3dSystems::PostProcess)
+                .before(bevy::post_process::bloom::bloom)
+                .before(tonemapping),
         );
     }
 }
@@ -97,7 +100,7 @@ fn prepare(
 }
 
 fn apply(
-    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<ColorCorrection>)>,
+    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<ColorCorrection>), With<ColorCorrection>>,
     pipeline: Option<Res<CorrectionPipeline>>,
     cache: Res<PipelineCache>,
     uniforms: Res<ComponentUniforms<ColorCorrection>>,

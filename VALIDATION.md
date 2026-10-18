@@ -177,3 +177,12 @@ Recorded16kHz mono PCM was transcribed through Fish base, Fish Pro, Vercel Fish 
 The product video contains1139 actual offscreen frames at15fps,1280×832 with title bands, and75.933s of app footage/Fish narration. The same production metered decoder consumes narration samples to drive mouth movement; no audio device opens. Full H.264/AAC decoding passed, all six chapter views were visually inspected, and no desktop-input mechanism was used. Physical desktop interaction and perceived lip-sync/audio quality remain unaccepted.
 
 New automated coverage checks final SSE routing metadata without duplicate text, invalid narration/duration rejection before frame output, and preservation of existing recording files. The source-only Opus architecture and latency reports remain reviews and proposals, not proof of implemented brain features.
+
+
+## 2026-10-18 integrated speech, memory and review fixes
+
+All-target offline tests pass: 382 library, 83 app and 6 integration tests (471 total). All-target clippy with warnings denied passes. This supersedes the earlier statement that HTTP waits for a full reply: buffered and HTTP WAV reply speech now chunk during LLM streaming, with bounded two-request HTTP prefetch and ordered delivery. Scene replies emit bounded filtered sentence groups before model completion. SSE is unchanged. These paths have fake-server ordering, cancellation and metadata tests; no new live latency or physical audio acceptance is claimed.
+
+Facts memory conservatively deduplicates filler-only variants, retaining added qualifiers, locations, ingredients, numbers and negation. Saving prunes fully expired correction trees while preserving live corrections and their evidence; Expire now explains the later permanent prune. Legacy near-duplicate files still load. All 32 facts-memory tests pass.
+
+Fable review fixes preserve recent Hyprland geometry and queued moves over transient failures, sort never-focused windows below focused peers, stop RGB correction when its extracted component is removed, order correction before bloom, and restrict pointer gaze to primary-window cameras. Fake-socket and fixture checks pass; no real Hyprland or new GPU/interactive acceptance is claimed. Chromatic-aberration relative ordering remains unpinned because its system is private upstream.
