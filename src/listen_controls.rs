@@ -108,6 +108,23 @@ pub fn ui(
             .logarithmic(true)
             .text("Energy VAD threshold"),
     );
+    egui::ComboBox::from_id_salt("microphone-endpoint-delay")
+        .selected_text(match state.config.trailing_silence_ms {
+            400 => "Fast · 400 ms silence",
+            800 => "Balanced · 800 ms silence",
+            1200 => "Patient · 1200 ms silence",
+            _ => "Custom silence delay",
+        })
+        .show_ui(ui, |ui| {
+            for (delay, label) in [
+                (400, "Fast · 400 ms"),
+                (800, "Balanced · 800 ms"),
+                (1200, "Patient · 1200 ms"),
+            ] {
+                ui.selectable_value(&mut state.config.trailing_silence_ms, delay, label);
+            }
+        });
+    ui.small("Shorter silence starts transcription sooner, but may stop during a pause in your sentence.");
     ui.add(
         egui::Slider::new(&mut state.config.trailing_silence_ms, 200..=5000)
             .text("Trailing silence ms"),

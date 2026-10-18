@@ -19,6 +19,35 @@ use std::{
 const RATE: usize = 16_000;
 const MAX_SAMPLES: usize = RATE * 30;
 
+/// One loaded model per microphone state. A changed configuration evicts it;
+/// a failed replacement never falls back to a model from the old configuration.
+struct VadCache<T> {
+    entry: Option<(String, String, T)>,
+}
+impl<T> Default for VadCache<T> {
+    fn default() -> Self {
+        Self { entry: None }
+    }
+}
+impl<T> VadCache<T> {
+    fn get_or_load(
+        &mut self,
+        model: &str,
+        runtime: &str,
+        load: impl FnOnce(&str, &str) -> Result<T, String>,
+    ) -> Result<&mut T, String> {
+        if !self
+            .entry
+            .as_ref()
+            .is_some_and(|(m, r, _)| m == model && r == runtime)
+        {
+            self.entry = None;
+            self.entry = Some((model.into(), runtime.into(), load(model, runtime)?));
+        }
+        Ok(&mut self.entry.as_mut().expect("model loaded").2)
+    }
+}
+
 // Keep-alive survives conversational pauses; auth remains request-scoped.
 fn transcription_client() -> Result<&'static reqwest::blocking::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
@@ -121,6 +150,7 @@ impl ListenConfig {
 /// Receiver is mutex-wrapped so this state can be a Bevy resource.
 #[derive(bevy::prelude::Resource)]
 pub struct ListeningState {
+    vad_cache: Arc<Mutex<VadCache<crate::silero::SileroVad>>>,
     pub config: ListenConfig,
     /// Session-only credential; never part of serialized config.
     pub session_key: String,
@@ -137,6 +167,7 @@ impl Default for ListeningState {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
+            vad_cache: Arc::new(Mutex::new(VadCache::default())),
             config: ListenConfig::default(),
             session_key: String::new(),
             status: "Microphone idle".into(),
@@ -183,6 +214,7 @@ impl ListeningState {
             return;
         }
         let vad_status = self.vad_status.clone();
+        let vad_cache = self.vad_cache.clone();
         self.busy.store(true, Ordering::SeqCst);
         self.stop.store(false, Ordering::SeqCst);
         let id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -198,8 +230,15 @@ impl ListeningState {
             "Recording; speech followed by silence stops automatically (30 s maximum)".into();
         std::thread::spawn(move || {
             let cancelled = || generation.load(Ordering::SeqCst) != id;
-            let result = capture(&config, &stop, &recording, &cancelled, &vad_status)
-                .and_then(|samples| transcribe(&config, &wav(&samples), Some(&key), &cancelled));
+            let result = capture(
+                &config,
+                &stop,
+                &recording,
+                &cancelled,
+                &vad_status,
+                &vad_cache,
+            )
+            .and_then(|samples| transcribe(&config, &wav(&samples), Some(&key), &cancelled));
             recording.store(false, Ordering::SeqCst);
             if !cancelled() {
                 let _ = tx.send((id, result));
@@ -318,10 +357,19 @@ fn capture(
     recording: &AtomicBool,
     cancelled: &impl Fn() -> bool,
     vad_status: &Mutex<String>,
+    vad_cache: &Mutex<VadCache<crate::silero::SileroVad>>,
 ) -> Result<Vec<i16>, String> {
+    let mut cache = vad_cache
+        .lock()
+        .map_err(|_| "Silero session cache failed")?;
     let mut silero = if c.silero_enabled {
-        match crate::silero::SileroVad::load(&c.silero_model, &c.silero_runtime) {
+        match cache.get_or_load(
+            &c.silero_model,
+            &c.silero_runtime,
+            crate::silero::SileroVad::load,
+        ) {
             Ok(model) => {
+                model.reset();
                 if let Ok(mut status) = vad_status.lock() {
                     *status = "Silero CPU VAD active (16 kHz)".into();
                 }
@@ -395,6 +443,7 @@ fn capture(
     stream.play().map_err(|_| "Cannot start microphone")?;
     recording.store(true, Ordering::SeqCst);
     let started = std::time::Instant::now();
+    let mut silero_failed = false;
     while !stop.load(Ordering::SeqCst)
         && !cancelled()
         && !failed.load(Ordering::SeqCst)
@@ -428,6 +477,7 @@ fn capture(
                     d.neural = false;
                     d.silence = 0;
                     silero = None;
+                    silero_failed = true;
                     if let Ok(mut status) = vad_status.lock() {
                         *status = format!("Energy VAD fallback: {error}");
                     }
@@ -443,6 +493,9 @@ fn capture(
         std::thread::sleep(Duration::from_millis(20));
     }
     drop(stream);
+    if silero_failed {
+        cache.entry = None;
+    }
     recording.store(false, Ordering::SeqCst);
     if cancelled() {
         return Err("Recording cancelled".into());
@@ -635,6 +688,39 @@ fn clean_fish_transcript(text: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vad_session_reuse_is_scoped_to_configuration_and_failed_replacements_evict() {
+        use std::cell::Cell;
+        let loads = Cell::new(0);
+        let mut cache = super::VadCache::default();
+        let load = |_: &str, _: &str| {
+            loads.set(loads.get() + 1);
+            Ok::<_, String>(loads.get())
+        };
+        assert_eq!(*cache.get_or_load("model-a", "runtime-a", load).unwrap(), 1);
+        assert_eq!(*cache.get_or_load("model-a", "runtime-a", load).unwrap(), 1);
+        assert_eq!(loads.get(), 1, "the session survives successive recordings");
+        assert_eq!(*cache.get_or_load("model-b", "runtime-a", load).unwrap(), 2);
+        assert_eq!(*cache.get_or_load("model-b", "runtime-b", load).unwrap(), 3);
+        assert!(
+            cache
+                .get_or_load("broken", "runtime-b", |_, _| Err("bad model".into()))
+                .is_err()
+        );
+        assert!(
+            cache.entry.is_none(),
+            "never reuse the previous model after a failed replacement"
+        );
+        assert_eq!(*cache.get_or_load("model-b", "runtime-b", load).unwrap(), 4);
+        let mut independent = super::VadCache::default();
+        assert_eq!(
+            *independent
+                .get_or_load("model-b", "runtime-b", load)
+                .unwrap(),
+            5
+        );
+    }
+
     use super::*;
     #[test]
     fn neural_mode_callback_only_buffers_and_respects_recording_bound() {

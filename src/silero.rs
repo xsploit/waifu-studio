@@ -49,6 +49,12 @@ pub struct SileroVad {
     context: [f32; 64],
 }
 impl SileroVad {
+    /// Start an independent utterance without rebuilding the ONNX session.
+    pub fn reset(&mut self) {
+        self.state.fill(0.);
+        self.context.fill(0.);
+    }
+
     pub fn load(model: &str, runtime: &str) -> Result<Self, String> {
         if !Path::new(model).is_file() || !Path::new(runtime).is_file() {
             return Err("Select existing Silero ONNX model and ONNX Runtime library files".into());
