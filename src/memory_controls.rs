@@ -1,5 +1,5 @@
 use bevy_egui::egui;
-use waifu_studio::memory::MemoryState;
+use waifu_studio::memory::{MemoryState, RecallOutcome};
 
 pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
     ui.label("Explicit local notes, stored separately for this character. Nothing is extracted automatically. Relevant and pinned notes are sent with chat only when enabled.");
@@ -71,4 +71,47 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
             });
         }
     });
+    recall_inspector(ui, state);
+}
+
+/// Read-only view of the latest lexical recall; collapsed by default.
+fn recall_inspector(ui: &mut egui::Ui, state: &MemoryState) {
+    egui::CollapsingHeader::new("Latest recall trace")
+        .id_salt("memory-recall-trace")
+        .default_open(false)
+        .show(ui, |ui| {
+            let Some(trace) = state.latest_trace() else {
+                ui.weak("No local note recall yet for this character in this session.");
+                return;
+            };
+            ui.weak(format!(
+                "{} query terms · {} bytes inserted · {} over budget · {} over 6-note limit · {} unmatched",
+                trace.query_terms,
+                trace.bytes_inserted,
+                trace.over_budget,
+                trace.over_limit,
+                trace.unmatched
+            ));
+            if trace.hits.is_empty() {
+                ui.weak("No pinned or matching notes.");
+            }
+            for hit in &trace.hits {
+                let outcome = match hit.outcome {
+                    RecallOutcome::Inserted => "sent",
+                    RecallOutcome::OverBudget => "over budget",
+                    RecallOutcome::OverLimit => "over limit",
+                };
+                let reason = if hit.pinned {
+                    "pinned".to_string()
+                } else {
+                    format!("matched: {}", hit.matched_terms.join(", "))
+                };
+                ui.label(format!(
+                    "{} · score {} · {reason} · {outcome}",
+                    &hit.note.to_string()[..8],
+                    hit.score
+                ))
+                .on_hover_text(hit.note.to_string());
+            }
+        });
 }
