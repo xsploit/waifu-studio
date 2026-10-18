@@ -1,5 +1,5 @@
 use bevy_egui::egui;
-use waifu_studio::gaze::{GazeConfig, GazeState};
+use waifu_studio::gaze::{GazeConfig, GazeState, GazeTarget};
 
 /// Returns true only when the saved gaze configuration changes.
 pub fn ui(ui: &mut egui::Ui, state: &mut GazeState) -> bool {
@@ -10,6 +10,12 @@ pub fn ui(ui: &mut egui::Ui, state: &mut GazeState) -> bool {
         "Enable gentle head and eye movement",
     );
     ui.add_enabled_ui(state.config.enabled,|ui| {
+        egui::ComboBox::from_id_salt("gaze-target")
+            .selected_text(match state.config.target { GazeTarget::Ambient => "Ambient movement", GazeTarget::Pointer => "Follow pointer in avatar view" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut state.config.target, GazeTarget::Ambient, "Ambient movement");
+                ui.selectable_value(&mut state.config.target, GazeTarget::Pointer, "Follow pointer in avatar view");
+            });
         ui.add(egui::Slider::new(&mut state.config.intensity,0.0..=1.0).text("Overall strength"));
         ui.add(egui::Slider::new(&mut state.config.head_follow,0.0..=1.0).text("Head follow"));
         ui.add(egui::Slider::new(&mut state.config.head_drift,0.0..=1.0).text("Head drift"));
@@ -20,7 +26,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut GazeState) -> bool {
     if !state.status.is_empty() {
         ui.small(&state.status);
     }
-    ui.small("Applies to the selected character. Eye movement needs eye bones; pointer tracking and expression-based eye tracking are unavailable.");
+    ui.small("Applies to the selected character. Eye movement needs eye bones. Pointer following uses the avatar viewport and returns to ambient movement outside it. Global desktop pointer and expression-based eye tracking are unavailable.");
     if ui.button("Reset gaze settings").clicked() {
         state.config = GazeConfig::default();
     }
