@@ -28,7 +28,7 @@ use waifu_studio::{
     provider::{
         self, ChatJob, GatewayRoute, ProviderConfig, ProviderEvent, ReasoningEffort, RoutingSort,
     },
-    reply_speech::HttpReplySpeech,
+    reply_speech::{HttpReplySpeech, SseReplySpeech},
     voice::{VoiceAdapter, VoiceConfig, VoiceDelivery, VoiceEvent, VoiceWorker},
     voice_stream::StreamingVoice,
 };
@@ -236,6 +236,7 @@ struct Speech {
     sse: FishLiveState,
     http: VoiceWorker,
     reply: Option<HttpReplySpeech>,
+    sse_reply: Option<SseReplySpeech>,
     last_drain: Option<Instant>,
     drain_fraction: f64,
     clip_network_done: bool,
@@ -261,9 +262,16 @@ struct Speech {
     first_flush_written: Option<u64>,
 }
 impl Speech {
-    fn new(config: VoiceConfig, http_reply: bool) -> Self {
+    fn new(config: VoiceConfig, app_reply: bool) -> Self {
         Self {
-            reply: http_reply.then(|| HttpReplySpeech::new(1, config.clone(), None)),
+            reply: (app_reply
+                && matches!(
+                    config.delivery,
+                    VoiceDelivery::Buffered | VoiceDelivery::HttpWavStream
+                ))
+            .then(|| HttpReplySpeech::new(1, config.clone(), None)),
+            sse_reply: (app_reply && config.delivery == VoiceDelivery::TimestampSse)
+                .then(|| SseReplySpeech::new(1, config.clone(), None)),
             last_drain: None,
             drain_fraction: 0.0,
             clip_network_done: false,
@@ -306,6 +314,10 @@ impl Speech {
             reply.push(text);
             return Ok(());
         }
+        if let Some(reply) = &mut self.sse_reply {
+            reply.push(text);
+            return Ok(());
+        }
         self.open()?;
         if self.config.delivery.is_websocket() {
             self.ws.push_text(text)?;
@@ -314,6 +326,10 @@ impl Speech {
     }
     fn finish_text(&mut self, text: &str) -> Result<(), String> {
         if let Some(reply) = &mut self.reply {
+            reply.finish();
+            return Ok(());
+        }
+        if let Some(reply) = &mut self.sse_reply {
             reply.finish();
             return Ok(());
         }
@@ -338,12 +354,24 @@ impl Speech {
         self.clip_started(start);
     }
     fn poll(&mut self, start: Instant) {
+        if let Some(reply) = &mut self.sse_reply
+            && let Err(error) = reply.pump(&mut self.sse, self.decoder.is_some())
+        {
+            self.error = Some(error);
+        }
         for event in self.ws.poll().into_iter().chain(self.sse.poll()) {
+            if let Some(reply) = &mut self.sse_reply
+                && let Err(error) = reply.receive(&event)
+            {
+                self.error = Some(error);
+            }
             match event {
                 LiveEvent::Playing { audio, .. } => self.ready(audio, start),
                 LiveEvent::Finished { stats, .. } => {
                     self.network_end = Some(ms(start));
-                    self.first_wire = stats.first_audio_ms;
+                    if self.first_wire.is_none() {
+                        self.first_wire = stats.first_audio_ms;
+                    }
                     self.connection_ready = stats.connection_ready_ms;
                     self.first_text_written = stats.first_text_written_ms;
                     self.first_flush_written = stats.first_flush_written_ms;
@@ -383,7 +411,7 @@ impl Speech {
             .streaming
             .as_ref()
             .map(|audio| audio.buffered_frames() * self.channels);
-        let budget = if self.reply.is_some() {
+        let budget = if self.reply.is_some() || self.sse_reply.is_some() {
             // Simulated real-time consumption preserves Studio's playback
             // backpressure without opening a device. Never consume underflow zeros.
             let now = Instant::now();
@@ -424,7 +452,7 @@ impl Speech {
             }
         }
         if clip_done {
-            if self.reply.is_some() {
+            if self.reply.is_some() || self.sse_reply.is_some() {
                 self.decoder = None;
                 self.streaming = None;
                 self.last_clip_end = Some(Instant::now());
@@ -433,6 +461,9 @@ impl Speech {
             }
         }
         if let Some(reply) = &self.reply {
+            self.done = reply.is_done() && self.decoder.is_none();
+        }
+        if let Some(reply) = &self.sse_reply {
             self.done = reply.is_done() && self.decoder.is_none();
         }
     }
@@ -482,8 +513,8 @@ impl Speech {
         json!({"first_decoded_audio_ms":self.first_ready,"first_nonzero_audio_ms":self.first_nonzero,
             "network_done_ms":network_done,
             "last_clip_finished_observed_ms":self.reply.as_ref().and(self.network_end),"audio_duration_ms":duration,
-            "speech_path":if self.reply.is_some() { "shared-studio-http-reply" } else if self.config.delivery.is_websocket() { "live-websocket-adapter" } else { "full-reply-adapter" },
-            "simulated_realtime_drain":self.reply.is_some(),
+            "speech_path":if self.reply.is_some() { "shared-studio-http-reply" } else if self.sse_reply.is_some() { "shared-studio-sse-reply" } else if self.config.delivery.is_websocket() { "live-websocket-adapter" } else { "full-reply-adapter" },
+            "simulated_realtime_drain":self.reply.is_some() || self.sse_reply.is_some(),
             "chunk_ready_ms":self.chunk_ready_ms,"simulated_chunk_gaps_ms":self.chunk_gaps_ms,
             "earliest_playback_end_ms":self.first_ready.map(|t| t+duration),
             "nonzero_samples":self.nonzero,"transport_first_wire_audio_ms":self.first_wire,
@@ -619,13 +650,8 @@ fn main() -> Result<(), String> {
                         let mut config = voice.clone();
                         config.model.clone_from(speech_model);
                         config.delivery = mode(delivery)?;
-                        let http_reply = app_path
-                            && phase == "pipeline"
-                            && matches!(
-                                config.delivery,
-                                VoiceDelivery::Buffered | VoiceDelivery::HttpWavStream
-                            );
-                        let mut speech = Speech::new(config, http_reply);
+                        let app_reply = app_path && phase == "pipeline";
+                        let mut speech = Speech::new(config, app_reply);
                         let prewarm_ms = arg("--prewarm-ms", "0")
                             .parse::<u64>()
                             .map_err(|_| "Invalid prewarm duration")?
@@ -818,7 +844,7 @@ fn main() -> Result<(), String> {
                         }
                         println!("{}", serde_json::to_string(&row).unwrap());
                         rows.push(row);
-                        let result = json!({"version":2,"method":"production adapters; configured proxy; sequential benchmark rows; no speakers; app pipeline HTTP uses shared Studio queue and simulated real-time consumption; other paths drain PCM; first audio means decoder readiness, not audible onset",
+                        let result = json!({"version":2,"method":"production adapters; configured proxy; sequential benchmark rows; no speakers; app pipeline HTTP/SSE use shared Studio queues and simulated real-time consumption; other paths drain PCM; first audio means decoder readiness, not audible onset",
                 "voice_tuning":{"latency":voice.latency,"chunk_length":voice.chunk_length,"min_chunk_length":voice.min_chunk_length,"condition_on_previous_chunks":voice.condition_on_previous_chunks},
                 "prerecorded_asr":input_audio.is_some(),"asr_backend":arg("--asr-backend","fish"),"asr_model":asr_config.model,
                 "routing":arg("--routing","default"),"routing_matrix":arg("--routing-matrix",""),"provider_only":arg("--provider-only",""),"provider_order":arg("--provider-order",""),"max_tokens":arg("--max-tokens","1024"),"reasoning":arg("--reasoning","low"),"prewarm_ms":arg("--prewarm-ms","0"),"result_path":result_path,"frame_ms":app_path.then_some(frame_ms),"rows":rows});
@@ -838,10 +864,25 @@ mod tests {
 
     #[test]
     fn app_http_path_speaks_before_finish_and_drains_every_chunk() {
+        check_sentence_path(false);
+    }
+    #[test]
+    fn app_sse_path_speaks_before_finish_and_drains_every_chunk() {
+        check_sentence_path(true);
+    }
+    fn check_sentence_path(sse: bool) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut config = VoiceConfig::preset(VoiceAdapter::FishLocal);
-        config.delivery = VoiceDelivery::HttpWavStream;
+        let mut config = VoiceConfig::preset(if sse {
+            VoiceAdapter::FishHosted
+        } else {
+            VoiceAdapter::FishLocal
+        });
+        config.delivery = if sse {
+            VoiceDelivery::TimestampSse
+        } else {
+            VoiceDelivery::HttpWavStream
+        };
         config.endpoint = format!("http://{}/v1/tts", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut requests = vec![];
@@ -891,18 +932,36 @@ mod tests {
                 wav.extend(b"data");
                 wav.extend(1600u32.to_le_bytes());
                 wav.extend((0..800).flat_map(|_| 8192i16.to_le_bytes()));
+                let (mime, body) = if sse {
+                    use base64::Engine;
+                    let payload = json!({"audio_base64":base64::engine::general_purpose::STANDARD.encode(&wav),
+                        "content":"fixture", "alignment":null, "chunk_seq":0, "chunk_audio_offset_sec":0.0});
+                    (
+                        "text/event-stream",
+                        format!("event: message\ndata: {payload}\n\n").into_bytes(),
+                    )
+                } else {
+                    ("audio/wav", wav)
+                };
                 let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    wav.len()
+                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
                 );
                 stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(&wav).unwrap();
+                stream.write_all(&body).unwrap();
             }
             requests
         });
         let first = "The first sentence is long enough to synthesize before completion.";
         let second = "The second sentence must play in full after the first sentence.";
-        let mut speech = Speech::new(config, true);
+        let mut speech = Speech::new(config.clone(), true);
+        if sse {
+            speech.sse_reply = Some(SseReplySpeech::new(
+                1,
+                config,
+                Some("offline-test-key".into()),
+            ));
+        }
         let start = Instant::now();
         speech.text(&format!("{first} {second} ")).unwrap();
         while speech.first_ready.is_none() {

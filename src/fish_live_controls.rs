@@ -13,7 +13,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FishLiveState) {
             }
         });
     ui.small(state.transport.capability());
-    ui.small("Uses hosted Fish settings and the selected model. Word timestamps time captions; they do not provide visemes.");
+    ui.small("Uses hosted Fish settings and the selected model. Word timestamps time captions; they do not provide visemes. Focused replies use sentence requests; the displayed timings restart at zero for each request.");
     ui.label(&state.status);
     ui.small("Use Stop speech above to cancel playback and the network stream.");
     if !state.words.is_empty() {

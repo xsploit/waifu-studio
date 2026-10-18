@@ -107,6 +107,7 @@ pub struct Studio {
     voice: Mutex<VoiceWorker>,
     voice_id: u64,
     pending_live: Option<PendingLiveSpeech>,
+    pending_sse: Option<waifu_studio::reply_speech::SseReplySpeech>,
     pending_ws: Option<PendingWsSpeech>,
     pending_http: Option<waifu_studio::reply_speech::HttpReplySpeech>,
     reply_speech_job: Option<Uuid>,
@@ -175,6 +176,7 @@ impl Studio {
             voice: Mutex::new(VoiceWorker::new()),
             voice_id: 0,
             pending_live: None,
+            pending_sse: None,
             pending_ws: None,
             pending_http: None,
             reply_speech_job: None,
@@ -270,6 +272,7 @@ impl Studio {
         self.scene_speech_active = false;
         self.active_voice = None;
         self.pending_live = None;
+        self.pending_sse = None;
         self.pending_ws = None;
         self.pending_http = None;
         self.voice.lock().unwrap().cancel();
@@ -487,6 +490,20 @@ impl Studio {
             self.reply_speech_job = Some(id);
             self.queue_ws();
         } else if self.library.voice.enabled
+            && self.library.voice.delivery == waifu_studio::voice::VoiceDelivery::TimestampSse
+        {
+            let config = self.library.voice.clone();
+            self.reply_speech_job = Some(id);
+            self.speech_character = self.library.selected;
+            self.voice_playback_speed = playback_speed(&config);
+            self.active_voice = Some(config.clone());
+            self.pending_sse = Some(waifu_studio::reply_speech::SseReplySpeech::new(
+                self.voice_id,
+                config.clone(),
+                self.speech_key(&config),
+            ));
+            self.voice_busy = true;
+        } else if self.library.voice.enabled
             && matches!(
                 self.library.voice.delivery,
                 waifu_studio::voice::VoiceDelivery::Buffered
@@ -515,6 +532,22 @@ impl Studio {
         }
         if let Some(request) = &mut self.pending_http {
             request.push(delta);
+        }
+        if let Some(request) = &mut self.pending_sse {
+            request.push(delta);
+        }
+    }
+    fn pump_sse(&mut self, fish: &mut waifu_studio::fish_live::FishLiveState, playing: bool) {
+        let Some(request) = self.pending_sse.as_mut() else {
+            return;
+        };
+        if let Err(error) = request.pump(fish, playing) {
+            fish.cancel();
+            self.stop_voice();
+            self.error = Some(error);
+        } else if request.is_done() && !playing {
+            self.pending_sse = None;
+            self.voice_busy = false;
         }
     }
     /// Requests upcoming chunks while worker slots and the lookahead bound allow,
@@ -561,6 +594,9 @@ impl Studio {
             request.finish();
         }
         if let Some(request) = &mut self.pending_http {
+            request.finish();
+        }
+        if let Some(request) = &mut self.pending_sse {
             request.finish();
         }
         // Remains true even after Stop speech: never re-synthesize a stopped reply.
@@ -1156,6 +1192,7 @@ pub fn poll_voice(
     ws.enabled = delivery.is_some_and(|d| d.is_websocket());
     studio.pump_ws(&mut ws);
     fish.enabled = delivery == Some(waifu_studio::voice::VoiceDelivery::TimestampSse);
+    studio.pump_sse(&mut fish, !playing.is_empty());
     if let Some(request) = studio.pending_live.take()
         && let Err(error) = fish.speak(request.id, &request.config, request.text, request.key)
     {
@@ -1165,6 +1202,17 @@ pub fn poll_voice(
     for event in fish.poll().into_iter().chain(ws.poll()) {
         use waifu_studio::fish_live::LiveEvent;
         if event.id() != studio.voice_id {
+            continue;
+        }
+        let sentence_reply = studio.pending_sse.is_some();
+        if let Some(request) = studio.pending_sse.as_mut()
+            && let Err(error) = request.receive(&event)
+        {
+            fish.cancel();
+            studio.stop_voice();
+            studio.error = Some(error);
+            meter.stop();
+            visemes.cancel();
             continue;
         }
         match event {
@@ -1178,7 +1226,9 @@ pub fn poll_voice(
                 ));
             }
             LiveEvent::Finished { .. } => {
-                studio.voice_busy = false;
+                if !sentence_reply {
+                    studio.voice_busy = false;
+                }
                 if studio.pending_ws.take().is_some() {
                     studio.error = Some("Speech stream ended before the reply finished.".into());
                 }
@@ -2092,6 +2142,9 @@ mod tests {
     }
     /// Offline Fish-compatible TTS: reports each requested text, answers with WAV.
     fn mock_tts() -> (String, mpsc::Receiver<String>) {
+        mock_tts_transport(false)
+    }
+    fn mock_tts_transport(sse: bool) -> (String, mpsc::Receiver<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1/tts", listener.local_addr().unwrap());
@@ -2126,12 +2179,26 @@ mod tests {
                 let _ = sender.send(json["text"].as_str().unwrap().to_owned());
                 let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x04\0\0\0".to_vec();
                 wav.extend_from_slice(&[0; 4]);
+                let (mime, body) = if sse {
+                    use base64::Engine;
+                    let payload = serde_json::json!({
+                        "audio_base64": base64::engine::general_purpose::STANDARD.encode(&wav),
+                        "content": "fixture", "alignment": null,
+                        "chunk_seq": 0, "chunk_audio_offset_sec": 0.0,
+                    });
+                    (
+                        "text/event-stream",
+                        format!("event: message\ndata: {payload}\n\n").into_bytes(),
+                    )
+                } else {
+                    ("audio/wav", wav)
+                };
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    wav.len()
+                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
                 );
-                let _ = stream.write_all(&wav);
+                let _ = stream.write_all(&body);
             }
         });
         (url, receiver)
@@ -2156,6 +2223,78 @@ mod tests {
         studio.library.voice.enabled = true;
         (studio, directory, requests)
     }
+    #[test]
+    fn sse_reply_requests_sentences_early_and_waits_for_playback_then_stop_discards_tail() {
+        use waifu_studio::{
+            fish_live::{FishLiveState, LiveEvent},
+            voice::{VoiceAdapter, VoiceConfig, VoiceDelivery},
+        };
+        let (mut studio, directory) = studio();
+        let (endpoint, requests) = mock_tts_transport(true);
+        studio.library.voice = VoiceConfig {
+            enabled: true,
+            endpoint,
+            delivery: VoiceDelivery::TimestampSse,
+            ..VoiceConfig::preset(VoiceAdapter::FishHosted)
+        };
+        studio.voice_key = "offline-test-key".into();
+        let id = Uuid::new_v4();
+        let first = "This first sentence is ready while the model is streaming.";
+        let second = "This second sentence waits until playback has drained.";
+        studio.begin_reply_speech(id);
+        studio.feed_reply_speech(id, &format!("{first} {second} Tail"));
+        let mut fish = FishLiveState::default();
+        studio.pump_sse(&mut fish, false);
+        assert_eq!(
+            requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            first
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut done = false;
+        let mut played = false;
+        while !done && std::time::Instant::now() < deadline {
+            for event in fish.poll() {
+                if let LiveEvent::Playing { audio, .. } = &event {
+                    use bevy::audio::Decodable;
+                    assert_eq!(audio.decoder().collect::<Vec<_>>(), vec![0., 0.]);
+                    played = true;
+                }
+                done |= matches!(event, LiveEvent::Finished { .. });
+                studio
+                    .pending_sse
+                    .as_mut()
+                    .unwrap()
+                    .receive(&event)
+                    .unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(played && done);
+        assert!(studio.voice_busy, "LLM is not finished");
+        studio.pump_sse(&mut fish, true);
+        assert!(
+            requests.try_recv().is_err(),
+            "network completion cannot cancel draining playback"
+        );
+        studio.pump_sse(&mut fish, false);
+        assert_eq!(
+            requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            second
+        );
+        studio.stop_voice();
+        fish.cancel();
+        studio.feed_reply_speech(id, "Do not speak after stop.");
+        assert!(studio.finish_reply_speech(id));
+        assert!(studio.pending_sse.is_none());
+        studio.pump_sse(&mut fish, false);
+        assert!(requests.try_recv().is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn http_reply_synthesizes_sentences_during_stream_with_one_clip_prefetched() {
         let (mut studio, directory, requests) = http_reply_studio();
@@ -2355,7 +2494,8 @@ mod tests {
         assert!(studio.pending_ws.is_some() && studio.pending_http.is_none());
         studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::TimestampSse;
         studio.begin_reply_speech(Uuid::new_v4());
-        assert!(studio.pending_http.is_none() && studio.reply_speech_job.is_none());
+        assert!(studio.pending_http.is_none() && studio.pending_sse.is_some());
+        assert!(studio.reply_speech_job.is_some());
         studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::Buffered;
         let id = Uuid::new_v4();
         studio.begin_reply_speech(id);

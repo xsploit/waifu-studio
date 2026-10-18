@@ -159,7 +159,7 @@ Other launch options:
 
 ## Measured latency
 
-How the pipeline works: LLM text **always streams**, but only the **Fish WebSocket** transport overlaps text generation with speech synthesis. HTTP and SSE modes wait for the complete reply before requesting audio.
+How the pipeline works: LLM text **always streams**. Fish WebSocket accepts incremental reply text directly. Buffered and HTTP WAV delivery synthesize sentence groups with bounded prefetch. Timestamp SSE also starts on sentence groups while text streams, but starts the next request only after the previous network stream and playback have finished; gaps between sentences remain possible. Word timings in the SSE panel belong to the current request and restart at zero for each sentence group.
 
 The table shows medians of **3 samples per cell** for Send → first *decoded* audio, measured on 2026-10-18. Settings were Low reasoning, balanced Fish latency and the production 180 ms startup buffer.
 
@@ -238,7 +238,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --package waifu-studio -- --check
 ```
 
-Latest receipt: **377 tests pass** (315 library, 56 binary, 6 inspection). Strict Clippy (`-D warnings`) and package formatting checks also pass. These are automated checks, separate from interactive desktop and audio acceptance. Targeted source reviews are in [reviews/](reviews/); they are not an exhaustive audit. Details are in [VALIDATION.md](VALIDATION.md).
+Dated test counts and exact validation commands are recorded in [VALIDATION.md](VALIDATION.md). Automated tests, strict Clippy and formatting checks are separate from interactive desktop and audio acceptance. Targeted source reviews are in [reviews/](reviews/); they are not an exhaustive audit.
 
 To render a room preview without opening a desktop window:
 

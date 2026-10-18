@@ -1,4 +1,4 @@
-//! Shared bounded HTTP reply speech scheduling for Studio and its benchmark.
+//! Shared bounded reply speech scheduling.
 //! Callers remove affect metadata before `push`; task blocks are filtered here.
 //! The caller owns playback and cancellation of the VoiceWorker turn.
 use crate::{
@@ -6,6 +6,76 @@ use crate::{
     voice::{HTTP_SLOTS, VoiceConfig, VoiceEvent, VoiceWorker},
 };
 use std::collections::VecDeque;
+
+/// Sentence-at-a-time scheduling for SSE, whose worker invalidates the previous
+/// audio generation on each request. Never advance until playback has drained.
+pub struct SseReplySpeech {
+    id: u64,
+    config: VoiceConfig,
+    key: Option<String>,
+    filter: ReplySpeechText,
+    text: String,
+    finished: bool,
+    in_flight: bool,
+}
+impl SseReplySpeech {
+    pub fn new(id: u64, config: VoiceConfig, key: Option<String>) -> Self {
+        Self {
+            id,
+            config,
+            key,
+            filter: Default::default(),
+            text: String::new(),
+            finished: false,
+            in_flight: false,
+        }
+    }
+    pub fn push(&mut self, text: &str) {
+        if !self.finished {
+            self.text.push_str(&self.filter.push(text));
+        }
+    }
+    pub fn finish(&mut self) {
+        if !self.finished {
+            self.text.push_str(&self.filter.finish());
+            self.finished = true;
+        }
+    }
+    pub fn is_done(&self) -> bool {
+        self.finished && self.text.trim().is_empty() && !self.in_flight
+    }
+    fn next_text(&mut self, playing: bool) -> Option<String> {
+        if playing || self.in_flight {
+            return None;
+        }
+        let text = take_speech_chunk(&mut self.text, self.finished)?;
+        self.in_flight = true;
+        Some(text)
+    }
+    pub fn pump(
+        &mut self,
+        fish: &mut crate::fish_live::FishLiveState,
+        playing: bool,
+    ) -> Result<(), String> {
+        if let Some(text) = self.next_text(playing) {
+            fish.speak(self.id, &self.config, text, self.key.clone())?;
+        }
+        Ok(())
+    }
+    /// Returns false for events from another speech turn.
+    pub fn receive(&mut self, event: &crate::fish_live::LiveEvent) -> Result<bool, String> {
+        use crate::fish_live::LiveEvent;
+        if event.id() != self.id {
+            return Ok(false);
+        }
+        match event {
+            LiveEvent::Finished { .. } => self.in_flight = false,
+            LiveEvent::Failed { message, .. } => return Err(message.clone()),
+            _ => {}
+        }
+        Ok(true)
+    }
+}
 
 pub struct HttpReplySpeech {
     id: u64,
@@ -147,6 +217,89 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn sse_starts_before_finish_but_never_interrupts_network_or_playback() {
+        use crate::fish_live::{LiveEvent, LiveStats};
+        let mut reply = SseReplySpeech::new(7, VoiceConfig::default(), None);
+        let first = "This first sentence is long enough to start speaking.";
+        let second = "This second sentence must wait for the first to drain.";
+        reply.push(&format!("{first} {second} Tail ```wai"));
+        reply.push("fu_tasks\nsecret\n```");
+        assert_eq!(reply.next_text(false).as_deref(), Some(first));
+        assert!(
+            !reply.finished,
+            "first sentence is available before LLM completion"
+        );
+        assert!(
+            reply.next_text(false).is_none(),
+            "network still owns the generation"
+        );
+        assert!(
+            !reply
+                .receive(&LiveEvent::Finished {
+                    id: 6,
+                    stats: LiveStats::default()
+                })
+                .unwrap()
+        );
+        assert!(reply.in_flight);
+        reply
+            .receive(&LiveEvent::Finished {
+                id: 7,
+                stats: LiveStats::default(),
+            })
+            .unwrap();
+        assert!(
+            reply.next_text(true).is_none(),
+            "network completion does not mean playback drained"
+        );
+        assert_eq!(reply.next_text(false).as_deref(), Some(second));
+        reply
+            .receive(&LiveEvent::Finished {
+                id: 7,
+                stats: LiveStats::default(),
+            })
+            .unwrap();
+        assert!(
+            reply.next_text(false).is_none(),
+            "unfinished short tail waits"
+        );
+        reply.finish();
+        reply.finish();
+        reply.push("Must not speak late text.");
+        assert_eq!(reply.next_text(false).as_deref(), Some("Tail"));
+        assert!(!reply.is_done());
+        reply
+            .receive(&LiveEvent::Finished {
+                id: 7,
+                stats: LiveStats::default(),
+            })
+            .unwrap();
+        assert!(reply.is_done());
+        assert!(reply.next_text(false).is_none());
+    }
+
+    #[test]
+    fn sse_failure_is_reported_only_for_the_owned_turn() {
+        use crate::fish_live::LiveEvent;
+        let mut reply = SseReplySpeech::new(3, VoiceConfig::default(), None);
+        assert!(
+            !reply
+                .receive(&LiveEvent::Failed {
+                    id: 2,
+                    message: "old".into()
+                })
+                .unwrap()
+        );
+        assert_eq!(
+            reply.receive(&LiveEvent::Failed {
+                id: 3,
+                message: "failed".into()
+            }),
+            Err("failed".into())
+        );
+    }
+
     #[test]
     fn stale_events_do_not_change_accounting_and_playback_holds_ready_chunks() {
         let mut reply = HttpReplySpeech::new(7, VoiceConfig::preset(VoiceAdapter::FishLocal), None);

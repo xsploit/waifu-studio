@@ -104,7 +104,7 @@ Same saved reference voice, balanced latency, chunk160/min20/conditioning on, th
 | s2.1-pro | http | 3/3 | — | — | 689 |
 | s2.1-pro | sse | 3/3 | — | — | 887 |
 
-HTTP is the fastest measured fixed-text transport for both models, while WebSocket wins the implemented whole chat pipeline by accepting LLM deltas. HTTP/SSE currently wait for the complete reply: this is a comparison of the shipped paths, not proof that a sentence-streamed HTTP implementation would lose. That needs a prefetch stage and measured playback gaps. Responses vary in text length and LLM time; three samples do not isolate a permanent backend advantage. All timings exclude the audio device.
+HTTP is the fastest measured fixed-text transport for both models, while WebSocket wins the implemented whole chat pipeline by accepting LLM deltas. At the time of this historical run, HTTP/SSE waited for the complete reply: this compares those earlier shipped paths, not the later sentence-streamed implementations. That needs a prefetch stage and measured playback gaps. Responses vary in text length and LLM time; three samples do not isolate a permanent backend advantage. All timings exclude the audio device.
 
 ## Other fast LLM candidates
 
@@ -281,7 +281,7 @@ This models frame cadence, not real render jitter or audio-device scheduling. Fi
 
 ## Shared Studio HTTP reply queue and matched WebSocket opening policy
 
-This follow-up uses the production `HttpReplySpeech` queue shared by Studio and the harness: the same task filtering, 40–300-character sentence grouping, two-request lookahead and ordered events. `--app-path` polls the real chat worker every 16 ms. WebSocket opens when text arrives, matching Studio; this differs from the eager-open historical baselines. HTTP/buffered PCM is consumed at a simulated real-time rate to preserve playback backpressure. SSE still waits for the full focused reply. No render loop or audio device is exercised.
+This follow-up uses the production `HttpReplySpeech` queue shared by Studio and the harness: the same task filtering, 40–300-character sentence grouping, two-request lookahead and ordered events. `--app-path` polls the real chat worker every 16 ms. WebSocket opens when text arrives, matching Studio; this differs from the eager-open historical baselines. HTTP/buffered PCM is consumed at a simulated real-time rate to preserve playback backpressure. In that measured run, SSE still waited for the full focused reply. No render loop or audio device is exercised.
 
 DeepSeek V4.1 Flash, Baseten-only requested routing, reasoning none, Fish Low latency; three interleaved samples per combination. All 24 rows succeeded and every chat worker closed. The gateway's actual served-provider attribution is not exposed by the app event API.
 
@@ -301,3 +301,10 @@ Raw results: [pipeline-shared-http-reply-low.json](pipeline-shared-http-reply-lo
 These short greetings yielded one HTTP chunk each. One Drama buffered reply yielded two chunks with a 16 ms simulated boundary gap. That is limited evidence about multi-chunk performance; offline held-stream tests separately verify prefetch overlap, boundedness, ordering and cancellation. `simulated_chunk_gaps_ms` is frame-observed time between draining one clip and starting the next, not an audible gap. `network_done_ms` is null on shared-queue rows because a prefetched stream can finish before it becomes the observed active decoder; `last_clip_finished_observed_ms` is observation time, not a wire timestamp. `decoded_done_ms` includes simulated playback for shared rows and fast draining for other modes, so it must not rank total pipeline latency across these paths.
 
 The JSON format is version 2 and labels each row's `speech_path`, `simulated_realtime_drain` and `ws_open_policy`. Use `--app-path` for this current pipeline scope; omit it to retain the older direct/full-reply comparison. The run uses the configured proxy and opens no speakers.
+
+
+## 2026-10-18 — SSE sentence scheduling (offline only)
+
+Focused Studio replies now use `SseReplySpeech`: the same 40–300-character sentence grouping and task-block filter, with one SSE request at a time. The next request waits for both network completion and playback drain because a new Fish SSE request invalidates the previous audio generation. No SSE prefetch or gap-free playback is claimed. Word timings remain local to each request.
+
+The pipeline harness now uses this shared SSE scheduler for `--app-path` pipeline rows, labels them `shared-studio-sse-reply`, and simulates real-time PCM consumption. Fixed-text and direct historical paths are unchanged. Existing saved JSON rows retain their original implementation and timings: **no new live latency result is claimed for sentence-streamed SSE**. A loopback test exercises two sentence requests, first audio before LLM finish, ordered full audio consumption, and simulated playback duration without opening a speaker device.
