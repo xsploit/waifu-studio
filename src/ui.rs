@@ -1555,7 +1555,7 @@ fn motion_suggestion(
                     changed = true;
                 }
                 if config.mode == ReplyMotionMode::EmotionMapped {
-                    ui.small("No request is sent. Plays your binding for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
+                    ui.small("No request is sent. Rotates through your selected motions for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
                     changed |= emotion_bindings(ui, config, entries);
                 } else {
                     ui.small("Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
@@ -1645,31 +1645,45 @@ fn motion_suggestion(
     (action, changed)
 }
 
-/// One dropdown per affect emotion, listing only auto-playable entries of the
-/// current scan. A binding whose file left the scan shows as missing and
-/// never plays.
+/// Multi-select dropdown per emotion. Stale bindings remain visible and can be
+/// removed, but only scanned non-locomotion entries are offered for new bindings.
 fn emotion_bindings(
     ui: &mut egui::Ui,
     config: &mut waifu_studio::data::ReplyMotionConfig,
     entries: &[motion_library::MotionEntry],
 ) -> bool {
     let mut changed = false;
-    caption(ui, "EMOTION BINDINGS");
+    caption(ui, "EMOTION PLAYLISTS");
+    ui.small("Check one or more motions per emotion. Eligible replies rotate in selection order; the cooldown still applies.");
     for emotion in motion_decision::EMOTIONS {
-        let index = config
+        let mut current = Vec::new();
+        for binding in config
             .emotion_bindings
             .iter()
-            .position(|binding| binding.emotion == emotion);
-        let current = index.map(|i| config.emotion_bindings[i].path.clone());
-        let text = match &current {
-            None => "None".to_owned(),
-            Some(path) => entries
+            .filter(|b| b.emotion == emotion)
+        {
+            if !current.contains(&binding.path) {
+                current.push(binding.path.clone());
+            }
+        }
+        let eligible = |path: &std::path::PathBuf| {
+            entries
                 .iter()
                 .find(|entry| &entry.path == path && entry.auto_playable())
-                .map_or_else(
-                    || "Missing from scan".to_owned(),
-                    |entry| entry.label.clone(),
-                ),
+        };
+        let missing: Vec<_> = current
+            .iter()
+            .filter(|path| eligible(path).is_none())
+            .cloned()
+            .collect();
+        let text = match current.as_slice() {
+            [] => "None".to_owned(),
+            [path] => eligible(path).map_or_else(
+                || "Missing from scan".to_owned(),
+                |entry| entry.label.clone(),
+            ),
+            _ if missing.is_empty() => format!("{} motions", current.len()),
+            _ => format!("{} motions ({} unavailable)", current.len(), missing.len()),
         };
         let mut picked = current.clone();
         ui.horizontal(|ui| {
@@ -1679,29 +1693,50 @@ fn emotion_bindings(
                 motion_decision::emotion_name(emotion),
             ))
             .selected_text(text)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut picked, None, "None");
-                for entry in entries.iter().filter(|entry| entry.auto_playable()) {
-                    ui.selectable_value(
-                        &mut picked,
-                        Some(entry.path.clone()),
-                        format!("{} / {}", entry.group, entry.label),
+                if ui.selectable_label(picked.is_empty(), "None").clicked() {
+                    picked.clear();
+                }
+                for path in &missing {
+                    let mut keep = picked.contains(path);
+                    let label = format!(
+                        "Unavailable: {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
                     );
+                    if ui.checkbox(&mut keep, label).changed() {
+                        if keep {
+                            picked.push(path.clone());
+                        } else {
+                            picked.retain(|p| p != path);
+                        }
+                    }
+                }
+                for entry in entries.iter().filter(|entry| entry.auto_playable()) {
+                    let mut checked = picked.contains(&entry.path);
+                    if ui
+                        .checkbox(&mut checked, format!("{} / {}", entry.group, entry.label))
+                        .changed()
+                    {
+                        if checked {
+                            picked.push(entry.path.clone());
+                        } else {
+                            picked.retain(|p| p != &entry.path);
+                        }
+                    }
                 }
             });
         });
         if picked != current {
             changed = true;
-            match (index, picked) {
-                (Some(i), None) => {
-                    config.emotion_bindings.remove(i);
-                }
-                (Some(i), Some(path)) => config.emotion_bindings[i].path = path,
-                (None, Some(path)) => config
-                    .emotion_bindings
-                    .push(waifu_studio::data::EmotionMotionBinding { emotion, path }),
-                (None, None) => {}
-            }
+            config
+                .emotion_bindings
+                .retain(|binding| binding.emotion != emotion);
+            config.emotion_bindings.extend(
+                picked
+                    .into_iter()
+                    .map(|path| waifu_studio::data::EmotionMotionBinding { emotion, path }),
+            );
         }
     }
     changed
@@ -3705,5 +3740,77 @@ mod composer_tests {
             panic!("Play suggestion should load the motion");
         };
         assert_eq!(path, std::path::PathBuf::from("/lib/Wave.bvh"));
+    }
+    #[test]
+    fn emotion_dropdown_keeps_multiple_choices_and_removes_unavailable_bindings() {
+        let entry = |name: &str| motion_library::MotionEntry {
+            group: "lib".into(),
+            label: name.into(),
+            path: format!("/lib/{name}.bvh").into(),
+            format: "BVH",
+        };
+        let entries = vec![entry("Wave"), entry("Idle"), entry("walk")];
+        let ctx = egui::Context::default();
+        style(&ctx);
+        let mut config = waifu_studio::data::ReplyMotionConfig::default();
+        let frame = |events, config: &mut waifu_studio::data::ReplyMotionConfig| {
+            render(&ctx, events, |ui| {
+                emotion_bindings(ui, config, &entries);
+            })
+        };
+        frame(vec![], &mut config);
+        let closed = frame(vec![], &mut config);
+        frame(click(text_rect(&closed, "None").center()), &mut config);
+        let open = frame(vec![], &mut config);
+        frame(click(text_rect(&open, "lib / Wave").center()), &mut config);
+        let open = frame(vec![], &mut config);
+        // The popup stays open after a checkbox click, so choices accumulate.
+        frame(click(text_rect(&open, "lib / Idle").center()), &mut config);
+        let open = frame(vec![], &mut config);
+        text_rect(&open, "lib / Wave");
+        assert!(!open.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("lib / walk"))));
+        assert_eq!(
+            config
+                .emotion_bindings
+                .iter()
+                .map(|b| b.path.clone())
+                .collect::<Vec<_>>(),
+            [
+                std::path::PathBuf::from("/lib/Wave.bvh"),
+                std::path::PathBuf::from("/lib/Idle.bvh")
+            ]
+        );
+        assert!(
+            config
+                .emotion_bindings
+                .iter()
+                .all(|b| b.emotion == waifu_studio::reply_affect::AffectEmotion::Neutral)
+        );
+        assert_eq!(
+            config.mode,
+            waifu_studio::data::ReplyMotionMode::Off,
+            "editing bindings never enables automatic playback"
+        );
+        frame(click(text_rect(&open, "None").center()), &mut config);
+        assert!(config.emotion_bindings.is_empty());
+        // Close the popup, then seed a missing binding and reopen it.
+        frame(click(egui::pos2(1300.0, 900.0)), &mut config);
+        config
+            .emotion_bindings
+            .push(waifu_studio::data::EmotionMotionBinding {
+                emotion: waifu_studio::reply_affect::AffectEmotion::Neutral,
+                path: "/gone/old.bvh".into(),
+            });
+        let closed = frame(vec![], &mut config);
+        frame(
+            click(text_rect(&closed, "Missing from scan").center()),
+            &mut config,
+        );
+        let open = frame(vec![], &mut config);
+        frame(
+            click(text_rect(&open, "Unavailable: old.bvh").center()),
+            &mut config,
+        );
+        assert!(config.emotion_bindings.is_empty());
     }
 }

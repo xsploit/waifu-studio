@@ -205,3 +205,16 @@ Energy endpointing requires 30 ms of sustained onset, then holds speech at 70% o
 These are offline signal/state-machine checks, not microphone-device acceptance or measured ASR accuracy gains. The causal FIR adds approximately 1.3–16 ms of group delay depending on input rate, with native 16 kHz bypassed; energy endpoint decisions also use 10 ms windows. Physical capture, noise tuning and full conversational round-trip acceptance remain open. No recording, upload or paid call was made for this slice.
 
 Final checks: 390 library + 83 app + 6 integration + 1 benchmark = 480 passing tests; all-target warnings-denied clippy, package formatting and diff whitespace checks pass. Builds used one job. A requested Fable review could not start because the orchestrator rejected dispatch at its automated causal-hop limit; no new Fable review is claimed.
+
+
+## Emotion-bound motion playlists
+
+Emotion-mapped motion now accepts multiple selected clips per emotion through one multi-select dropdown per emotion. Playback rotates deterministically in selection order, with independent positions for each emotion; duplicate, missing and locomotion paths are excluded by the current scan. Older single-binding profiles are unchanged, and multiple bindings round-trip without a schema migration. Rotation is session-only and resets when the selected character or avatar changes.
+
+Cooldown-skipped replies do not advance the playlist. Replies without same-job affect metadata or a loaded avatar play nothing, and loading an avatar later never replays an older reply. Existing manual override and import-busy guards still apply; attempts skipped by an active import are not queued. No decision request is added.
+
+Offline tests cover rotation, duplicate/missing/locomotion rejection, cooldown skips, separate emotion positions, avatar/character resets and missing-avatar behavior. An egui click test selects two checkboxes without closing the dropdown, clears the playlist, removes an unavailable binding and verifies that merely editing bindings never enables automatic mode. No live GUI/animation acceptance is claimed.
+
+Reply affect is intentionally trailing metadata. Emotion-mapped motion therefore starts after completion, not necessarily at speech onset; waiting for that metadata before speech would conflict with the first-audio latency goal. No prose-based emotion guess or extra classifier was added.
+
+Final checks: 391 library + 87 app + 6 integration + 1 benchmark = 485 passing tests; warnings-denied all-target clippy, package formatting and diff whitespace checks pass. The strengthened avatar-reset regression also passes. Builds used one job. No new external-model review or live GUI acceptance is claimed for this slice.

@@ -86,7 +86,7 @@ pub struct EmotionMotionBinding {
 pub struct ReplyMotionConfig {
     pub mode: ReplyMotionMode,
     pub cooldown_seconds: u32,
-    /// At most one binding per emotion; empty for older profiles.
+    /// Bindings form a playlist per emotion in selection order; empty for older profiles.
     pub emotion_bindings: Vec<EmotionMotionBinding>,
 }
 impl Default for ReplyMotionConfig {
@@ -744,5 +744,21 @@ mod tests {
         });
         trim_history(&mut turns);
         assert!(turns.is_empty());
+    }
+    #[test]
+    fn emotion_playlists_round_trip_multiple_bindings_in_selection_order() {
+        let config: ReplyMotionConfig = serde_json::from_str(r#"{"mode":"emotion_mapped","emotion_bindings":[{"emotion":"happy","path":"/m/Wave.bvh"},{"emotion":"happy","path":"/m/Idle.bvh"},{"emotion":"sad","path":"/m/Thinking.bvh"}]}"#).unwrap();
+        let restored: ReplyMotionConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(restored, config);
+        assert_eq!(restored.emotion_bindings.len(), 3);
+        assert_eq!(
+            restored.emotion_bindings[0].path,
+            PathBuf::from("/m/Wave.bvh")
+        );
+        assert_eq!(
+            restored.emotion_bindings[1].path,
+            PathBuf::from("/m/Idle.bvh")
+        );
     }
 }

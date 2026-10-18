@@ -434,21 +434,28 @@ pub fn job_affect(
         .map(|(_, _, emotion)| emotion)
 }
 
-/// The bound path for `emotion`, only if it is an auto-playable entry of the
-/// current scan. Never guesses from filenames.
-pub fn bound_motion(
+/// Distinct bound paths in user selection order, restricted to auto-playable
+/// entries in the current scan. Missing, duplicate and locomotion paths cannot play.
+pub fn bound_motions(
     config: &waifu_studio::data::ReplyMotionConfig,
     emotion: AffectEmotion,
     entries: &[MotionEntry],
-) -> Option<PathBuf> {
-    let binding = config
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for binding in config
         .emotion_bindings
         .iter()
-        .find(|binding| binding.emotion == emotion)?;
-    entries
-        .iter()
-        .find(|entry| entry.path == binding.path && entry.auto_playable())
-        .map(|entry| entry.path.clone())
+        .filter(|binding| binding.emotion == emotion)
+    {
+        if !paths.contains(&binding.path)
+            && entries
+                .iter()
+                .any(|entry| entry.path == binding.path && entry.auto_playable())
+        {
+            paths.push(binding.path.clone());
+        }
+    }
+    paths
 }
 
 /// What the frame wants the caller to do.
@@ -473,6 +480,8 @@ struct AutoTicket {
 #[derive(Default)]
 pub struct ReplyMotion {
     seen: Option<Uuid>,
+    playlist_owner: Option<(Option<Uuid>, Option<u64>)>,
+    last_mapped: Vec<(AffectEmotion, PathBuf)>,
     last_request: Option<std::time::Instant>,
     epoch: u64,
     pending: Option<AutoTicket>,
@@ -511,6 +520,11 @@ impl ReplyMotion {
         start: impl FnOnce(&mut MotionSuggester, SuggestRequest) -> Result<(), String>,
     ) -> Option<AutoAction> {
         use waifu_studio::data::ReplyMotionMode as Mode;
+        let owner = (selected, avatar);
+        if self.playlist_owner != Some(owner) {
+            self.playlist_owner = Some(owner);
+            self.last_mapped.clear();
+        }
         // Cancel a running pick, or drop one that finished before this frame.
         if matches!(config.mode, Mode::Off | Mode::EmotionMapped) && self.pending.take().is_some() {
             suggester.cancel();
@@ -590,13 +604,18 @@ impl ReplyMotion {
             self.note = Some("Latest reply had no affect metadata; no motion".into());
             return None;
         };
-        let Some(path) = bound_motion(config, emotion, entries) else {
+        if reply.avatar.is_none() {
+            self.note = Some("No loaded avatar; skipped the emotion motion".into());
+            return None;
+        }
+        let paths = bound_motions(config, emotion, entries);
+        if paths.is_empty() {
             self.note = Some(format!(
                 "No scanned motion bound to {}",
                 emotion_name(emotion)
             ));
             return None;
-        };
+        }
         if self
             .last_request
             .is_some_and(|last| now.duration_since(last) < cooldown(config.cooldown_seconds))
@@ -604,8 +623,27 @@ impl ReplyMotion {
             self.note = Some("Skipped a reply during the motion cooldown".into());
             return None;
         }
+        let previous = self.last_mapped.iter().find(|(kind, _)| *kind == emotion);
+        let next = previous
+            .and_then(|(_, path)| paths.iter().position(|p| p == path))
+            .map_or(0, |index| (index + 1) % paths.len());
+        let path = paths[next].clone();
+        if let Some((_, previous)) = self
+            .last_mapped
+            .iter_mut()
+            .find(|(kind, _)| *kind == emotion)
+        {
+            *previous = path.clone();
+        } else {
+            self.last_mapped.push((emotion, path.clone()));
+        }
         self.last_request = Some(now);
-        self.note = Some(format!("Played the {} binding", emotion_name(emotion)));
+        self.note = Some(format!(
+            "Selected the {} motion ({}/{})",
+            emotion_name(emotion),
+            next + 1,
+            paths.len()
+        ));
         Some(AutoAction::Play(path))
     }
 
@@ -1282,6 +1320,92 @@ mod tests {
             assert_eq!(h.settle(Some((reply, "Hello!"))), None);
             assert_eq!(h.suggester.status(), &SuggestStatus::Idle);
             assert_eq!(h.sent(), 1);
+        }
+        #[test]
+        fn emotion_playlists_rotate_distinct_eligible_paths_without_network_or_cooldown_skips() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            for file in ["missing.bvh", "walk.bvh", "joy.bvh", "joy.bvh", "Wave.bvh"] {
+                bind(&mut h, AffectEmotion::Happy, file);
+            }
+            h.affect = Some(AffectEmotion::Happy);
+            let first = Uuid::new_v4();
+            assert_eq!(
+                h.frame(Some((first, "Yay")), "Wave"),
+                Some(AutoAction::Play("/lib/test/joy.bvh".into()))
+            );
+            assert_eq!(h.frame(Some((first, "Yay")), "Wave"), None);
+            h.now += Duration::from_secs(5);
+            assert_eq!(h.frame(Some((Uuid::new_v4(), "Skipped")), "Wave"), None);
+            for file in ["Wave.bvh", "joy.bvh", "Wave.bvh"] {
+                h.now += Duration::from_secs(120);
+                assert_eq!(
+                    h.frame(Some((Uuid::new_v4(), "Again")), "Wave"),
+                    Some(AutoAction::Play(PathBuf::from(format!("/lib/test/{file}"))))
+                );
+            }
+            assert_eq!(h.sent(), 0);
+        }
+        #[test]
+        fn emotion_playlists_have_independent_positions_and_reset_for_avatar_or_character() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            bind(&mut h, AffectEmotion::Happy, "Wave.bvh");
+            bind(&mut h, AffectEmotion::Sad, "Idle.bvh");
+            for (emotion, file) in [
+                (AffectEmotion::Happy, "joy.bvh"),
+                (AffectEmotion::Sad, "Idle.bvh"),
+                (AffectEmotion::Happy, "Wave.bvh"),
+                (AffectEmotion::Happy, "joy.bvh"),
+            ] {
+                h.now += Duration::from_secs(120);
+                h.affect = Some(emotion);
+                assert_eq!(
+                    h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"),
+                    Some(AutoAction::Play(PathBuf::from(format!("/lib/test/{file}"))))
+                );
+            }
+            h.avatar = Some(99);
+            h.now += Duration::from_secs(120);
+            assert_eq!(
+                h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"),
+                Some(AutoAction::Play("/lib/test/joy.bvh".into()))
+            );
+            h.character = Uuid::new_v4();
+            h.now += Duration::from_secs(120);
+            assert_eq!(
+                h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"),
+                Some(AutoAction::Play("/lib/test/joy.bvh".into()))
+            );
+            assert_eq!(h.sent(), 0);
+        }
+        #[test]
+        fn emotion_playlists_revalidate_removed_files_and_require_a_loaded_avatar() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            bind(&mut h, AffectEmotion::Happy, "Wave.bvh");
+            h.affect = Some(AffectEmotion::Happy);
+            h.avatar = None;
+            let old = Uuid::new_v4();
+            assert_eq!(h.frame(Some((old, "Hi")), "Wave"), None);
+            h.avatar = Some(7);
+            assert_eq!(
+                h.frame(Some((old, "Hi")), "Wave"),
+                None,
+                "loading an avatar never replays an old reply"
+            );
+            assert_eq!(
+                h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"),
+                Some(AutoAction::Play("/lib/test/joy.bvh".into()))
+            );
+            h.entries.retain(|entry| !entry.path.ends_with("joy.bvh"));
+            h.now += Duration::from_secs(120);
+            assert_eq!(
+                h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"),
+                Some(AutoAction::Play("/lib/test/Wave.bvh".into()))
+            );
+            h.entries.retain(|entry| !entry.path.ends_with("Wave.bvh"));
+            h.now += Duration::from_secs(120);
+            assert_eq!(h.frame(Some((Uuid::new_v4(), "Hi")), "Wave"), None);
         }
     }
 }
