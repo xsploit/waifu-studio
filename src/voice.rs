@@ -128,6 +128,21 @@ impl VoiceConfig {
             }
         }
     }
+    /// Apply the hosted HTTP/Low tuning from the bounded pipeline comparisons.
+    /// Identity, endpoint, credentials, direction and auto-speech opt-in stay intact.
+    /// Other adapters are unchanged: these measurements do not cover them.
+    pub fn use_http_low_latency(&mut self) -> bool {
+        if self.adapter != VoiceAdapter::FishHosted {
+            return false;
+        }
+        self.delivery = VoiceDelivery::HttpWavStream;
+        self.format = "wav".into();
+        self.latency = "low".into();
+        self.chunk_length = 160;
+        self.min_chunk_length = 20;
+        self.condition_on_previous_chunks = true;
+        true
+    }
     /// Validates hosted-only generation tuning shared by every hosted transport.
     pub(crate) fn validate_hosted_tuning(&self) -> Result<(), String> {
         if self.min_chunk_length > 100 {
@@ -1110,6 +1125,56 @@ mod tests {
         assert!(!request.contains("min_chunk_length"));
         assert!(!request.contains("condition_on_previous_chunks"));
     }
+    #[test]
+    fn http_low_preset_preserves_identity_opt_in_and_unsupported_adapters() {
+        for adapter in [
+            VoiceAdapter::FishHosted,
+            VoiceAdapter::FishLocal,
+            VoiceAdapter::OpenAi,
+            VoiceAdapter::Vercel,
+        ] {
+            for enabled in [false, true] {
+                let mut config = VoiceConfig {
+                    adapter,
+                    enabled,
+                    endpoint: "https://custom.example/speech".into(),
+                    model: "drama-3".into(),
+                    reference_id: "test-reference".into(),
+                    voice: "test-voice".into(),
+                    api_key_env: "TEST_VOICE_KEY".into(),
+                    direction: "Warm".into(),
+                    speed: 1.25,
+                    format: "mp3".into(),
+                    latency: "normal".into(),
+                    delivery: VoiceDelivery::TimestampSse,
+                    chunk_length: 250,
+                    min_chunk_length: 80,
+                    condition_on_previous_chunks: false,
+                };
+                let before = serde_json::to_value(&config).unwrap();
+                assert_eq!(
+                    config.use_http_low_latency(),
+                    adapter == VoiceAdapter::FishHosted
+                );
+                let after = serde_json::to_value(&config).unwrap();
+                if adapter == VoiceAdapter::FishHosted {
+                    let mut expected = before;
+                    expected["delivery"] = serde_json::json!(VoiceDelivery::HttpWavStream);
+                    expected["format"] = serde_json::json!("wav");
+                    expected["latency"] = serde_json::json!("low");
+                    expected["chunk_length"] = serde_json::json!(160);
+                    expected["min_chunk_length"] = serde_json::json!(20);
+                    expected["condition_on_previous_chunks"] = serde_json::json!(true);
+                    assert_eq!(after, expected);
+                } else {
+                    assert_eq!(after, before);
+                }
+                config.use_http_low_latency();
+                assert_eq!(serde_json::to_value(&config).unwrap(), after);
+            }
+        }
+    }
+
     #[test]
     fn live_pipeline_migration_preserves_voice_identity_and_is_idempotent() {
         for adapter in [

@@ -159,6 +159,8 @@ Other launch options:
 
 ## Measured latency
 
+For hosted Fish, **Voice & mic → Try HTTP low latency** applies the HTTP/Low transport tuning used in the recent pipeline tests. It keeps your selected model, voice, endpoint, speed, direction and automatic-speech choice. It stops current speech before changing delivery and sends no synthesis request. This is an explicit trial preset, not a universal fastest-mode guarantee; existing profiles are not migrated automatically. **Use live speech pipeline** selects WebSocket again for hosted Fish.
+
 How the pipeline works: LLM text **always streams**. Fish WebSocket accepts incremental reply text directly. Buffered and HTTP WAV delivery synthesize sentence groups with bounded prefetch. Timestamp SSE also starts on sentence groups while text streams, but starts the next request only after the previous network stream and playback have finished; gaps between sentences remain possible. Word timings in the SSE panel belong to the current request and restart at zero for each sentence group.
 
 The table shows medians of **3 samples per cell** for Send → first *decoded* audio, measured on 2026-10-18. Settings were Low reasoning, balanced Fish latency and the production 180 ms startup buffer.

@@ -2068,6 +2068,15 @@ fn voice_settings(
         studio.library.voice.use_live_pipeline();
         studio.save();
     }
+    if studio.library.voice.adapter == VoiceAdapter::FishHosted
+        && ui.button("Try HTTP low latency")
+            .on_hover_text("Applies the HTTP/Low tuning from recent latency tests. Keeps your model, voice, speed and automatic-speech choice. Does not generate speech.")
+            .clicked()
+    {
+        studio.stop_voice();
+        studio.library.voice.use_http_low_latency();
+        studio.save();
+    }
     let voice = &mut studio.library.voice;
     if voice.adapter != VoiceAdapter::FishLocal {
         catalog.sync(
