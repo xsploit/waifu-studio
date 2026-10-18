@@ -1,5 +1,5 @@
 //! Genuine offscreen GPU room preview; never creates a desktop window.
-//! Run from the crate directory: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting]
+//! Run from the crate directory: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel]
 use bevy::{
     app::{AppExit, ScheduleRunnerPlugin},
     asset::{AssetPath, UnapprovedPathMode},
@@ -20,12 +20,14 @@ use waifu_studio::{
     desktop_pose::{DesktopPosePlugin, DesktopPoseSettings},
     loading::{AvatarLoadState, LoadAvatar, LoadStatus, VrmLoaderPlugin},
     rooms::{RoomTextures, RoomTheme, build_room_textured},
+    shaders::{ShaderPreview, ShaderPreviewPlugin},
     visuals::{VisualCamera, VisualPlugin, VisualPreset, VisualSettings, VisualState},
 };
 
 #[derive(Resource)]
 struct Capture {
     theme: RoomTheme,
+    cel: bool,
     avatar: Option<PathBuf>,
     avatar_ready_frames: u32,
     output: PathBuf,
@@ -44,7 +46,7 @@ fn main() -> AppExit {
         Some("cyan") => RoomTheme::Cyan,
         _ => {
             eprintln!(
-                "Usage: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting]"
+                "Usage: render_rooms <rose|violet|cyan> <output.png> [--frames 180] [--avatar PATH] [--sitting] [--cel]"
             );
             return AppExit::error();
         }
@@ -60,6 +62,7 @@ fn main() -> AppExit {
     let mut warmup = 180;
     let mut avatar = None;
     let mut sitting = false;
+    let mut cel = false;
     while let Some(option) = args.next() {
         match option.as_str() {
             "--frames" => {
@@ -85,6 +88,7 @@ fn main() -> AppExit {
                 };
             }
             "--sitting" => sitting = true,
+            "--cel" => cel = true,
             _ => {
                 eprintln!("Unexpected argument: {option}");
                 return AppExit::error();
@@ -104,6 +108,7 @@ fn main() -> AppExit {
     App::new()
         .insert_resource(Capture {
             theme,
+            cel,
             avatar,
             avatar_ready_frames: 0,
             output,
@@ -138,13 +143,25 @@ fn main() -> AppExit {
         .add_plugins(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
             1.0 / 60.0,
         )))
-        .add_plugins((VrmLoaderPlugin, DesktopPosePlugin, VisualPlugin))
+        .add_plugins((
+            VrmLoaderPlugin,
+            DesktopPosePlugin,
+            VisualPlugin,
+            ShaderPreviewPlugin,
+        ))
         .insert_resource(VisualState {
-            settings: VisualSettings::preset(if matches!(theme, RoomTheme::Rose) {
-                VisualPreset::SoftAnime
-            } else {
-                VisualPreset::Neon
-            }),
+            settings: {
+                let mut settings = VisualSettings::preset(if matches!(theme, RoomTheme::Rose) {
+                    VisualPreset::SoftAnime
+                } else {
+                    VisualPreset::Neon
+                });
+                if cel {
+                    settings.material =
+                        waifu_studio::anime_look::AnimeLook::Cel.apply(&settings.material);
+                }
+                settings
+            },
             suppressed: false,
         })
         .insert_resource(DesktopPoseSettings { sitting })
@@ -228,7 +245,14 @@ fn capture(
                 exit.write(AppExit::error());
                 return;
             }
-            LoadStatus::Ready if avatar.active.is_some() => state.avatar_ready_frames += 1,
+            LoadStatus::Ready if avatar.active.is_some() => {
+                if state.cel && state.avatar_ready_frames == 0 {
+                    commands
+                        .entity(avatar.active.unwrap())
+                        .insert(ShaderPreview);
+                }
+                state.avatar_ready_frames += 1;
+            }
             _ => {
                 state.avatar_ready_frames = 0;
                 return;

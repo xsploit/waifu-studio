@@ -80,6 +80,17 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
 
     let m = &mut state.settings.material;
     caption(ui, "TOON SHADING (MTOON)");
+    egui::ComboBox::from_id_salt("anime_material_look")
+        .selected_text("Apply an anime shading look…")
+        .width(ui.available_width().min(520.0))
+        .show_ui(ui, |ui| {
+            for look in waifu_studio::anime_look::AnimeLook::ALL {
+                if ui.selectable_label(false, look.label()).clicked() {
+                    *m = look.apply(m);
+                }
+            }
+        });
+    ui.small("Use the character's Toon shading mode. Crisp cel shading uses a sharp light/shadow boundary; Original restores authored MToon values. Textures are preserved.");
     ui.checkbox(
         &mut m.mtoon,
         "Tune MToon materials (WebWaifu4 \"MToon Material\")",
@@ -104,6 +115,24 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
         ui.add(egui::Slider::new(&mut m.outline_alpha, 0.0..=1.0).step_by(0.05).text("Outline alpha"));
         ui.small("Off restores each model's own values. Outline visibility is the Character outlines checkbox above; models without authored outlines keep none.");
     });
+
+    caption(ui, "AUTHORED MTOON MAPS");
+    ui.add(
+        egui::Slider::new(&mut m.matcap_strength, 0.0..=2.0)
+            .step_by(0.05)
+            .text("Matcap strength"),
+    );
+    ui.add(
+        egui::Slider::new(&mut m.normal_strength, 0.0..=2.0)
+            .step_by(0.05)
+            .text("Normal strength"),
+    );
+    ui.add(
+        egui::Slider::new(&mut m.emission_strength, 0.0..=4.0)
+            .step_by(0.05)
+            .text("Emission strength"),
+    );
+    ui.small("Multiply each model's own matcap, normal-map and emission values in Toon mode; 1.0 keeps them. Materials without that map or value are unaffected.");
 
     caption(ui, "REALISTIC SHADING (PBR)");
     ui.checkbox(&mut m.pbr, "Tune the Lit / PBR shading mode");

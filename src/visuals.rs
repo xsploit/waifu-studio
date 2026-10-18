@@ -70,6 +70,11 @@ pub struct MaterialTuning {
     pub outline_alpha: f32,
     /// WebWaifu4 `outlineThickness`; MToon width is this × 1.35, as there.
     pub outline_thickness: f32,
+    /// Multipliers on each MToon material's authored matcap factor, normal-map
+    /// scale and emissive factor. 1.0 keeps the model's values; independent of `mtoon`.
+    pub matcap_strength: f32,
+    pub normal_strength: f32,
+    pub emission_strength: f32,
     /// Apply the PBR values to the Lit / PBR shading preview.
     pub pbr: bool,
     pub roughness: f32,
@@ -95,6 +100,9 @@ impl Default for MaterialTuning {
             outline_color: [0.0; 3],
             outline_alpha: 0.8,
             outline_thickness: 0.003,
+            matcap_strength: 1.0,
+            normal_strength: 1.0,
+            emission_strength: 1.0,
             pbr: false,
             roughness: 0.45,
             metalness: 0.0,
@@ -138,6 +146,9 @@ impl MaterialTuning {
             0.02,
             defaults.outline_thickness,
         );
+        self.matcap_strength = bounded(self.matcap_strength, 0.0, 2.0, 1.0);
+        self.normal_strength = bounded(self.normal_strength, 0.0, 2.0, 1.0);
+        self.emission_strength = bounded(self.emission_strength, 0.0, 4.0, 1.0);
         self.roughness = unit(self.roughness, defaults.roughness);
         self.metalness = unit(self.metalness, defaults.metalness);
         self.specular = unit(self.specular, defaults.specular);
@@ -431,6 +442,11 @@ mod tests {
         // Settings saved before material tuning existed load unchanged.
         let old: VisualSettings = serde_json::from_str(r#"{"enabled":true,"bloom":0.1}"#).unwrap();
         assert_eq!(old.material, MaterialTuning::default());
+        let m = &old.material;
+        assert_eq!(
+            (m.matcap_strength, m.normal_strength, m.emission_strength),
+            (1.0, 1.0, 1.0)
+        );
     }
     #[test]
     fn material_tuning_is_bounded_like_webwaifu4_sliders() {
@@ -440,9 +456,15 @@ mod tests {
             outline_thickness: 1.0,
             shade_color: [2.0, f32::INFINITY, -1.0],
             roughness: 3.0,
+            matcap_strength: -1.0,
+            normal_strength: f32::NAN,
+            emission_strength: 9.0,
             ..MaterialTuning::default()
         }
         .sanitized();
+        assert_eq!(wild.matcap_strength, 0.0);
+        assert_eq!(wild.normal_strength, 1.0);
+        assert_eq!(wild.emission_strength, 4.0);
         assert_eq!(wild.shade_shift, -1.0);
         assert_eq!(wild.rim_fresnel_power, 5.0);
         assert_eq!(wild.outline_thickness, 0.02);

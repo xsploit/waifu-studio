@@ -51,7 +51,8 @@ struct VariantHandles {
     lit_original: PbrValues,
 }
 
-/// The MToon fields WebWaifu4's `mtoonTuning` overrides.
+/// The MToon fields WebWaifu4's `mtoonTuning` overrides, plus the authored map
+/// strengths that `MaterialTuning` scales.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ToonValues {
     shade: Color,
@@ -64,6 +65,9 @@ struct ToonValues {
     rim_lighting_mix: f32,
     outline: Color,
     outline_width: f32,
+    matcap: Vec3,
+    normal_scale: f32,
+    emissive: Color,
 }
 impl ToonValues {
     fn read(m: &MtoonMaterial) -> Self {
@@ -78,9 +82,29 @@ impl ToonValues {
             rim_lighting_mix: m.rim_lighting_mix_factor,
             outline: m.outline_color,
             outline_width: m.outline_width,
+            matcap: m.matcap_factor,
+            normal_scale: m.normal_map_scale,
+            emissive: m.emissive_factor,
         }
     }
-    fn tuned(t: &MaterialTuning) -> Self {
+    /// Values for `t` relative to the material's captured `original`. Map strengths
+    /// scale the authored values, so 1.0 returns them bit-for-bit.
+    fn target(t: &MaterialTuning, original: &Self) -> Self {
+        let mut v = if t.mtoon {
+            Self::tuned(t, original)
+        } else {
+            *original
+        };
+        v.matcap = original.matcap * t.matcap_strength;
+        v.normal_scale = original.normal_scale * t.normal_strength;
+        if t.emission_strength != 1.0 {
+            let e = original.emissive.to_linear();
+            let k = t.emission_strength;
+            v.emissive = LinearRgba::new(e.red * k, e.green * k, e.blue * k, e.alpha).into();
+        }
+        v
+    }
+    fn tuned(t: &MaterialTuning, original: &Self) -> Self {
         let [r, g, b] = t.outline_color;
         Self {
             shade: Color::srgb_from_array(t.shade_color),
@@ -93,6 +117,7 @@ impl ToonValues {
             rim_lighting_mix: t.rim_lighting_mix,
             outline: Color::srgba(r, g, b, t.outline_alpha),
             outline_width: t.outline_width(),
+            ..*original
         }
     }
     fn write(&self, m: &mut MtoonMaterial) {
@@ -106,6 +131,9 @@ impl ToonValues {
         m.rim_lighting_mix_factor = self.rim_lighting_mix;
         m.outline_color = self.outline;
         m.outline_width = self.outline_width;
+        m.matcap_factor = self.matcap;
+        m.normal_map_scale = self.normal_scale;
+        m.emissive_factor = self.emissive;
     }
 }
 
@@ -353,11 +381,7 @@ fn apply_material_tuning(
         if !seen.insert(Arc::as_ptr(handles)) {
             continue;
         }
-        let toon = if tuning.mtoon {
-            ToonValues::tuned(&tuning)
-        } else {
-            handles.toon_original
-        };
+        let toon = ToonValues::target(&tuning, &handles.toon_original);
         if toons
             .get(&handles.toon)
             .is_some_and(|m| ToonValues::read(m) != toon)
@@ -489,6 +513,79 @@ mod tests {
         assert_eq!(toon(&app), original);
         assert_eq!(lit(&app).perceptual_roughness, 0.8);
         assert_eq!(lit(&app).clearcoat, 0.0);
+    }
+
+    #[test]
+    fn map_strengths_scale_authored_values_and_restore_them_exactly() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .init_resource::<VisualState>()
+            .add_plugins(ShaderPreviewPlugin);
+        let original = MtoonMaterial {
+            matcap_factor: Vec3::new(0.5, 0.25, 1.0),
+            normal_map_scale: 0.8,
+            // An sRGB authored color must come back as the same variant, not a conversion.
+            emissive_factor: Color::srgb(0.4, 0.2, 0.1),
+            shading_toony_factor: 0.3,
+            ..default()
+        };
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .add(original.clone());
+        let root = app.world_mut().spawn(ShaderPreview).id();
+        app.world_mut().spawn((
+            ChildOf(root),
+            Mesh3d(Handle::default()),
+            MeshMaterial3d(handle.clone()),
+        ));
+        app.update();
+        let toon = |app: &App| {
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&handle)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(toon(&app), original, "default strengths are identity");
+        let set = |app: &mut App, f: &dyn Fn(&mut MaterialTuning)| {
+            f(&mut app
+                .world_mut()
+                .resource_mut::<VisualState>()
+                .settings
+                .material);
+            app.update();
+        };
+        set(&mut app, &|m| {
+            m.matcap_strength = 2.0;
+            m.normal_strength = 0.5;
+            m.emission_strength = 3.0;
+        });
+        let scaled = toon(&app);
+        assert_eq!(scaled.matcap_factor, Vec3::new(1.0, 0.5, 2.0));
+        assert!((scaled.normal_map_scale - 0.4).abs() < 1e-6);
+        let (e, o) = (
+            scaled.emissive_factor.to_linear(),
+            original.emissive_factor.to_linear(),
+        );
+        assert!((e.red - o.red * 3.0).abs() < 1e-6 && (e.blue - o.blue * 3.0).abs() < 1e-6);
+        assert_eq!(
+            scaled.shading_toony_factor, 0.3,
+            "strengths alone keep authored shading"
+        );
+        // The WebWaifu4 override still scales the model's maps rather than replacing them.
+        set(&mut app, &|m| m.mtoon = true);
+        let both = toon(&app);
+        assert_eq!(both.shading_toony_factor, 0.9);
+        assert_eq!(both.matcap_factor, scaled.matcap_factor);
+        assert_eq!(both.emissive_factor, scaled.emissive_factor);
+        set(&mut app, &|m| *m = MaterialTuning::default());
+        assert_eq!(
+            toon(&app),
+            original,
+            "reset restores the authored material exactly"
+        );
     }
 
     #[test]

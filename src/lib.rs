@@ -49,6 +49,7 @@ pub mod scene_chat;
 pub mod scene_roster;
 pub mod voice_library;
 
+pub mod anime_look;
 pub mod desktop_perch;
 pub mod desktop_pose;
 pub mod rooms;
