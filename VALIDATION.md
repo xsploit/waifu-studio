@@ -322,3 +322,10 @@ Opus 5.5 implementation and Fable 5.1 review dispatch became available again, bu
 Added `VoiceConfig::use_http_low_latency` and a hosted-Fish-only “Try HTTP low latency” action in Voice & mic. It selects progressive HTTP WAV, Low latency, chunk length 160, minimum 20 and previous-chunk conditioning. Model, reference, voice, endpoint, key-variable name, speed, performance direction and speech-enabled choice are preserved. Other adapters are a no-op. Clicking stops active speech, saves the selected character's settings and does not synthesize speech; no saved profile or default changes without that action. The existing live-pipeline action remains available for switching back.
 
 Checks: single-job `cargo test --lib voice::tests::` passed 16/16, including identity/opt-in preservation, adapter isolation and idempotence for the preset. Strict all-target Clippy and package formatting were checked. No live requests or GPU render were made for this slice. Button wiring was source-checked and compiled, not interactively clicked.
+
+
+## 2026-10-18 — bounded SSE cancellation admission
+
+Timestamp SSE now permits at most two blocking HTTP workers. A cancelled request still holding a connection no longer prevents one replacement request from starting. Further requests remain pending at the two-worker limit; generation checks continue to discard cancelled results and audio. This does not interrupt blocking DNS or HTTP reads: behind two stalled cancelled workers, another request can still wait for the existing 90-second request timeout.
+
+After advance build notification, single-job `cargo test --lib fish_live::` passed 7/7, including a loopback regression holding two cancelled HTTP requests, admitting the first replacement before release, bounding workers, and rejecting stale events. `git diff --check` passed. Strict all-target Clippy was attempted but encountered the concurrent, unfinished material-expression worker's dead-code errors; it is not claimed clean for this slice. No live provider, GUI, speaker or GPU check.

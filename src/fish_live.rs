@@ -1,4 +1,4 @@
-//! Hosted Fish timestamp SSE, with one cancellable worker and one incremental WAV decoder.
+//! Hosted Fish timestamp SSE, with bounded workers and one incremental WAV decoder per request.
 //! Network requests retain reqwest's environment/system proxy handling. No WebSocket transport.
 use crate::{
     voice::{VoiceAdapter, VoiceConfig},
@@ -12,7 +12,7 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -23,6 +23,7 @@ const MAX_AUDIO: usize = 32 * 1024 * 1024;
 const MAX_WORDS: usize = 12_000;
 const MAX_WORD_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8;
+const MAX_WORKERS: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LiveTransport {
@@ -105,7 +106,7 @@ pub struct FishLiveState {
     pub words: Vec<WordTiming>,
     generation: Arc<AtomicU64>,
     audio_generation: Arc<AtomicU64>,
-    busy: Arc<AtomicBool>,
+    busy: Arc<AtomicUsize>,
     mailbox: Mailbox,
     pending: Option<Request>,
 }
@@ -118,7 +119,7 @@ impl Default for FishLiveState {
             words: Vec::new(),
             generation: Arc::new(AtomicU64::new(0)),
             audio_generation: Arc::new(AtomicU64::new(0)),
-            busy: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicUsize::new(0)),
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
             pending: None,
         }
@@ -177,10 +178,19 @@ impl FishLiveState {
         self.status = "Cancelled".into();
     }
     pub fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.busy.load(Ordering::Acquire)
+        self.pending.is_some() || self.busy.load(Ordering::Acquire) != 0
     }
     fn start_pending(&mut self) {
-        if self.pending.is_none() || self.busy.swap(true, Ordering::AcqRel) {
+        // A cancelled blocking HTTP request may outlive its generation. Permit one
+        // replacement without allowing repeated cancellation to spawn unlimited workers.
+        if self.pending.is_none()
+            || self
+                .busy
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < MAX_WORKERS).then_some(active + 1)
+                })
+                .is_err()
+        {
             return;
         }
         let request = self.pending.take().unwrap();
@@ -193,10 +203,10 @@ impl FishLiveState {
         let spawned = std::thread::Builder::new()
             .name("fish-timestamp-sse".into())
             .spawn(move || {
-                struct Permit(Arc<AtomicBool>);
+                struct Permit(Arc<AtomicUsize>);
                 impl Drop for Permit {
                     fn drop(&mut self) {
-                        self.0.store(false, Ordering::Release);
+                        self.0.fetch_sub(1, Ordering::AcqRel);
                     }
                 }
                 let _permit = Permit(busy);
@@ -224,7 +234,7 @@ impl FishLiveState {
                 publish(&mailbox, &generation, expected, event);
             });
         if spawned.is_err() {
-            self.busy.store(false, Ordering::Release);
+            self.busy.fetch_sub(1, Ordering::AcqRel);
             publish(
                 &self.mailbox,
                 &self.generation,
@@ -1030,6 +1040,63 @@ mod tests {
         assert_eq!(body["min_chunk_length"], 35);
         assert_eq!(body["condition_on_previous_chunks"], false);
         assert!(body.get("streaming").is_none());
+    }
+    #[test]
+    fn cancelled_blocking_requests_allow_one_replacement_and_bound_workers() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = VoiceConfig {
+            endpoint: format!("http://{}/v1/tts", listener.local_addr().unwrap()),
+            ..Default::default()
+        };
+        let (accepted, arrivals) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                request(&mut socket);
+                held.push(socket);
+                accepted.send(()).unwrap();
+            }
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            drop(held);
+            let (mut socket, _) = listener.accept().unwrap();
+            request(&mut socket);
+            socket
+                .write_all(
+                    b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let mut state = FishLiveState::default();
+        for id in 1..=2 {
+            state
+                .speak(id, &config, "Hello".into(), Some("offline-test-key".into()))
+                .unwrap();
+            // The second request must arrive while the cancelled first is still held.
+            arrivals.recv_timeout(Duration::from_secs(3)).unwrap();
+            state.cancel();
+        }
+        state
+            .speak(3, &config, "Hello".into(), Some("offline-test-key".into()))
+            .unwrap();
+        assert_eq!(state.busy.load(Ordering::Acquire), MAX_WORKERS);
+        assert!(state.pending.is_some());
+        assert!(state.poll().is_empty());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut terminal = false;
+        while Instant::now() < deadline && (!terminal || state.is_busy()) {
+            for event in state.poll() {
+                assert_eq!(event.id(), 3, "cancelled generations must stay invisible");
+                terminal |= matches!(event, LiveEvent::Failed { .. });
+            }
+            assert!(state.busy.load(Ordering::Acquire) <= MAX_WORKERS);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(terminal);
+        assert!(!state.is_busy());
+        server.join().unwrap();
     }
     #[test]
     fn validation_mailbox_coalescing_and_cancel_reject_stale_events() {
