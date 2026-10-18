@@ -6,11 +6,31 @@
 //! provide upstream. Anatomical axes are derived from immutable imported rest
 //! transforms, including the VRM 0.x facing convention and intermediate parents.
 //! Optional pointer targeting is local to the rendered viewport; morph-only
-//! look expressions and global desktop pointer tracking are not implemented.
+//! look expressions are not implemented. A compositor bridge may supply a fresh
+//! window-relative pointer when native cursor events are unavailable.
 use crate::{animation::HumanoidRestTransform, loading::AvatarLoadState};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_vrm::vrm1::vrmc_vrm::humanoid::HumanBoneName;
+
+/// Optional compositor cursor in primary-window logical coordinates.
+/// Producers clear it outside desktop mode; readers also reject old samples.
+#[derive(Resource, Default)]
+pub struct GazePointer {
+    sample: Option<(Vec2, std::time::Instant)>,
+}
+impl GazePointer {
+    pub fn update(&mut self, cursor: Option<Vec2>, sampled_at: std::time::Instant) {
+        self.sample = cursor
+            .filter(|cursor| cursor.is_finite())
+            .map(|cursor| (cursor, sampled_at));
+    }
+
+    fn fresh(&self, now: std::time::Instant) -> Option<Vec2> {
+        let (cursor, at) = self.sample?;
+        (now.checked_duration_since(at)? <= std::time::Duration::from_millis(500)).then_some(cursor)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +116,7 @@ impl Plugin for GazePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GazeState>()
             .init_resource::<GazeCache>()
+            .init_resource::<GazePointer>()
             .add_systems(PreUpdate, clear_overlay.in_set(GazeSystems::Cleanup))
             .add_systems(
                 PostUpdate,
@@ -321,6 +342,7 @@ fn raw_overlay(model_rest: Quat, basis: Quat, normalized: Quat) -> Quat {
 #[allow(clippy::too_many_arguments)]
 fn apply_gaze(
     time: Res<Time>,
+    external_pointer: Option<Res<GazePointer>>,
     avatar: Option<Res<AvatarLoadState>>,
     mut state: ResMut<GazeState>,
     mut cache: ResMut<GazeCache>,
@@ -397,7 +419,9 @@ fn apply_gaze(
     let pointer = (config.target == GazeTarget::Pointer)
         .then(|| {
             let (primary, window) = windows.single().ok()?;
-            let cursor = window.cursor_position()?;
+            let cursor = external_pointer.as_ref()
+                .and_then(|pointer| pointer.fresh(std::time::Instant::now()))
+                .or_else(|| window.cursor_position())?;
             cameras
                 .iter()
                 .filter(|(camera, target)| camera.is_active && matches!(target,
@@ -447,6 +471,25 @@ fn apply_gaze(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compositor_pointer_expires_and_rejects_invalid_or_future_samples() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut pointer = GazePointer::default();
+        pointer.update(Some(Vec2::new(20., 30.)), now);
+        assert_eq!(
+            pointer.fresh(now + Duration::from_millis(500)),
+            Some(Vec2::new(20., 30.))
+        );
+        assert_eq!(pointer.fresh(now + Duration::from_millis(501)), None);
+        assert_eq!(pointer.fresh(now - Duration::from_millis(1)), None);
+        pointer.update(Some(Vec2::NAN), now);
+        assert_eq!(pointer.fresh(now), None);
+        pointer.update(Some(Vec2::ZERO), now);
+        pointer.update(None, now);
+        assert_eq!(pointer.fresh(now), None);
+    }
 
     #[test]
     fn pointer_uses_avatar_viewport_and_rejects_outside_or_invalid_points() {

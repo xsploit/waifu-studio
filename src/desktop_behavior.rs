@@ -152,8 +152,10 @@ fn track_desktop_pointer(
     outlines: Query<(), With<MeshMaterial3d<bevy_shader_mtoon::OutlineMaterial>>>,
     mut raycast: MeshRayCast,
     mut hit: ResMut<DesktopPointerHit>,
+    mut gaze_pointer: ResMut<waifu_studio::gaze::GazePointer>,
 ) {
     *hit = DesktopPointerHit::default();
+    gaze_pointer.update(None, Instant::now());
     if studio.mode != ViewMode::Desktop {
         return;
     }
@@ -170,6 +172,12 @@ fn track_desktop_pointer(
     let trusted = snapshot
         .as_ref()
         .and_then(|snapshot| trusted_viewport_cursor(snapshot, now));
+    gaze_pointer.update(
+        trusted,
+        snapshot
+            .as_ref()
+            .map_or(now, |snapshot| snapshot.received_at),
+    );
     let Some(cursor) = trusted.or_else(|| window.cursor_position()) else {
         return;
     };
