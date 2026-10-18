@@ -1,6 +1,6 @@
 # Waifu Studio: review and test handoff
 
-Prepared 2026-10-18. Source baseline: `2faa8ea` on `main`; working tree was clean before this document was added. Private remote: https://github.com/xsploit/waifu-studio.git.
+Updated 2026-10-18. Latest published source baseline when updated: `25519b0` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
 
 ## Prompt for the reviewing model
 
@@ -22,6 +22,8 @@ The ignored `work/integration-backlog.md` is a historical snapshot with an overr
 
 ## Environment and verification
 
+**Announce before every compilation, Cargo build/test/Clippy run, or GPU render, and announce when it finishes.** The user needs to distinguish our load from unrelated system lag. Coordinate one Cargo process across all workers; do not assume a shared build-directory lock means no other worker is active.
+
 Local checkout:
 `/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio`
 
@@ -38,7 +40,9 @@ git diff --check
 
 Do not use `cargo fmt --all`, which also touches vendored code. Existing target artifacts are reusable; do not delete them unnecessarily.
 
-Latest full-suite receipt: **499 passed** (402 library, 90 application/controller/UI, 6 integration, 1 benchmark test), with strict all-target Clippy and package formatting clean. That full run preceded the latest wording-only Fish SSE change; the latter passed six targeted SSE tests, strict Clippy, and formatting. These are prior receipts, not a fresh run by this document's author.
+Independent Muse review observed **503 passing tests** (406 library, 90 application/controller/UI, 6 integration, 1 benchmark) on its documented moving tree: `88cfbfc` plus `7f5ef9f` and material-isolation work subsequently committed as `cc1e0b2`. Preserve that scope caveat; see `reviews/muse-independent-review.md`.
+
+Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark tests and strict all-target Clippy. The hosted HTTP/Low trial preset passed all 16 voice tests, strict Clippy and package formatting. The complete suite has not been rerun after these additions. These are dated receipts, not a fresh run by this document's reader.
 
 ## Priority test matrix
 
@@ -62,26 +66,31 @@ Use isolated fixture data rather than the user's actual conversations or setting
 - `cc26ca1`: session-only per-recipient scene recall inspector; context ordered persona, history, memory, latest user. No measured cache benefit claimed.
 - `925d33d`: actual recovered WebWaifu4 Wave FBX retarget captures at 0.5 and 1.5 seconds.
 - `84ddab6`: optional transcript auto-send, default false, guarded through the normal chat path.
-- `2faa8ea`: Fish timestamp SSE wording corrected; current windowless Voice/microphone settings capture.
+- `2faa8ea`: Fish timestamp SSE wording corrected; windowless Voice/microphone settings capture.
+- `88cfbfc` / `7f5ef9f`: fresh compositor cursor input for viewport gaze during passthrough; scheduled-overlay regression.
+- `cc1e0b2`: avatar-private shader variants; imported materials remain unchanged and later loads do not compound tuning.
+- `44fe22d`: focused SSE sentence requests during LLM streaming; next request waits for network and playback drain. The app-path benchmark shares the scheduler. Word timings reset per request. No SSE prefetch.
+- `b79c149`: 18 current-pipeline measurements, all successful with chat workers closed.
+- `25519b0`: explicit hosted-Fish “Try HTTP low latency” preset preserving voice/model/opt-in; no automatic profile migration.
 
 Other implemented work includes sentence-streamed speech, HTTP prefetch, bounded Fish workers, Vercel effort validation, scene speech streaming, microphone resampling/VAD hysteresis, facts candidates/manual reflection, local emotion-to-motion mapping, motion suggestions, cel looks, pointer gaze and desktop sit/stand. Consult the matrix for each feature's acceptance level.
 
 ## Latency: what the results actually show
 
-`benchmarks/pipeline-shared-http-reply-low.json`: 24 successful live rows with workers closed, DeepSeek V4.1 Flash, Baseten-only routing requested, reasoning none, Fish Low latency, three repetitions per combination.
+`benchmarks/pipeline-sentence-sse-low.json`: 18 successful live rows with workers closed, DeepSeek V4.1 Flash, Baseten-only routing requested, reasoning none, Fish Low latency, three repetitions per combination, current app-path queues at `44fe22d`.
 
 | Fish model | Delivery | Median TTFT (ms) | Median first decoded audio (ms) |
 |---|---|---:|---:|
-| drama-3 | WebSocket | 595 | 1624 |
-| drama-3 | HTTP | 322 | 1385 |
-| drama-3 | timestamp SSE | 626 | 1559 |
-| drama-3 | buffered | 627 | 1965 |
-| s2.1-pro | WebSocket | 450 | 1559 |
-| s2.1-pro | HTTP | 338 | 1336 |
-| s2.1-pro | timestamp SSE | 290 | 1673 |
-| s2.1-pro | buffered | 515 | 3075 |
+| drama-3 | WebSocket | 354 | 1496 |
+| drama-3 | HTTP | 290 | 981 |
+| drama-3 | sentence SSE | 804 | 1656 |
+| s2.1-pro | WebSocket | 322 | 1479 |
+| s2.1-pro | HTTP | 563 | 1270 |
+| s2.1-pro | sentence SSE | 547 | 1400 |
 
-HTTP won these small samples; different LLM TTFTs confound a general transport ranking. This is decoded audio with simulated playback drain, **not physical speaker onset**. Most replies used one chunk, so these results do not establish prefetch-gap quality. The requested 500–700 ms target remains unmet. Earlier ASR results used prerecorded uploads, not live microphone acceptance.
+HTTP won these small samples; different LLM TTFTs and reply text confound a general transport ranking. Three observed SSE chunk gaps were 723–788 ms; one HTTP-prefetched boundary was 16 ms. Most other rows used one chunk, so this is limited evidence. This is decoded audio with simulated playback drain for HTTP/SSE, **not physical speaker onset**. WebSocket drains quickly, so total decoded completion times cannot rank playback completion. The requested 500–700 ms target remains unmet. Earlier ASR results used prerecorded uploads, not live microphone acceptance.
+
+Historical buffered and earlier full-reply SSE timings remain in `benchmarks/RESULTS.md`. Do not relabel old JSON rows as measurements of current sentence scheduling.
 
 ## Safe visual checks
 
