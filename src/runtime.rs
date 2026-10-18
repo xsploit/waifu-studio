@@ -93,16 +93,12 @@ fn pace_frames(
     windows: Query<&Window>,
     studio: Res<Studio>,
     settings: Res<DesktopSettings>,
+    playing: Query<(), With<crate::studio::SpokenAudio>>,
     mut last: Local<Option<Instant>>,
 ) {
     let focused = windows.iter().any(|window| window.focused);
-    let rate = if focused {
-        settings.focused_fps as f64
-    } else if studio.mode == ViewMode::Desktop {
-        settings.overlay_fps as f64
-    } else {
-        settings.background_fps as f64
-    };
+    let active = studio.job.is_some() || studio.voice_busy || !playing.is_empty();
+    let rate = polling_rate(&settings, focused, studio.mode, active) as f64;
     let interval = Duration::from_secs_f64(1.0 / rate);
     if let Some(previous) = *last
         && let Some(remaining) = interval.checked_sub(previous.elapsed())
@@ -112,23 +108,36 @@ fn pace_frames(
     *last = Some(Instant::now());
 }
 
+/// Keep streamed text, audio startup and lip sync responsive while a turn is
+/// active even when the companion is unfocused; idle power caps stay intact.
+fn polling_rate(settings: &DesktopSettings, focused: bool, mode: ViewMode, active: bool) -> u32 {
+    if active {
+        settings.focused_fps.max(60)
+    } else if focused {
+        settings.focused_fps
+    } else if mode == ViewMode::Desktop {
+        settings.overlay_fps
+    } else {
+        settings.background_fps
+    }
+}
+
 fn frame_cadence(
     studio: Res<Studio>,
     desktop: Res<DesktopSettings>,
+    playing: Query<(), With<crate::studio::SpokenAudio>>,
     mut settings: ResMut<WinitSettings>,
 ) {
-    let focused =
-        UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / desktop.focused_fps as f64));
+    let active = studio.job.is_some() || studio.voice_busy || !playing.is_empty();
+    let focused = UpdateMode::reactive_low_power(Duration::from_secs_f64(
+        1.0 / polling_rate(&desktop, true, studio.mode, active) as f64,
+    ));
     if settings.focused_mode != focused {
         settings.focused_mode = focused;
     }
     // Overlay animation and spring physics keep ticking when clickthrough means
     // the main window cannot receive focus. Network/audio workers remain async.
-    let rate = if studio.mode == ViewMode::Desktop {
-        desktop.overlay_fps as f64
-    } else {
-        desktop.background_fps as f64
-    };
+    let rate = polling_rate(&desktop, false, studio.mode, active) as f64;
     let mode = UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / rate));
     if settings.unfocused_mode != mode {
         settings.unfocused_mode = mode;
@@ -965,6 +974,23 @@ fn frame_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_turns_keep_fast_polling_and_idle_restores_power_caps() {
+        let mut settings = DesktopSettings::default();
+        settings.focused_fps = 30;
+        settings.overlay_fps = 20;
+        settings.background_fps = 5;
+        for mode in [ViewMode::Studio, ViewMode::Desktop] {
+            assert_eq!(polling_rate(&settings, false, mode, true), 60);
+            assert_eq!(polling_rate(&settings, true, mode, true), 60);
+        }
+        assert_eq!(polling_rate(&settings, false, ViewMode::Studio, false), 5);
+        assert_eq!(polling_rate(&settings, false, ViewMode::Desktop, false), 20);
+        assert_eq!(polling_rate(&settings, true, ViewMode::Studio, false), 30);
+        settings.focused_fps = 144;
+        assert_eq!(polling_rate(&settings, false, ViewMode::Desktop, true), 144);
+    }
     #[test]
     fn idle_arm_relaxation_waits_for_both_original_bind_snapshots() {
         use waifu_studio::animation::{AnimationState, HumanoidRestTransform};

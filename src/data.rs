@@ -61,9 +61,34 @@ fn history_start(turns: &[Turn]) -> usize {
     start
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyMotionMode {
+    #[default]
+    Off,
+    Suggest,
+    AutoPlay,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplyMotionConfig {
+    pub mode: ReplyMotionMode,
+    pub cooldown_seconds: u32,
+}
+impl Default for ReplyMotionConfig {
+    fn default() -> Self {
+        Self {
+            mode: ReplyMotionMode::Off,
+            cooldown_seconds: 30,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSettings {
+    pub reply_motion: ReplyMotionConfig,
     pub gaze: crate::gaze::GazeConfig,
     pub affect: crate::reply_affect::AffectConfig,
     pub behavior: crate::behavior::BehaviorConfig,
@@ -83,6 +108,7 @@ pub struct SceneSettings {
 impl Default for SceneSettings {
     fn default() -> Self {
         Self {
+            reply_motion: Default::default(),
             gaze: Default::default(),
             affect: Default::default(),
             facial: Default::default(),
@@ -420,6 +446,20 @@ pub fn find_models(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_scenes_keep_automatic_reply_motion_disabled() {
+        let scene: SceneSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(scene.reply_motion.mode, ReplyMotionMode::Off);
+        assert_eq!(scene.reply_motion.cooldown_seconds, 30);
+        let scene: SceneSettings =
+            serde_json::from_str(r#"{"reply_motion":{"mode":"auto_play","cooldown_seconds":45}}"#)
+                .unwrap();
+        let restored: SceneSettings =
+            serde_json::from_value(serde_json::to_value(&scene).unwrap()).unwrap();
+        assert_eq!(restored.reply_motion, scene.reply_motion);
+        assert_eq!(restored.reply_motion.mode, ReplyMotionMode::AutoPlay);
+    }
+
     #[test]
     fn round_trip_preserves_profiles_but_does_not_write_api_keys() {
         let root = std::env::temp_dir().join(format!("studio-{}", Uuid::new_v4()));

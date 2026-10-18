@@ -90,6 +90,14 @@ pub fn studio_ui(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    // Runs on every frame and view, not only the Scene page, so a completed
+    // reply is noticed wherever the user is.
+    reply_motion_frame(
+        ctx,
+        &mut studio,
+        &mut animation,
+        load.active.map(|entity| entity.to_bits()),
+    );
     if matches!(studio.mode, ViewMode::Desktop) {
         return;
     }
@@ -1381,26 +1389,174 @@ enum SuggestAction {
     Error(String),
 }
 
+type SharedSuggester = std::sync::Arc<std::sync::Mutex<motion_decision::MotionSuggester>>;
+type SharedReplyMotion = std::sync::Arc<std::sync::Mutex<motion_decision::ReplyMotion>>;
+
+/// Suggester and automatic reply-motion state shared by the root frame and the
+/// Scene panel. Always lock the suggester first.
+fn motion_shared(ctx: &egui::Context) -> (SharedSuggester, SharedReplyMotion) {
+    ctx.data_mut(|d| {
+        (
+            d.get_temp_mut_or_default::<SharedSuggester>(egui::Id::new("motion_suggester"))
+                .clone(),
+            d.get_temp_mut_or_default::<SharedReplyMotion>(egui::Id::new("reply_motion"))
+                .clone(),
+        )
+    })
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Any manual motion action cancels or discards an automatic pick.
+fn manual_motion(ctx: &egui::Context) {
+    let (suggester, auto) = motion_shared(ctx);
+    let mut suggester = lock(&suggester);
+    lock(&auto).manual_override(&mut suggester);
+}
+
+/// Root-level, non-blocking reply-motion step. Off does nothing but remember
+/// which reply was last seen; it never scans, requests or plays.
+fn reply_motion_frame(
+    ctx: &egui::Context,
+    studio: &mut Studio,
+    animation: &mut AnimationState,
+    avatar: Option<u64>,
+) {
+    use waifu_studio::data::ReplyMotionMode;
+    let config = studio.library.scene.reply_motion.clone();
+    let (shared, auto) = motion_shared(ctx);
+    let mut suggester = lock(&shared);
+    let mut auto = lock(&auto);
+    let cached = ctx.data(|d| {
+        d.get_temp::<std::sync::Arc<Vec<motion_library::MotionEntry>>>(egui::Id::new(
+            "motion_library_entries",
+        ))
+    });
+    let entries = match cached {
+        Some(entries) => entries,
+        None if config.mode != ReplyMotionMode::Off => motion_entries(ctx, false),
+        None => Default::default(),
+    };
+    let selected = studio.library.selected;
+    // A catalog implies a cached scan; never poll against a missing one.
+    if !entries.is_empty() {
+        suggester.poll(selected, &entries);
+    }
+    let character = studio.library.selected_character();
+    let reply = match (&studio.completed_chat, character) {
+        (Some((id, Ok(text))), Some(character)) => Some(motion_decision::CompletedReply {
+            id: *id,
+            character: character.id,
+            character_name: &character.name,
+            avatar,
+            text,
+        }),
+        _ => None,
+    };
+    let decision = studio.library.decision.clone();
+    let action = auto.frame(
+        std::time::Instant::now(),
+        &config,
+        selected,
+        avatar,
+        reply,
+        &entries,
+        &mut suggester,
+        |entries| {
+            motion_library::MotionCatalog::offer(
+                entries,
+                &SUGGESTED_CATEGORIES,
+                motion_library::MAX_OFFERED,
+            )
+        },
+        |suggester, request| suggester.start(&decision, request),
+    );
+    if let Some(motion_decision::AutoAction::Play(path)) = action {
+        if animation.loading {
+            auto.note = Some("Skipped auto-play while a motion was loading".into());
+        } else if let Err(error) = animation.load_path(path) {
+            auto.note = Some(error);
+        }
+    }
+    if suggester.busy() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Collapsible opt-in panel. Nothing is requested until "Suggest motion" and
 /// nothing plays until the reviewed suggestion's "Play" is pressed.
+#[allow(clippy::too_many_arguments)]
 fn motion_suggestion(
     ui: &mut egui::Ui,
     suggester: &mut motion_decision::MotionSuggester,
+    auto: &mut motion_decision::ReplyMotion,
+    config: &mut waifu_studio::data::ReplyMotionConfig,
     entries: &[motion_library::MotionEntry],
     character: Option<(uuid::Uuid, &str)>,
     draft: &str,
     reply: Option<&str>,
-) -> Option<SuggestAction> {
+) -> (Option<SuggestAction>, bool) {
+    use waifu_studio::data::ReplyMotionMode;
     let source_id = egui::Id::new("motion_suggest_use_reply");
     let mut use_reply = ui
         .ctx()
         .data(|d| d.get_temp::<bool>(source_id))
         .unwrap_or(false);
     let mut action = None;
+    let mut changed = false;
     egui::CollapsingHeader::new("Motion suggestion (optional)")
         .id_salt("motion_suggest")
         .show(ui, |ui| {
             ui.small("Asks the Scene chat decision model to pick one of up to 16 scanned motions, or none. Runs only when you click; review the pick, then press Play.");
+            caption(ui, "AFTER EACH REPLY");
+            let mode_name = |mode| match mode {
+                ReplyMotionMode::Off => "Off",
+                ReplyMotionMode::Suggest => "Suggest after reply",
+                ReplyMotionMode::AutoPlay => "Auto-play after reply",
+            };
+            egui::ComboBox::from_id_salt("reply_motion_mode")
+                .selected_text(mode_name(config.mode))
+                .show_ui(ui, |ui| {
+                    for mode in [
+                        ReplyMotionMode::Off,
+                        ReplyMotionMode::Suggest,
+                        ReplyMotionMode::AutoPlay,
+                    ] {
+                        changed |= ui
+                            .selectable_value(&mut config.mode, mode, mode_name(mode))
+                            .changed();
+                    }
+                });
+            if config.mode != ReplyMotionMode::Off {
+                let mut seconds = config.cooldown_seconds.clamp(
+                    motion_decision::MIN_COOLDOWN_SECONDS,
+                    motion_decision::MAX_COOLDOWN_SECONDS,
+                );
+                if ui
+                    .add(
+                        egui::Slider::new(
+                            &mut seconds,
+                            motion_decision::MIN_COOLDOWN_SECONDS
+                                ..=motion_decision::MAX_COOLDOWN_SECONDS,
+                        )
+                        .text("Cooldown")
+                        .suffix(" s"),
+                    )
+                    .changed()
+                {
+                    config.cooldown_seconds = seconds;
+                    changed = true;
+                }
+                ui.small("Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
+                if let Some(note) = &auto.note {
+                    ui.small(RichText::new(note).color(MUTED));
+                }
+            }
+            caption(ui, "MANUAL");
             egui::ComboBox::from_id_salt("motion_suggest_source")
                 .selected_text(if use_reply { "Latest reply" } else { "Composer draft" })
                 .show_ui(ui, |ui| {
@@ -1415,6 +1571,7 @@ fn motion_suggestion(
                         ui.spinner();
                         ui.label("Choosing a motion…");
                         if ui.button("Cancel").clicked() {
+                            auto.manual_override(suggester);
                             suggester.cancel();
                         }
                     });
@@ -1477,7 +1634,7 @@ fn motion_suggestion(
             }
         });
     ui.ctx().data_mut(|d| d.insert_temp(source_id, use_reply));
-    action
+    (action, changed)
 }
 
 fn suggest_motion(
@@ -1486,14 +1643,9 @@ fn suggest_motion(
     animation: &mut AnimationState,
     entries: &[motion_library::MotionEntry],
 ) {
-    type Shared = std::sync::Arc<std::sync::Mutex<motion_decision::MotionSuggester>>;
-    let shared = ui.ctx().data_mut(|d| {
-        d.get_temp_mut_or_default::<Shared>(egui::Id::new("motion_suggester"))
-            .clone()
-    });
-    let mut suggester = shared
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (shared, auto) = motion_shared(ui.ctx());
+    let mut suggester = lock(&shared);
+    let mut auto = lock(&auto);
     let selected = studio.library.selected;
     suggester.poll(selected, entries);
     let character = selected
@@ -1505,14 +1657,24 @@ fn suggest_motion(
         .rev()
         .find(|turn| turn.role == "assistant")
         .map(|turn| turn.content.as_str());
-    let action = motion_suggestion(
+    let mut config = studio.library.scene.reply_motion.clone();
+    let (action, changed) = motion_suggestion(
         ui,
         &mut suggester,
+        &mut auto,
+        &mut config,
         entries,
         character,
         &studio.composer,
         reply,
     );
+    if changed {
+        studio.library.scene.reply_motion = config;
+        studio.save();
+    }
+    if action.is_some() {
+        auto.manual_override(&mut suggester);
+    }
     match action {
         Some(SuggestAction::Start(request)) => {
             if let Err(error) = suggester.start(&studio.library.decision, request) {
@@ -1540,6 +1702,7 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
                 .add_enabled(!animation.loading, egui::Button::new("Import motion file…"))
                 .clicked()
             {
+                manual_motion(ui.ctx());
                 studio.open_animation();
             }
             ui.button("Rescan motion library").clicked()
@@ -1553,10 +1716,11 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
             )
             .color(MUTED),
         );
-    } else if let Some(path) = motion_picker(ui, &entries, animation.path.as_deref())
-        && let Err(error) = animation.load_path(path)
-    {
-        studio.error = Some(error);
+    } else if let Some(path) = motion_picker(ui, &entries, animation.path.as_deref()) {
+        manual_motion(ui.ctx());
+        if let Err(error) = animation.load_path(path) {
+            studio.error = Some(error);
+        }
     }
     if !entries.is_empty() {
         suggest_motion(ui, studio, animation, &entries);
@@ -1591,12 +1755,15 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
         ui.horizontal(|ui| {
             if animation.playing {
                 if ui.button("Pause").clicked() {
+                    manual_motion(ui.ctx());
                     animation.pause();
                 }
             } else if ui.button("Play").clicked() {
+                manual_motion(ui.ctx());
                 animation.play();
             }
             if ui.button("Stop").clicked() {
+                manual_motion(ui.ctx());
                 animation.stop();
             }
             ui.checkbox(&mut animation.looping, "Loop");
@@ -3376,19 +3543,25 @@ mod composer_tests {
         let mut suggester = motion_decision::MotionSuggester::default();
         let ctx = egui::Context::default();
         style(&ctx);
-        let frame = |events, suggester: &mut motion_decision::MotionSuggester| {
+        let mut auto = motion_decision::ReplyMotion::default();
+        let mut config = waifu_studio::data::ReplyMotionConfig::default();
+        let mut frame = |events, suggester: &mut motion_decision::MotionSuggester| {
             let mut action = None;
             let output = render(&ctx, events, |ui| {
                 suggester.poll(Some(character), &entries);
-                if let Some(a) = motion_suggestion(
+                let (a, changed) = motion_suggestion(
                     ui,
                     suggester,
+                    &mut auto,
+                    &mut config,
                     &entries,
                     Some((character, "Hikari")),
                     "Hi everyone!",
                     None,
-                ) {
-                    action = Some(a);
+                );
+                assert!(!changed, "automatic mode is never enabled silently");
+                if a.is_some() {
+                    action = a;
                 }
             });
             (output, action)
@@ -3402,6 +3575,7 @@ mod composer_tests {
             frame(vec![], &mut suggester);
         }
         let (output, _) = frame(vec![], &mut suggester);
+        text_rect(&output, "Off");
         let button = text_rect(&output, "Suggest motion").center();
         let (_, action) = frame(click(button), &mut suggester);
         let Some(SuggestAction::Start(request)) = action else {
