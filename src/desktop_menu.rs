@@ -277,6 +277,11 @@ mod tests {
         assert_eq!(hovered(V2::splat(200.0)), None);
     }
     #[test]
+    fn sitting_wedge_offers_stand_up_only_while_seated() {
+        assert_eq!(label(Action::Sitting, false), "Sit down");
+        assert_eq!(label(Action::Sitting, true), "Stand up");
+    }
+    #[test]
     fn radial_stays_inside_the_viewport_at_screen_edges() {
         let screen = egui::Rect::from_min_size(Pos2::ZERO, V2::new(420.0, 640.0));
         for pointer in [screen.min, screen.max] {

@@ -588,17 +588,9 @@ fn grab_companion(
     };
     let requested = settings.sit_requested.take();
     let output = if let Some(sitting) = requested {
-        if sitting {
-            let output = interaction.sit_on_surface_below(&frame);
-            settings.sitting_status = if output.state == InteractionState::Sitting {
-                "Sitting on a detected surface.".into()
-            } else {
-                "No exposed window edge or monitor floor was detected below the companion.".into()
-            };
-            output
-        } else {
-            interaction.handle(InteractionInput::Cancel, &frame)
-        }
+        let (output, status) = resolve_sit_request(&mut interaction, &frame, sitting);
+        settings.sitting_status = status.into();
+        output
     } else if released {
         let cursor = snapshot.as_ref().map_or_else(
             || frame.avatar_origin + cursor.unwrap_or(hips),
@@ -611,7 +603,9 @@ fn grab_companion(
         settings.sitting = false;
         return;
     };
-    if output.state == InteractionState::Sitting {
+    // Standing up moves the window so the standing feet stay on the seat edge.
+    let stood_up = requested == Some(false) && output.window_origin != frame.avatar_origin;
+    if output.state == InteractionState::Sitting || stood_up {
         let placement = if snapshot.is_some() {
             platform
                 .bridge
@@ -624,16 +618,49 @@ fn grab_companion(
         } else {
             Err("The compositor does not support positioning this window.".into())
         };
-        if let Err(error) = placement {
-            // A detected surface is not enough if the host rejected placement.
-            // Drop the seated pose instead of leaving it floating in place.
-            settings.sitting_status = format!("Could not sit on the surface: {error}");
-            settings.sitting = false;
-            *interaction = DesktopInteraction::default();
-            return;
+        match placement {
+            Err(error) if stood_up => {
+                // The seat is already released; the companion stays where it was.
+                settings.sitting_status =
+                    format!("Stood up, but could not move onto the edge: {error}");
+            }
+            Err(error) => {
+                // A detected surface is not enough if the host rejected placement.
+                // Drop the seated pose instead of leaving it floating in place.
+                settings.sitting_status = format!("Could not sit on the surface: {error}");
+                settings.sitting = false;
+                *interaction = DesktopInteraction::default();
+                return;
+            }
+            Ok(()) => {}
         }
     }
     settings.sitting = output.state == InteractionState::Sitting;
+}
+
+/// Apply an explicit sit/stand request against the current trusted frame.
+/// Standing leaves a live seat with the projected root on its edge.
+fn resolve_sit_request(
+    interaction: &mut DesktopInteraction,
+    frame: &InteractionFrame<'_>,
+    sitting: bool,
+) -> (
+    waifu_studio::desktop_interaction::InteractionOutput,
+    &'static str,
+) {
+    if sitting {
+        let output = interaction.sit_on_surface_below(frame);
+        let status = if output.state == InteractionState::Sitting {
+            "Sitting on a detected surface."
+        } else {
+            "No exposed window edge or monitor floor was detected below the companion."
+        };
+        (output, status)
+    } else {
+        let was_seated = interaction.state == InteractionState::Sitting;
+        let output = interaction.stand_up(frame);
+        (output, if was_seated { "Standing up." } else { "" })
+    }
 }
 
 fn fail_sit_request(
@@ -816,6 +843,41 @@ mod tests {
         assert!(!settings.sitting && settings.sit_requested.is_none());
         assert_eq!(interaction.state, InteractionState::Idle);
         assert_eq!(settings.sitting_status, "No trusted surface is available.");
+    }
+    #[test]
+    fn stand_request_moves_feet_onto_the_seat_and_only_reports_a_real_seat() {
+        let surfaces = [DesktopSurface {
+            id: SurfaceId::Window(4),
+            rect: ScreenRect {
+                origin: Vec2::new(0., 700.),
+                size: Vec2::new(1200., 300.),
+            },
+            z_order: 0,
+        }];
+        let mut frame = InteractionFrame {
+            avatar_origin: Vec2::new(200., 100.),
+            avatar_size: Vec2::new(400., 480.),
+            hips_offset: Vec2::new(150., 200.),
+            root_offset: Vec2::new(150., 420.),
+            feet_offset: Some(Vec2::new(150., 420.)),
+            pixels_per_unit: 200.,
+            surfaces: &surfaces,
+            own_window_ids: &[],
+        };
+        let mut interaction = DesktopInteraction::default();
+        let (seated, status) = resolve_sit_request(&mut interaction, &frame, true);
+        assert_eq!(seated.state, InteractionState::Sitting);
+        assert_eq!(status, "Sitting on a detected surface.");
+        frame.avatar_origin = seated.window_origin;
+        let (stood, status) = resolve_sit_request(&mut interaction, &frame, false);
+        assert_eq!(stood.state, InteractionState::Idle);
+        assert_eq!(status, "Standing up.");
+        assert_eq!(stood.window_origin, Vec2::new(seated.window_origin.x, 280.));
+        // Not seated: no motion and no misleading status.
+        frame.avatar_origin = stood.window_origin;
+        let (again, status) = resolve_sit_request(&mut interaction, &frame, false);
+        assert_eq!(again.window_origin, frame.avatar_origin);
+        assert!(status.is_empty());
     }
     #[test]
     fn short_native_drag_ends_from_a_fresh_sample_when_the_button_release_was_consumed() {

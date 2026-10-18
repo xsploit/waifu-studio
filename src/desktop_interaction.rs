@@ -334,6 +334,31 @@ impl DesktopInteraction {
         self.tick(frame, 0.)
     }
 
+    /// Leave the seat standing on its edge. The projected root is the avatar's
+    /// pose-independent ground point; keeping it on the seat line stops the
+    /// standing legs from dropping through the window top or panel. Without a
+    /// live seat this is a plain cancel at the current origin.
+    pub fn stand_up(&mut self, frame: &InteractionFrame<'_>) -> InteractionOutput {
+        let seat_y = self.seat.and_then(|seat| {
+            frame
+                .surfaces
+                .iter()
+                .find(|surface| {
+                    surface.id == seat.surface
+                        && surface.rect.valid()
+                        && !surface.excluded(frame.own_window_ids)
+                })
+                .map(|surface| surface.seat_y())
+        });
+        self.reset();
+        let origin = seat_y
+            .filter(|_| frame.valid())
+            .map(|seat_y| Vec2::new(frame.avatar_origin.x, seat_y - frame.root_offset.y))
+            .filter(|origin| valid_point(*origin))
+            .unwrap_or(frame.avatar_origin);
+        self.output(origin, None)
+    }
+
     fn reset(&mut self) {
         self.state = InteractionState::Idle;
         self.seat = None;
@@ -793,6 +818,65 @@ mod tests {
             dragged.window_origin,
             frame.avatar_origin + Vec2::new(30., 25.)
         );
+    }
+
+    #[test]
+    fn stand_up_keeps_the_projected_root_on_the_seat_edge_and_never_invents_one() {
+        let surfaces = [
+            surface(
+                SurfaceId::Window(1),
+                Vec2::new(100., 400.),
+                Vec2::new(600., 400.),
+                0,
+            ),
+            surface(
+                SurfaceId::WorkArea(3),
+                Vec2::new(-1920., 0.),
+                Vec2::new(3840., 1032.),
+                i32::MAX,
+            ),
+        ];
+        let mut frame = frame(&surfaces);
+        frame.root_offset.y = 380.;
+        let mut state = DesktopInteraction::default();
+        let seated = drop_on(&mut state, &frame, Vec2::new(250., 350.));
+        assert_eq!(seated.surface, Some(SurfaceId::Window(1)));
+        frame.avatar_origin = seated.window_origin;
+        let stood = state.stand_up(&frame);
+        assert_eq!(stood.state, InteractionState::Idle);
+        assert!(stood.surface.is_none() && stood.hips_anchor.is_none());
+        assert_eq!(stood.window_origin, Vec2::new(seated.window_origin.x, 20.));
+        assert_eq!(stood.window_origin.y + frame.root_offset.y, 400.);
+        // Already standing: a plain no-op at the current origin.
+        frame.avatar_origin = stood.window_origin;
+        assert_eq!(state.stand_up(&frame).window_origin, stood.window_origin);
+
+        // Floor seat: feet land on the work-area bottom.
+        frame.avatar_origin = Vec2::new(-500., 400.);
+        let seated = drop_on(&mut state, &frame, Vec2::new(-400., 1000.));
+        assert_eq!(seated.surface, Some(SurfaceId::WorkArea(3)));
+        frame.avatar_origin = seated.window_origin;
+        assert_eq!(state.stand_up(&frame).window_origin.y, 1032. - 380.);
+
+        // A vanished, own, or invalid seat never moves the window.
+        let seat = &surfaces[..1];
+        for (live, own, root_y) in [
+            (&[][..], &[][..], 380.),
+            (seat, &[1_u64][..], 380.),
+            (seat, &[][..], f32::NAN),
+        ] {
+            let mut frame = super::tests::frame(seat);
+            frame.root_offset.y = 380.;
+            let mut state = DesktopInteraction::default();
+            drop_on(&mut state, &frame, Vec2::new(250., 350.));
+            assert_eq!(state.state, InteractionState::Sitting);
+            frame.surfaces = live;
+            frame.own_window_ids = own;
+            frame.root_offset.y = root_y;
+            let out = state.stand_up(&frame);
+            assert_eq!(out.state, InteractionState::Idle);
+            assert_eq!(out.window_origin, frame.avatar_origin);
+        }
     }
 
     #[test]
