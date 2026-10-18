@@ -10,7 +10,7 @@ const OPEN: &str = "<waifu-affect>";
 const CLOSE: &str = "</waifu-affect>";
 const MAX_METADATA: usize = 1024;
 const MAX_CHARACTERS: usize = 256;
-pub const AFFECT_PROMPT: &str = "After your normal reply, append exactly one trailing <waifu-affect>{\"emotion\":\"happy\",\"valence\":0.5,\"arousal\":0.3,\"dominance\":0.2}</waifu-affect> block. Emotion must be neutral, amused, happy, excited, curious, confused, thinking, surprised, angry, annoyed, embarrassed, grateful, optimistic, proud, nervous, sad, caring, or relaxed; each VAD number must be finite in [-1,1]. Describe your character's own current feeling. No other fields or text after the block. Never include this marker in the spoken prose.";
+pub const AFFECT_PROMPT: &str = "After your normal reply, append exactly one trailing <waifu-affect>{\"emotion\":\"happy\",\"valence\":0.5,\"arousal\":0.3,\"dominance\":0.2}</waifu-affect> block. Emotion must be neutral, amused, happy, excited, curious, confused, thinking, surprised, angry, annoyed, embarrassed, grateful, optimistic, proud, nervous, sad, caring, relaxed, fear, or disgust; each VAD number must be finite in [-1,1]. Describe your character's own current feeling. No other fields or text after the block. Never include this marker in the spoken prose.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,11 +34,15 @@ pub enum AffectEmotion {
     Proud,
     Nervous,
     Caring,
+    Fear,
+    Disgust,
 }
 impl AffectEmotion {
     fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Neutral => &[],
+            Self::Fear => &["fear", "fearful", "afraid"],
+            Self::Disgust => &["disgust", "disgusted"],
             Self::Happy => &["happy", "joy"],
             Self::Sad => &["sad", "sorrow"],
             Self::Angry => &["angry", "anger"],
@@ -367,10 +371,95 @@ mod tests {
             ("sad", Some("sad")),
             ("caring", Some("caring")),
             ("relaxed", Some("relaxed")),
+            ("fear", Some("fear")),
+            ("disgust", Some("disgust")),
         ] {
             let parsed = ReplyAffect::parse(&JSON.replace("happy", emotion)).unwrap();
             assert_eq!(serde_json::to_value(parsed.emotion).unwrap(), emotion);
             assert_eq!(parsed.emotion.aliases().first().copied(), expression);
+        }
+    }
+
+    #[test]
+    fn fear_and_disgust_use_only_matching_custom_expressions_and_preserve_manual_priority() {
+        use crate::behavior::BehaviorConfig;
+        let id = Uuid::new_v4();
+        for (emotion, alias) in [("fear", "Afraid"), ("disgust", "Disgusted")] {
+            let mut library = AffectLibrary::default();
+            library.entries.insert(
+                id,
+                CharacterAffect {
+                    config: AffectConfig {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            library
+                .apply_reply(
+                    id,
+                    ReplyAffect::parse(&JSON.replace("happy", emotion)).unwrap(),
+                )
+                .unwrap();
+            for matching in [false, true] {
+                let available = vec![if matching {
+                    alias.into()
+                } else {
+                    "happy".into()
+                }];
+                let mut controller = BehaviorController::default();
+                controller
+                    .select(
+                        Some(id),
+                        &BehaviorConfig {
+                            enabled: true,
+                            ..Default::default()
+                        },
+                        &available,
+                    )
+                    .unwrap();
+                let token = controller.begin_turn(id).unwrap();
+                library
+                    .drive(id, &mut controller, token, &available)
+                    .unwrap();
+                controller.tick(0.2);
+                let weights = controller.weights_for(Some(id), &available, &BTreeMap::new(), "");
+                if matching {
+                    assert!(weights.get(alias).is_some_and(|w| *w > 0.));
+                    assert!(
+                        controller
+                            .weights_for(
+                                Some(id),
+                                &available,
+                                &BTreeMap::from([(alias.into(), 0.5)]),
+                                ""
+                            )
+                            .is_empty()
+                    );
+                } else {
+                    assert!(weights.is_empty(), "No unrelated preset fallback");
+                }
+            }
+            assert_eq!(
+                AffectLibrary::decode(&library.encode().unwrap())
+                    .unwrap()
+                    .entries,
+                library.entries
+            );
+            let text = format!("Hello! {OPEN}{}{CLOSE}", JSON.replace("happy", emotion));
+            for split in 0..=text.len() {
+                let mut filter = ReplyAffectFilter::default();
+                let mut spoken = filter.push(&text[..split]);
+                spoken += &filter.push(&text[split..]);
+                let result = filter.finish();
+                spoken += &result.tail;
+                assert_eq!(spoken, "Hello! ");
+                assert_eq!(
+                    serde_json::to_value(result.metadata.unwrap().emotion).unwrap(),
+                    emotion
+                );
+            }
         }
     }
 

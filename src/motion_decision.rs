@@ -377,8 +377,8 @@ pub struct CompletedReply<'a> {
     pub affect: Option<AffectEmotion>,
 }
 
-/// Every emotion the affect parser accepts, in WebWaifu4's order plus Relaxed.
-pub const EMOTIONS: [AffectEmotion; 18] = [
+/// Every accepted reply emotion, including custom fear/disgust bindings.
+pub const EMOTIONS: [AffectEmotion; 20] = [
     AffectEmotion::Neutral,
     AffectEmotion::Amused,
     AffectEmotion::Happy,
@@ -397,6 +397,8 @@ pub const EMOTIONS: [AffectEmotion; 18] = [
     AffectEmotion::Sad,
     AffectEmotion::Caring,
     AffectEmotion::Relaxed,
+    AffectEmotion::Fear,
+    AffectEmotion::Disgust,
 ];
 
 pub fn emotion_name(emotion: AffectEmotion) -> &'static str {
@@ -419,6 +421,8 @@ pub fn emotion_name(emotion: AffectEmotion) -> &'static str {
         AffectEmotion::Sad => "sad",
         AffectEmotion::Caring => "caring",
         AffectEmotion::Relaxed => "relaxed",
+        AffectEmotion::Fear => "fear",
+        AffectEmotion::Disgust => "disgust",
     }
 }
 
@@ -1223,6 +1227,26 @@ mod tests {
             }
             assert_eq!(h.sent(), 0, "mapped mode never calls the decision model");
             assert_eq!(h.suggester.status(), &SuggestStatus::Idle);
+        }
+
+        #[test]
+        fn fear_and_disgust_bindings_play_user_selected_motion_without_classifier() {
+            for emotion in [AffectEmotion::Fear, AffectEmotion::Disgust] {
+                let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+                // The user chooses the clip; filename sentiment is never inferred.
+                bind(&mut h, emotion, "joy.bvh");
+                h.affect = Some(emotion);
+                assert!(EMOTIONS.contains(&emotion));
+                assert_eq!(
+                    serde_json::to_value(emotion).unwrap(),
+                    emotion_name(emotion)
+                );
+                assert_eq!(
+                    h.frame(Some((Uuid::new_v4(), "Hello")), "Wave"),
+                    Some(AutoAction::Play(PathBuf::from("/lib/test/joy.bvh")))
+                );
+                assert_eq!(h.sent(), 0);
+            }
         }
 
         #[test]

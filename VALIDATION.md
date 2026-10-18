@@ -237,3 +237,11 @@ Hips translation deltas now pass from source-parent coordinates into the source 
 Offline coverage includes a rotated/scaled source and target together, partial/zero weights and reversed facing, plus full app updates with rotated/nonuniformly scaled target armatures and independent desktop placement. Existing bundled sitting, restoration, omitted-bone and crossfade regressions remain covered. Arbitrary FBX rigs and visible foot placement still require visual acceptance.
 
 Final checks: 399 library + 87 app + 6 integration + 1 benchmark = 493 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Temporarily restoring the old local-space displacement makes the new armature-conversion regression fail; the corrected implementation was restored before the full suite. All builds used one job. No new external-model review or live visual acceptance is claimed.
+
+## Fear and disgust reply emotions
+
+The opt-in reply metadata schema now accepts fear and disgust alongside the existing eighteen labels. They preserve their own VAD mood, persistence and local body-motion bindings. The facial bridge matches custom fear/fearful/afraid and disgust/disgusted expression names case-insensitively; an avatar with no matching expression receives no unrelated facial preset fallback. The existing manual-expression priority and mouth/blink/look exclusions remain in force. No extra classifier call is added, no prose-based emotion inference occurs, and speech still streams before trailing metadata completes.
+
+Offline regressions cover parse/identity, every marker split for both emotions, saved-mood round-trips, custom-expression matches, missing-expression behavior and manual priority. A motion-state test checks both new labels use the user's scanned binding with no decision request. Live facial appearance remains unaccepted. Existing saved labels remain unchanged and the feature stays opt-in.
+
+Final checks: 400 library + 88 app + 6 integration + 1 benchmark = 495 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. No new external-model review or live GUI acceptance is claimed.
