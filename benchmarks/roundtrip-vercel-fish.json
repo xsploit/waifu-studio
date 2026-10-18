@@ -1,0 +1,156 @@
+{
+  "asr_backend": "vercel",
+  "asr_model": "fish-audio/transcribe-1",
+  "max_tokens": "1024",
+  "method": "production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+  "prerecorded_asr": true,
+  "prewarm_ms": "0",
+  "provider_only": "baseten",
+  "provider_order": "",
+  "reasoning": "none",
+  "routing": "default",
+  "routing_matrix": "",
+  "rows": [
+    {
+      "asr_done_ms": 991.288823,
+      "audio_duration_ms": 8173.42403628118,
+      "decoded_done_ms": 2799.3161569999997,
+      "earliest_playback_end_ms": 10224.25930628118,
+      "error": null,
+      "first_decoded_audio_ms": 2050.83527,
+      "first_nonzero_audio_ms": 2050.83906,
+      "first_token_ms": 1548.459926,
+      "llm_done_ms": 1657.829277,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 1548.3982460000002,
+        "input_tokens": 52,
+        "output_tokens": 30,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DDDJBMN23AEGYK5H8GSG6",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 2799.020919,
+      "nonzero_samples": 336884,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 110,
+      "transcript_chars": 66,
+      "transport_first_wire_audio_ms": 1055,
+      "ws_connection_ready_ms": 632,
+      "ws_first_flush_written_ms": 632,
+      "ws_first_text_written_ms": 632,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 162,
+        "generation_time": 277,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": 710.290403,
+      "audio_duration_ms": 6408.707482993197,
+      "decoded_done_ms": 2369.0918180000003,
+      "earliest_playback_end_ms": 8147.564663993197,
+      "error": null,
+      "first_decoded_audio_ms": 1738.857181,
+      "first_nonzero_audio_ms": 1738.862341,
+      "first_token_ms": 953.264425,
+      "llm_done_ms": 1231.449296,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 952.55071,
+        "input_tokens": 52,
+        "output_tokens": 24,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DDFRBTAEM8C3C4VXG4P53",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 2364.937111,
+      "nonzero_samples": 268488,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 89,
+      "transcript_chars": 66,
+      "transport_first_wire_audio_ms": 1024,
+      "ws_connection_ready_ms": 602,
+      "ws_first_flush_written_ms": 603,
+      "ws_first_text_written_ms": 603,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 124,
+        "generation_time": 403,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": 749.412676,
+      "audio_duration_ms": 0.0,
+      "decoded_done_ms": 1316.1912390000002,
+      "earliest_playback_end_ms": null,
+      "error": "Provider returned HTTP 429 Too Many Requests: The request limited providers for this model and they are currently at capacity. Add more providers or remove restrictions for automatic fallback. Providers considered: baseten.",
+      "first_decoded_audio_ms": null,
+      "first_nonzero_audio_ms": null,
+      "first_token_ms": null,
+      "llm_done_ms": null,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {},
+      "mode": "ws",
+      "network_done_ms": null,
+      "nonzero_samples": 0,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 0,
+      "transcript_chars": 66,
+      "transport_first_wire_audio_ms": null,
+      "ws_connection_ready_ms": null,
+      "ws_first_flush_written_ms": null,
+      "ws_first_text_written_ms": null
+    }
+  ],
+  "version": 1,
+  "voice_tuning": {
+    "chunk_length": 160,
+    "condition_on_previous_chunks": true,
+    "latency": "low",
+    "min_chunk_length": 20
+  }
+}

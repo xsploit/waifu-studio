@@ -1,0 +1,50 @@
+{
+  "title": "Waifu Studio",
+  "subtitle": "Native companion prototype",
+  "narration_text": "Hi, welcome to Waifu Studio! I'm your guide today. This is a native AI companion app built in Rust with the Bevy engine, and every screen you see comes from the real app. First, the character library. There are twenty-two avatar models to choose from, plus three recovered personas with their own personalities. Pick one, and see her in the live avatar preview. Next, the scene. Simple dropdowns let you tune the toon shading, the lighting, and the room, so your companion feels right at home. Now for voice. Chat replies stream in as they're written, through the provider connection you choose. My voice is generated with Fish Speech. Memory stays in your hands. You keep clear notes, and an evidence ledger shows where each fact came from. Optional coding agents can help too, with reviewed task requests. Finally, motion. Animations from several common formats can be retargeted onto your avatar, like this seated desktop pose preview. Waifu Studio is an early prototype, and I'm so happy to share it with you. Thanks for watching!",
+  "chapters": [
+    {
+      "id": "hero",
+      "title": "Meet Waifu Studio",
+      "subtitle": "Native Rust + Bevy 0.19 companion \u00b7 Real app screens, rendered offscreen",
+      "narration": "Hi, welcome to Waifu Studio! I'm your guide today. This is a native AI companion app built in Rust with the Bevy engine, and every screen you see comes from the real app."
+    },
+    {
+      "id": "library",
+      "title": "Character Library",
+      "subtitle": "22 VRM models \u00b7 3 recovered personas \u00b7 Live avatar preview",
+      "narration": "First, the character library. There are twenty-two avatar models to choose from, plus three recovered personas with their own personalities. Pick one, and see her in the live avatar preview."
+    },
+    {
+      "id": "scene",
+      "title": "Scene & Rooms",
+      "subtitle": "Dropdown settings \u00b7 MToon shading \u00b7 Lighting \u00b7 Rooms",
+      "narration": "Next, the scene. Simple dropdowns let you tune the toon shading, the lighting, and the room, so your companion feels right at home."
+    },
+    {
+      "id": "voice",
+      "title": "Voice & Chat",
+      "subtitle": "Streaming chat via Vercel / OpenRouter interface \u00b7 Fish Speech voice",
+      "narration": "Now for voice. Chat replies stream in as they're written, through the provider connection you choose. My voice is generated with Fish Speech."
+    },
+    {
+      "id": "memory",
+      "title": "Memory & Tools",
+      "subtitle": "Explicit notes \u00b7 Evidence ledger \u00b7 Optional reviewed coding agents",
+      "narration": "Memory stays in your hands. You keep clear notes, and an evidence ledger shows where each fact came from. Optional coding agents can help too, with reviewed task requests."
+    },
+    {
+      "id": "motion",
+      "title": "Motion & Desktop",
+      "subtitle": "BVH \u00b7 VRMA \u00b7 FBX retargeting \u00b7 Seated clip: pose preview only",
+      "narration": "Finally, motion. Animations from several common formats can be retargeted onto your avatar, like this seated desktop pose preview. Waifu Studio is an early prototype, and I'm so happy to share it with you. Thanks for watching!"
+    }
+  ],
+  "end_card": {
+    "title": "Waifu Studio",
+    "subtitle": "Native companion prototype",
+    "repo": "github.com/xsploit/waifu-studio (private)",
+    "note": "Experimental build \u00b7 Footage captured from offscreen app renders"
+  },
+  "capture_method": "Actual app renders captured offscreen; not a physical desktop interaction recording."
+}

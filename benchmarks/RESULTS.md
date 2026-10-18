@@ -127,6 +127,127 @@ The benchmark opens Fish1000ms BEFORE the Send clock, then streams the same Flas
 | drama-3 | 3/3 | 906 | 1332 |
 | s2.1-pro | 3/3 | 644 | 1187 |
 
+
+## Fish Low latency with Gemini FlashLite
+
+Gemini3.5FlashLite Low, three samples per cell; same voice and chunk settings. This run differs from the balanced experiment in both timing and backend conditions, so it is not an isolated causal estimate.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| google/gemini-3.5-flash-lite | default | drama-3 | ws | 3/3 | 1020 | 1147 | 1520 | 2040 |
+| google/gemini-3.5-flash-lite | default | drama-3 | http | 3/3 | 572 | 695 | 1308 | 2200 |
+| google/gemini-3.5-flash-lite | default | s2.1-pro | ws | 3/3 | 613 | 779 | 1168 | 2611 |
+| google/gemini-3.5-flash-lite | default | s2.1-pro | http | 3/3 | 708 | 879 | 1548 | 2287 |
+
+Low mode is not a universal winner: Drama3 HTTP beat WS in this batch, whereas S2.1Pro WS beat HTTP. Latency is a quality trade-off; perceived voice quality is not measured.
+
+## DeepSeek Flash: Vercel provider slugs and sorting
+
+Exact model deepseek/deepseek-v4.1-flash, reasoning none. Public Vercel model-endpoints API verified the provider slugs. pin:slug sends providerOptions.gateway.only:[slug], preventing other-provider fallback; default/latency/throughput use default/ttft/tps. These early runs have no served-provider response metadata, so automatic routes are unattributed.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash | default | — | text | 3/3 | 739 | 870 | — | — |
+| deepseek/deepseek-v4.1-flash | latency | — | text | 3/3 | 471 | 855 | — | — |
+| deepseek/deepseek-v4.1-flash | throughput | — | text | 3/3 | 518 | 659 | — | — |
+| deepseek/deepseek-v4.1-flash | pin:baseten | — | text | 2/3 | 260 | 352 | — | — |
+| deepseek/deepseek-v4.1-flash | pin:relace | — | text | 2/3 | 462 | 1047 | — | — |
+| deepseek/deepseek-v4.1-flash | pin:inference-net | — | text | 3/3 | 374 | 692 | — | — |
+| deepseek/deepseek-v4.1-flash | pin:togetherai | — | text | 3/3 | 418 | 519 | — | — |
+
+The strict baseten and relace pins each returned one HTTP429 capacity error in three attempts. Those errors were retained, with no fallback or retry. baseten had a median TTFT of260ms on its two successful calls; compare reliability as well as the successful-only median.
+
+## DeepSeek Flash: complete pipeline with provider pins
+
+Reasoning none, Fish Low latency, three samples per combination, no prewarming. All 36 calls in this batch succeeded, including both strict provider pins. Same saved reference voice; no speaker device.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash | pin:baseten | drama-3 | ws | 3/3 | 289 | 438 | 1047 | 1056 |
+| deepseek/deepseek-v4.1-flash | pin:togetherai | drama-3 | ws | 3/3 | 332 | 372 | 1066 | 1075 |
+| deepseek/deepseek-v4.1-flash | latency | drama-3 | ws | 3/3 | 360 | 600 | 1072 | 1079 |
+| deepseek/deepseek-v4.1-flash | pin:baseten | drama-3 | http | 3/3 | 400 | 611 | 1224 | 1408 |
+| deepseek/deepseek-v4.1-flash | pin:togetherai | drama-3 | http | 3/3 | 396 | 465 | 1103 | 1943 |
+| deepseek/deepseek-v4.1-flash | latency | drama-3 | http | 3/3 | 511 | 830 | 1461 | 2921 |
+| deepseek/deepseek-v4.1-flash | pin:baseten | s2.1-pro | ws | 3/3 | 348 | 1091 | 1114 | 3131 |
+| deepseek/deepseek-v4.1-flash | pin:togetherai | s2.1-pro | ws | 3/3 | 395 | 414 | 1098 | 1187 |
+| deepseek/deepseek-v4.1-flash | latency | s2.1-pro | ws | 3/3 | 445 | 796 | 1138 | 1325 |
+| deepseek/deepseek-v4.1-flash | pin:baseten | s2.1-pro | http | 3/3 | 281 | 459 | 1139 | 1240 |
+| deepseek/deepseek-v4.1-flash | pin:togetherai | s2.1-pro | http | 3/3 | 371 | 416 | 1137 | 1369 |
+| deepseek/deepseek-v4.1-flash | latency | s2.1-pro | http | 3/3 | 404 | 760 | 1513 | 1598 |
+
+## DeepSeek Flash Fast alternative
+
+Exact Vercel model deepseek/deepseek-v4.1-flash-fast, strict only:[baseten], reasoning none and Fish Low. The public endpoint listing exposes baseten as its only provider. All 12 calls succeeded. The fast suffix did not establish an end-to-end advantage over the ordinary model.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash-fast | pin:baseten | drama-3 | ws | 3/3 | 537 | 616 | 1057 | 1132 |
+| deepseek/deepseek-v4.1-flash-fast | pin:baseten | drama-3 | http | 3/3 | 453 | 526 | 1171 | 1192 |
+| deepseek/deepseek-v4.1-flash-fast | pin:baseten | s2.1-pro | ws | 3/3 | 452 | 514 | 1213 | 1245 |
+| deepseek/deepseek-v4.1-flash-fast | pin:baseten | s2.1-pro | http | 3/3 | 451 | 532 | 1452 | 1458 |
+
+## DeepSeek with an already-open Fish WebSocket
+
+The Fish connection is opened1000ms BEFORE the Send clock; add1000ms for preparation-to-audio. Five calls, strict baseten pin, Drama3 WS Low, no reasoning. Prewarming does not establish a consistent overall win. WS diagnostic clocks include that1000ms preparation and must not be subtracted directly from Send-clock fields.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash | pin:baseten | drama-3 | ws | 5/5 | 723 | 915 | 1176 | 1569 |
+
+## Instrumented DeepSeek finalist
+
+Five calls with the same strict baseten pin and Drama3 WS Low. WS diagnostic fields use the session worker clock, approximately aligned with Send when prewarm is zero; they measure writer acceptance, not server acknowledgement. Routing attribution is recorded only when returned.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash | pin:baseten | drama-3 | ws | 5/5 | 359 | 726 | 1070 | 1329 |
+
+| WS worker diagnostic | Median ms |
+|---|---:|
+| ws_connection_ready_ms | 624 |
+| ws_first_text_written_ms | 627 |
+| ws_first_flush_written_ms | 627 |
+| transport_first_wire_audio_ms | 1065 |
+
+Served-provider response attribution: baseten.
+
+## DeepSeek provider ordering with fallback
+
+order:[baseten,togetherai] plus sort:ttft, no only restriction; other available providers may still be considered. Three successful calls, generation lookup confirmed baseten in all three; no fallback was observed.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| deepseek/deepseek-v4.1-flash | latency | — | text | 3/3 | 522 | 809 | — | — |
+
+## Gemini provider filtering comparison
+
+Gemini3.5FlashLite Low, same short prompt, automatic/default vs ttft/tps and strict google/vertex pins. Public Vercel endpoint listing confirms both slugs. Three repetitions; no cross-model reasoning substitution.
+
+| LLM | Route | Fish | Mode | Success | First token ms | LLM done ms | First audio ms | Worst audio ms |
+|---|---|---|---|---:|---:|---:|---:|---:|
+| google/gemini-3.5-flash-lite | default | — | text | 3/3 | 600 | 785 | — | — |
+| google/gemini-3.5-flash-lite | latency | — | text | 3/3 | 579 | 754 | — | — |
+| google/gemini-3.5-flash-lite | throughput | — | text | 3/3 | 754 | 854 | — | — |
+| google/gemini-3.5-flash-lite | pin:google | — | text | 3/3 | 694 | 792 | — | — |
+| google/gemini-3.5-flash-lite | pin:vertex | — | text | 3/3 | 597 | 749 | — | — |
+
+Generation lookup verified all34 successful observed calls in the instrumented, Gemini routing, provider-order and recorded-ASR batches. The five instrumented DeepSeek calls were served by baseten. Gemini default, ttft and tps all selected vertex in these runs; strict google selected google. Provider attribution was obtained after timing and adds nothing to the latency clock. Failed calls without a generation ID remain unattributed.
+
+The direct-stream harness bypasses the app’s32ms later-delta coalescing and frame polling. It measures the production adapter chain, not physical UI-button-to-speaker latency. The real app can add scheduling time. The baseline prompt is short and is not a full persona/history benchmark.
+
+## Prerecorded ASR → LLM → speech
+
+Same 16kHz mono PCM recording of a synthetic spoken test prompt. Timing begins when the complete WAV is submitted. This excludes speaking duration, microphone capture, Silero startup, trailing-silence endpointing, transcript review and audio hardware. The app still requires transcript review before Send. This is an adapter sequence experiment, not a shipped automatic conversational mode. Each transcript is used as the actual LLM user input; neither audio nor transcript is committed. Connection reuse is enabled for ASR; first requests may pay connection setup. DeepSeek V4.1Flash, reasoning none, baseten pin, Drama3 WS Low.
+
+| ASR route | ASR success | Complete sequence | ASR done ms | First token from upload ms | First audio from upload ms |
+|---|---:|---:|---:|---:|---:|
+| Fish direct transcribe-1 | 3/3 | 3/3 | 690 | 1291 | 1764 |
+| Fish direct transcribe-1-pro | 3/3 | 3/3 | 604 | 1002 | 1623 |
+| Vercel fish-audio/transcribe-1 | 3/3 | 2/3 | 749 | 1251 | 1895 |
+| Vercel openai/whisper-1 | 3/3 | 3/3 | 1822 | 2130 | 2887 |
+
+Failure retained (ASR succeeded; the subsequent strict LLM pin failed): Provider returned HTTP 429 Too Many Requests: The request limited providers for this model and they are currently at capacity. Add more providers or remove restrictions for automatic fallback. Providers considered: baseten..
 ## Reproduce
 
 From the app directory, build `cargo build --example bench_pipeline`, then explicitly run, for example:
@@ -138,6 +259,6 @@ From the app directory, build `cargo build --example bench_pipeline`, then expli
   --output /absolute/results.json
 ```
 
-Use `--phase speech`, `--reasoning none|low|minimal`, `--routing default|latency`, `--latency normal|balanced`, `--chunk-length`, `--min-chunk` and `--condition` to compare supported combinations. Preserve the configured proxy; the executable refuses to benchmark when none is configured. The per-sample40-second loop limit cannot forcibly interrupt an already-blocked provider read.
+Use `--phase speech`, `--reasoning none|low|minimal`, `--routing default|latency|throughput|cost`, `--provider-only SLUG`, `--provider-order SLUG,SLUG`, `--routing-matrix default,latency,pin:baseten`, `--latency normal|balanced|low`, `--chunk-length`, `--min-chunk` and `--condition` to compare supported combinations. Preserve the configured proxy; the executable refuses to benchmark when none is configured. The per-sample40-second loop limit cannot forcibly interrupt an already-blocked provider read.
 
 Raw JSON files here contain timings and errors, never API keys, chat transcripts or voice IDs. `llm-baseline.json` is an exploratory100-token screening with an obsolete error-label bug; `llm-corrected.json` used256 tokens and could still exhaust reasoning budget. Neither is used to rank the final1024-token whole-pipeline results.

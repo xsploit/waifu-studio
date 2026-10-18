@@ -23,6 +23,7 @@ mod runtime;
 mod scene_chat_controls;
 mod scene_roster_controls;
 mod semantic_memory_controls;
+mod showcase;
 mod studio;
 mod task_board_controls;
 mod ui;
@@ -67,6 +68,9 @@ fn run() -> Result<(), String> {
         .map(|p| p.data_local_dir().to_path_buf())
         .ok_or("Cannot locate application data directory")?;
     let mut animation_path = None;
+    let default_directory = directory.clone();
+    let mut explicit_directory = false;
+    let mut showcase_path = None;
     let mut shader = None;
     let mut imports = vec![];
     let mut capture = None;
@@ -81,12 +85,20 @@ fn run() -> Result<(), String> {
         match arg.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "Waifu Studio — native Rust character companion\n\nUsage: waifu-studio [model.vrm] [--import-folder DIR] [--data-dir DIR]\n       waifu-studio --desktop\n\nModels: VRM 0.0 / 1.0, GLB, glTF\nConnections: Vercel AI Gateway, OpenRouter, OpenAI-compatible local/custom\n--environment rose-bedroom|violet-studio|cyan-lounge selects a furnished room\n--room-view frames the room\n--capture FILE.png saves the rendered app and exits\n--offscreen-capture FILE.png renders the actual UI without creating a desktop window\n--capture-size WIDTHxHEIGHT sets offscreen dimensions (default 1920x1080)\n--screen chat|scene-chat|characters|scene|connections|voice|tools|memory|tasks chooses the initial panel\n--animation FILE.bvh|vrma|fbx loads a humanoid motion\n--shader toon|lit|unlit selects appearance\nXR/VR will follow the base app; it is not enabled in this build."
+                    "Waifu Studio — native Rust character companion\n\nUsage: waifu-studio [model.vrm] [--import-folder DIR] [--data-dir DIR]\n       waifu-studio --desktop\n\nModels: VRM 0.0 / 1.0, GLB, glTF\nConnections: Vercel AI Gateway, OpenRouter, OpenAI-compatible local/custom\n--environment rose-bedroom|violet-studio|cyan-lounge selects a furnished room\n--room-view frames the room\n--capture FILE.png saves the rendered app and exits\n--offscreen-capture FILE.png renders the actual UI without creating a desktop window\n--offscreen-showcase PLAN.json records UI frames (isolated --data-dir required)\n--capture-size WIDTHxHEIGHT sets offscreen dimensions (default 1920x1080)\n--screen chat|scene-chat|characters|scene|connections|voice|tools|memory|tasks chooses the initial panel\n--animation FILE.bvh|vrma|fbx loads a humanoid motion\n--shader toon|lit|unlit selects appearance\nXR/VR will follow the base app; it is not enabled in this build."
                 );
                 return Ok(());
             }
             Some("--data-dir") => {
+                explicit_directory = true;
                 directory = PathBuf::from(args.next().ok_or("--data-dir requires a folder")?)
+            }
+            Some("--offscreen-showcase") => {
+                offscreen = true;
+                showcase_path = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--offscreen-showcase requires a JSON plan")?,
+                ));
             }
             Some("--import-folder") => imports.extend(find_models(
                 &PathBuf::from(args.next().ok_or("--import-folder requires a folder")?),
@@ -171,6 +183,18 @@ fn run() -> Result<(), String> {
     if offscreen && desktop {
         return Err("Offscreen UI capture requires Studio mode".into());
     }
+    let showcase = if let Some(path) = showcase_path {
+        if !explicit_directory
+            || capture.is_some()
+            || directory.canonicalize().ok() == default_directory.canonicalize().ok()
+            || directory.join("credentials.env").exists()
+        {
+            return Err("Showcase requires a separate explicit --data-dir without credentials and no still capture".into());
+        }
+        Some(showcase::Showcase::load(&path)?)
+    } else {
+        None
+    };
     // SAFETY: no application worker threads or Bevy plugins have started yet.
     // Private local credentials never enter the library or source package.
     unsafe { waifu_studio::credentials::load_startup(&directory.join("credentials.env")) }
@@ -326,6 +350,13 @@ fn run() -> Result<(), String> {
             .init_resource::<waifu_studio::metered_audio::SpeechMeter>();
     } else {
         app.add_plugins(waifu_studio::metered_audio::MeteredAudioPlugin);
+    }
+    if let Some(showcase) = showcase {
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / showcase.fps() as f64),
+        ))
+        .insert_resource(showcase)
+        .add_systems(PreUpdate, showcase::record);
     }
     let result = app.run();
     match result {

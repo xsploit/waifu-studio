@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::Read,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -18,6 +18,23 @@ use std::{
 };
 const RATE: usize = 16_000;
 const MAX_SAMPLES: usize = RATE * 30;
+
+// Keep-alive survives conversational pauses; auth remains request-scoped.
+fn transcription_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| "Cannot create transcription client".into())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SttBackend {
@@ -460,6 +477,17 @@ fn wav(samples: &[i16]) -> Vec<u8> {
     }
     out
 }
+/// Transcribe a bounded recording through the same adapter used by the microphone.
+/// This does not capture audio, perform endpointing, or send the resulting text to chat.
+pub fn transcribe_wav(
+    config: &ListenConfig,
+    audio: &[u8],
+    session: Option<&str>,
+    cancelled: &impl Fn() -> bool,
+) -> Result<String, String> {
+    transcribe(config, audio, session, cancelled)
+}
+
 fn transcribe(
     c: &ListenConfig,
     audio: &[u8],
@@ -512,12 +540,7 @@ fn transcribe(
         .filter(|x| !x.trim().is_empty())
         .or(env.as_deref().filter(|x| !x.trim().is_empty()))
         .or(oidc.as_deref().filter(|x| !x.trim().is_empty()));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "Cannot create transcription client")?;
+    let client = transcription_client()?;
     let request = client.post(url);
     let mut request = match c.backend {
         SttBackend::VercelGateway => request

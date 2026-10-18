@@ -28,6 +28,10 @@ Use the included character library or import your own models. Bring your own API
   </tr>
 </table>
 
+[![Watch the narrated app tour](product-video/poster.jpg)](product-video/waifu-studio-showcase.mp4)
+
+**[Watch the 76-second app tour](product-video/waifu-studio-showcase.mp4)** — actual moving native renders with Fish narration; Opus 5.5 storyboard. Captured offscreen, with the seated animation explicitly presented as a pose preview. [Recording receipt](product-video/README.md).
+
 ---
 
 ## Features at a glance
@@ -148,9 +152,10 @@ Other launch options:
 **Live-call coverage**
 
 - **Fish:** authenticated hosted calls have been exercised. That covers a 25-call speech-only screen across five models and five delivery modes, plus repeated whole-pipeline and fixed-text comparisons below.
-- **Vercel:** chat streaming and catalog checks have run live.
+- **Vercel:** chat streaming, provider pins/order/sort, catalog checks and prerecorded transcription requests have run live. Generation lookup verified the served provider on34 observed successful requests.
 - **OpenRouter:** protocol fixtures pass; live calls have not been verified.
-- **Not accepted live:** perceived audio quality, speaker onset, crackle behavior, live STT, embeddings, MCP and SSH.
+- **ASR:** direct Fish base/Pro and Vercel Fish/Whisper accepted a prerecorded synthetic test prompt. This is not microphone or VAD acceptance.
+- **Not accepted live:** perceived audio quality, speaker onset, crackle behavior, microphone endpointing, embeddings, MCP and SSH.
 
 ## Measured latency
 
@@ -165,6 +170,10 @@ The table shows medians of **3 samples per cell** for Send → first *decoded* a
 | `gemini-3.5-flash-lite` | `drama-3` | ws | 689 ms | 1121 ms |
 | `gemini-3.5-flash-lite` | `drama-3` | http | 593 ms | 1664 ms |
 | `gemini-3.5-flash-lite` | `s2.1-pro` | ws | 667 ms | 1363 ms |
+
+Later Low-latency experiments added **DeepSeek V4.1 Flash** as an alternative. With reasoning `none`, strict Vercel `only:["baseten"]` and Drama3 WebSocket Low, five instrumented calls had medians of **359ms first text /1070ms first decoded audio**. A separate three-sample batch measured1047ms first audio. The `deepseek/deepseek-v4.1-flash-fast` suffix did not establish a speed advantage. Strict pins returned capacity429s in other batches; broader routing improves fallback options.
+
+The recorded **Fish Pro → DeepSeek → Drama3** adapter sequence measured1623ms median from complete WAV upload to decoded reply audio (three samples). Speaking time, VAD silence delay, review-before-send and hardware latency are excluded. [Provider and ASR comparison tables](benchmarks/RESULTS.md).
 
 **Models are explicitly selected.** These results do not make the app an automatic fastest-model selector. Regular `gemini-3.5-flash` was substantially slower than Flash Lite in these runs. Existing user profiles keep their chosen models and voice identities. The full report distinguishes the original finalist run from the later first-phrase chunking experiment.
 
@@ -229,7 +238,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --package waifu-studio -- --check
 ```
 
-Latest receipt: **374 tests pass** (314 library, 54 binary, 6 inspection). Strict Clippy (`-D warnings`) and package formatting checks also pass. These are automated checks, separate from interactive desktop and audio acceptance. Targeted source reviews are in [reviews/](reviews/); they are not an exhaustive audit. Details are in [VALIDATION.md](VALIDATION.md).
+Latest receipt: **377 tests pass** (315 library, 56 binary, 6 inspection). Strict Clippy (`-D warnings`) and package formatting checks also pass. These are automated checks, separate from interactive desktop and audio acceptance. Targeted source reviews are in [reviews/](reviews/); they are not an exhaustive audit. Details are in [VALIDATION.md](VALIDATION.md).
 
 To render a room preview without opening a desktop window:
 
@@ -244,6 +253,8 @@ cargo run --example render_rooms -- rose previews/rose-bedroom.png   # or violet
 | [FEATURE-STATUS.md](FEATURE-STATUS.md) | Implemented / partial / missing matrix and evidence boundaries |
 | [VALIDATION.md](VALIDATION.md) | Test receipts, UI captures and what has been verified |
 | [benchmarks/RESULTS.md](benchmarks/RESULTS.md) | Pipeline latency measurements and reproduction steps |
+| [FISH-SETTINGS-AUDIT.md](FISH-SETTINGS-AUDIT.md) | Current Fish settings, missing controls and tested trade-offs |
+| [reviews/opus-brain-integration.md](reviews/opus-brain-integration.md) | Proposed Grillo/Jev/connectome architecture; not implemented |
 | [FISH-CAPABILITIES.md](FISH-CAPABILITIES.md) | Fish Audio contracts, models and pricing references |
 | [LIPSYNC-NOTICES.txt](LIPSYNC-NOTICES.txt) | uLipSync / wLipSync pins, MIT notices and validation limits |
 | [REFERENCES.md](REFERENCES.md) | Vendored libraries, upstream references and their licences |

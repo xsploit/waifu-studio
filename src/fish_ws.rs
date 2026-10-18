@@ -943,6 +943,16 @@ impl WsReader {
                 Err(_) => return Err("Fish WebSocket send failed".into()),
             }
             let command = self.outgoing.take().unwrap();
+            let elapsed = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            match &command {
+                Command::Text(_) => {
+                    self.stats.first_text_written_ms.get_or_insert(elapsed);
+                }
+                Command::Flush => {
+                    self.stats.first_flush_written_ms.get_or_insert(elapsed);
+                }
+                Command::Stop => {}
+            }
             if matches!(command, Command::Stop) {
                 self.stop_sent = true;
             }
@@ -1401,7 +1411,12 @@ fn run(
         audio: Vec::new(),
         cursor: 0,
         wire: 0,
-        stats: LiveStats::default(),
+        stats: LiveStats {
+            connection_ready_ms: Some(
+                started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+            ),
+            ..Default::default()
+        },
         snapshots: BTreeMap::new(),
     };
     let mut joined = JoinedWav::new(&mut source);

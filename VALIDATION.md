@@ -7,7 +7,7 @@ Date: 2026-10-18; earlier GPU observations are identified below. Linux KDE/Wayla
 - `cargo build --bin waifu-studio`: passed, development profile.
 - `cargo fmt --package waifu-studio -- --check`: passed.
 - `cargo clippy --all-targets -- -D warnings`: passed.
-- `cargo test --all-targets`: **374 passed** (314 library, 54 controller/runtime/UI, 6 inspection; example targets have zero tests).
+- `cargo test --all-targets`: **377 passed** (315 library, 56 controller/runtime/UI, 6 inspection; example targets have zero tests).
 
 Tests cover VRM generation/metadata/container checks, malformed inputs, failed replacement and unload cleanup, material conversion/restoration and weak-cache release, profile isolation/persistence/duplication/removal, connection index remapping, secret exclusion, bounded history/serialization/worker counts, SSE Unicode/truncation/limits/cancellation, mocked HTTP chat/model data, Fish hosted/local/OpenAI speech request bodies and error handling, BVH channel order/interpolation/mapping/rest orientation/avatar isolation, control-window recovery logic, image size/format/metadata preparation and multimodal message shape, energy VAD/WAV/multipart transcription, microphone disable/stale-result cancellation, per-character note isolation/persistence/deletion/retrieval bounds, MCP current/legacy fallback, persistent request IDs, cancellation headers, error classification and immutable tool-result provenance.
 
@@ -150,7 +150,7 @@ The KWin bridge now permits authenticated discovery when environment hints are a
 
 ## Latest integration: lip sync, previews, desktop and latency
 
-The current all-target suite has374 passing tests. Native development build, all-target Clippy with warnings denied, and cargo formatting checks passed. These checks do not establish physical desktop or speaker acceptance.
+The current all-target suite has377 passing tests. Native development build, all-target Clippy with warnings denied, and cargo formatting checks passed. These checks do not establish physical desktop or speaker acceptance.
 
 A confirmed lip-sync regression is fixed: simply opening the manual expression sliders inserted zero weights for all channels; the runtime treated their presence as a manual override, silencing automatic vowels/RMS mouths. Zero weights no longer reserve a channel, and drawing a slider no longer inserts an untouched value. Positive manual weights and explicit selected-expression ownership remain effective. Regressions cover legacy-zero RMS/vowels/blink and consumed WAV samples → speech meter → audio envelope → actual morph weights, including mouth closure on Stop. Existing saved zero entries are tolerated. Calibration remains optional for RMS lip sync; no real-voice calibration or physical speaker/mouth timing was established.
 
@@ -159,3 +159,13 @@ Character/Scene settings keep a live render-to-texture avatar preview with frami
 Desktop seating now requires a detected surface and uses Homunculus's10% hip-height clearance. Sitting state is transient; stale saved flags cannot restore a floating pose. KWin movement failures clear the seat. Snap queues authenticated bridge movement rather than relying on Wayland window positioning. Fresh KWin cursor tracking supports mesh-margin passthrough; grabs and menus retain input. Offline routing, serialization, freshness, recovery and one-shot snap tests pass. Six fake JavaScript bridge scenarios pass. Physical input, dynamic taskbar following and passthrough on the user's compositor remain unverified.
 
 Live latency evidence now includes repeated Drama3 versus S2.1 Pro across WebSocket/HTTP/SSE:18/18 whole-pipeline and18/18 fixed-text calls succeeded, plus6/6 explicitly pre-opened WebSocket experiments. HTTP won the fixed-text comparison, while WebSocket won the currently implemented streamed-LLM pipeline. Only WebSocket overlaps LLM text and speech; HTTP/SSE await the full reply. No500–700ms end-to-end guarantee, device-onset measurement or crackle acceptance is claimed. See benchmarks/RESULTS.md for per-mode medians, LLM alternatives and prewarming costs.
+
+## Provider routing, prerecorded ASR and product footage
+
+Subsequent authenticated tests use the production adapters with the configured proxy and no speaker device. DeepSeek V4.1Flash and its fast variant were tested with reasoning none, Vercel default/TTFT/throughput routing, provider-only restrictions and provider order. The instrumented five-call baseten/Drama3 WS Low batch measured359ms median first text and1070ms decoded audio. Public endpoint slugs were verified, and generation lookup attributed34 successful instrumented/Gemini/order/ASR requests after timing. Strict pins returned429 capacity errors in other batches; no model fallback hid those errors.
+
+Recorded16kHz mono PCM was transcribed through Fish base, Fish Pro, Vercel Fish and Vercel Whisper, then passed as the actual LLM input. All12 ASR requests succeeded; one subsequent strict baseten chat request returned429, leaving the Vercel Fish full sequence2/3. Median complete-WAV-upload→decoded-reply was1623ms for Fish Pro and2887ms for Vercel Whisper. This excludes capture, endpointing, transcript review and physical playback. The reused ASR client preserves redirects-off, timeout/size limits and per-request authorization.
+
+The product video contains1139 actual offscreen frames at15fps,1280×832 with title bands, and75.933s of app footage/Fish narration. The same production metered decoder consumes narration samples to drive mouth movement; no audio device opens. Full H.264/AAC decoding passed, all six chapter views were visually inspected, and no desktop-input mechanism was used. Physical desktop interaction and perceived lip-sync/audio quality remain unaccepted.
+
+New automated coverage checks final SSE routing metadata without duplicate text, invalid narration/duration rejection before frame output, and preservation of existing recording files. The source-only Opus architecture and latency reports remain reviews and proposals, not proof of implemented brain features.

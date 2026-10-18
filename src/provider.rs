@@ -633,7 +633,30 @@ fn stream_chat_with_images(
     turns: &[Turn],
     images: &[ImageAttachment],
     cancel: &AtomicBool,
+    on_delta: impl FnMut(String),
+) -> Result<(), String> {
+    stream_chat_observed_inner(config, turns, images, cancel, on_delta, |_| {})
+}
+
+/// Production chat with an optional bounded-event observer for diagnostics.
+/// Events can contain user text: callers must whitelist fields before logging.
+pub fn stream_chat_observed(
+    config: &ProviderConfig,
+    turns: &[Turn],
+    cancel: &AtomicBool,
+    on_delta: impl FnMut(String),
+    on_event: impl FnMut(&Value),
+) -> Result<(), String> {
+    stream_chat_observed_inner(config, turns, &[], cancel, on_delta, on_event)
+}
+
+fn stream_chat_observed_inner(
+    config: &ProviderConfig,
+    turns: &[Turn],
+    images: &[ImageAttachment],
+    cancel: &AtomicBool,
     mut on_delta: impl FnMut(String),
+    mut on_event: impl FnMut(&Value),
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Ok(());
@@ -686,6 +709,7 @@ fn stream_chat_with_images(
         .is_some_and(|h| h.contains("application/json"));
     if json_response {
         let value: Value = read_json(response, 2_000_000)?;
+        on_event(&value);
         let text = value
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
@@ -695,7 +719,12 @@ fn stream_chat_with_images(
         }
         return Ok(());
     }
-    parse_sse(BufReader::new(response), cancel, &mut on_delta)
+    parse_sse_observed(
+        BufReader::new(response),
+        cancel,
+        &mut on_delta,
+        &mut on_event,
+    )
 }
 
 fn read_json(response: impl Read, limit: u64) -> Result<Value, String> {
@@ -710,10 +739,20 @@ fn read_json(response: impl Read, limit: u64) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("Invalid provider JSON: {e}"))
 }
 
+#[cfg(test)]
 fn parse_sse(
+    reader: impl BufRead,
+    cancel: &AtomicBool,
+    on_delta: &mut impl FnMut(String),
+) -> Result<(), String> {
+    parse_sse_observed(reader, cancel, on_delta, &mut |_| {})
+}
+
+fn parse_sse_observed(
     mut reader: impl BufRead,
     cancel: &AtomicBool,
     on_delta: &mut impl FnMut(String),
+    on_event: &mut impl FnMut(&Value),
 ) -> Result<(), String> {
     const MAX_RESPONSE: usize = 2_000_000;
     const MAX_LINE: usize = 256_000;
@@ -773,6 +812,7 @@ fn parse_sse(
             let value: Value =
                 serde_json::from_str(&data).map_err(|e| format!("Invalid stream event: {e}"))?;
             data.clear();
+            on_event(&value);
             if let Some(error) = value.get("error") {
                 return Err(format!("Provider stream error: {error}"));
             }
@@ -879,6 +919,32 @@ pub fn fetch_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observer_preserves_final_metadata_and_text_without_duplicate_deltas() {
+        let wire = concat!(
+            "data: {\"id\":\"gen_test\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"providerMetadata\":{\"gateway\":{\"routing\":{\"finalProvider\":\"baseten\"}}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let mut text = String::new();
+        let mut served = None;
+        parse_sse_observed(
+            std::io::Cursor::new(wire),
+            &AtomicBool::new(false),
+            &mut |delta| text.push_str(&delta),
+            &mut |event| {
+                if let Some(provider) = event
+                    .pointer("/providerMetadata/gateway/routing/finalProvider")
+                    .and_then(Value::as_str)
+                {
+                    served = Some(provider.to_owned());
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(text, "Hello");
+        assert_eq!(served.as_deref(), Some("baseten"));
+    }
     #[test]
     fn catalog_identity_tracks_connection_and_auth_but_not_generation_settings() {
         let mut config = ProviderConfig::pinned(GatewayRoute::VercelGateway);

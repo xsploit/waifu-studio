@@ -1,0 +1,382 @@
+{
+  "asr_backend": "fish",
+  "asr_model": "transcribe-1",
+  "max_tokens": "1024",
+  "method": "production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+  "prerecorded_asr": false,
+  "prewarm_ms": "0",
+  "provider_only": "baseten",
+  "provider_order": "",
+  "reasoning": "none",
+  "routing": "default",
+  "routing_matrix": "",
+  "rows": [
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8591.383219954649,
+      "decoded_done_ms": 1906.3691789999998,
+      "earliest_playback_end_ms": 9722.947636954648,
+      "error": null,
+      "first_decoded_audio_ms": 1131.5644169999998,
+      "first_nonzero_audio_ms": 1131.568461,
+      "first_token_ms": 697.2913080000001,
+      "llm_done_ms": 775.187241,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 1892.9135929999998,
+      "nonzero_samples": 358110,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 121,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1127
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7198.185941043084,
+      "decoded_done_ms": 1803.981786,
+      "earliest_playback_end_ms": 8369.094029043084,
+      "error": null,
+      "first_decoded_audio_ms": 1170.908088,
+      "first_nonzero_audio_ms": 1170.911871,
+      "first_token_ms": 453.35479899999996,
+      "llm_done_ms": 526.18705,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 1797.1344550000001,
+      "nonzero_samples": 306478,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 104,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 9319.97732426304,
+      "decoded_done_ms": 3113.697566,
+      "earliest_playback_end_ms": 10564.483683263039,
+      "error": null,
+      "first_decoded_audio_ms": 1244.506359,
+      "first_nonzero_audio_ms": 1244.5096600000002,
+      "first_token_ms": 778.816607,
+      "llm_done_ms": 851.561411,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 3100.309303,
+      "nonzero_samples": 395120,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "s2.1-pro",
+      "text_chars": 132,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1240
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7801.9047619047615,
+      "decoded_done_ms": 3012.1902760000003,
+      "earliest_playback_end_ms": 9253.572610904761,
+      "error": null,
+      "first_decoded_audio_ms": 1451.6678490000002,
+      "first_nonzero_audio_ms": 1451.671046,
+      "first_token_ms": 463.640219,
+      "llm_done_ms": 523.6980540000001,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 2997.277639,
+      "nonzero_samples": 339153,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "s2.1-pro",
+      "text_chars": 122,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8544.943310657596,
+      "decoded_done_ms": 2266.845017,
+      "earliest_playback_end_ms": 9602.344250657596,
+      "error": null,
+      "first_decoded_audio_ms": 1057.40094,
+      "first_nonzero_audio_ms": 1057.40555,
+      "first_token_ms": 537.3591749999999,
+      "llm_done_ms": 616.243678,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 2260.0334740000003,
+      "nonzero_samples": 366329,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 126,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1053
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7801.9047619047615,
+      "decoded_done_ms": 1986.198629,
+      "earliest_playback_end_ms": 8993.498934904761,
+      "error": null,
+      "first_decoded_audio_ms": 1191.594173,
+      "first_nonzero_audio_ms": 1191.597406,
+      "first_token_ms": 485.47426,
+      "llm_done_ms": 555.0350040000001,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 1980.604765,
+      "nonzero_samples": 332271,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 122,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8042.448979591837,
+      "decoded_done_ms": 2857.080347,
+      "earliest_playback_end_ms": 9255.714436591838,
+      "error": null,
+      "first_decoded_audio_ms": 1213.265457,
+      "first_nonzero_audio_ms": 1213.2688309999999,
+      "first_token_ms": 427.015939,
+      "llm_done_ms": 496.422154,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 2851.43452,
+      "nonzero_samples": 340283,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "s2.1-pro",
+      "text_chars": 125,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1208
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7755.46485260771,
+      "decoded_done_ms": 3018.8976150000003,
+      "earliest_playback_end_ms": 9213.56517460771,
+      "error": null,
+      "first_decoded_audio_ms": 1458.100322,
+      "first_nonzero_audio_ms": 1458.103546,
+      "first_token_ms": 412.937787,
+      "llm_done_ms": 604.246074,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 3013.570374,
+      "nonzero_samples": 337642,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "s2.1-pro",
+      "text_chars": 125,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8684.263038548754,
+      "decoded_done_ms": 1730.780449,
+      "earliest_playback_end_ms": 9715.529527548753,
+      "error": null,
+      "first_decoded_audio_ms": 1031.266489,
+      "first_nonzero_audio_ms": 1031.2704290000001,
+      "first_token_ms": 490.077746,
+      "llm_done_ms": 582.6379270000001,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 1727.9538400000001,
+      "nonzero_samples": 368372,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 123,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1027
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8312.743764172335,
+      "decoded_done_ms": 1888.0189710000002,
+      "earliest_playback_end_ms": 9465.459749172336,
+      "error": null,
+      "first_decoded_audio_ms": 1152.715985,
+      "first_nonzero_audio_ms": 1152.7216629999998,
+      "first_token_ms": 424.605271,
+      "llm_done_ms": 505.45176000000004,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 1874.499173,
+      "nonzero_samples": 358653,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 123,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 6315.827664399093,
+      "decoded_done_ms": 2386.649292,
+      "earliest_playback_end_ms": 7405.180664399093,
+      "error": null,
+      "first_decoded_audio_ms": 1089.353,
+      "first_nonzero_audio_ms": 1089.356128,
+      "first_token_ms": 452.11019000000005,
+      "llm_done_ms": 514.399614,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "ws",
+      "network_done_ms": 2382.193131,
+      "nonzero_samples": 275159,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "s2.1-pro",
+      "text_chars": 101,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1085
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7430.385487528345,
+      "decoded_done_ms": 2850.3053,
+      "earliest_playback_end_ms": 8629.209815528346,
+      "error": null,
+      "first_decoded_audio_ms": 1198.824328,
+      "first_nonzero_audio_ms": 1198.827887,
+      "first_token_ms": 450.653484,
+      "llm_done_ms": 531.7074160000001,
+      "llm_model": "deepseek/deepseek-v4.1-flash-fast",
+      "mode": "http",
+      "network_done_ms": 2839.587599,
+      "nonzero_samples": 320901,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "s2.1-pro",
+      "text_chars": 116,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": null
+    }
+  ],
+  "version": 1,
+  "voice_tuning": {
+    "chunk_length": 160,
+    "condition_on_previous_chunks": true,
+    "latency": "low",
+    "min_chunk_length": 20
+  }
+}

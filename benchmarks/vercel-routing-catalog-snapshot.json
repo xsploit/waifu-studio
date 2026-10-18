@@ -1,0 +1,319 @@
+{
+  "observed_date": "2026-10-18",
+  "note": "Public Vercel endpoint metadata; fleet latency is not this app benchmark TTFT.",
+  "models": [
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "source": "https://ai-gateway.vercel.sh/v1/models/deepseek/deepseek-v4.1-flash/endpoints",
+      "reasoning": {
+        "mandatory": false,
+        "supported_efforts": [
+          "none",
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "endpoints": [
+        {
+          "provider_name": "alibaba",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 3857,
+            "p95": 15349.250000000007
+          },
+          "throughput_last_1h": {
+            "p50": 194,
+            "p95": 227.2
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "baseten",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 395,
+            "p95": 916
+          },
+          "throughput_last_1h": {
+            "p50": 262,
+            "p95": 447.09999999999945
+          },
+          "quantization": "fp8"
+        },
+        {
+          "provider_name": "boundless",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 975.5,
+            "p95": 3164.1
+          },
+          "throughput_last_1h": null,
+          "quantization": null
+        },
+        {
+          "provider_name": "deepinfra",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1246.5,
+            "p95": 2615.55
+          },
+          "throughput_last_1h": {
+            "p50": 101,
+            "p95": 107.7
+          },
+          "quantization": "fp8"
+        },
+        {
+          "provider_name": "deepseek",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1449,
+            "p95": 2795.3499999999995
+          },
+          "throughput_last_1h": {
+            "p50": 233,
+            "p95": 245
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "fireworks",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1314,
+            "p95": 4250.799999999999
+          },
+          "throughput_last_1h": {
+            "p50": 148,
+            "p95": 196
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "gmicloud",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 836,
+            "p95": 1320.8999999999999
+          },
+          "throughput_last_1h": {
+            "p50": 204,
+            "p95": 218.39999999999998
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "inference-net",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 336,
+            "p95": 852
+          },
+          "throughput_last_1h": {
+            "p50": 140,
+            "p95": 184.49999999999997
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "modal",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1061,
+            "p95": 5252.599999999998
+          },
+          "throughput_last_1h": {
+            "p50": 92,
+            "p95": 92
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "morph",
+          "status": 0,
+          "latency_last_1h": null,
+          "throughput_last_1h": null,
+          "quantization": null
+        },
+        {
+          "provider_name": "novita",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1319,
+            "p95": 2613.4
+          },
+          "throughput_last_1h": {
+            "p50": 159.5,
+            "p95": 190.45
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "parasail",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1037.5,
+            "p95": 2557.75
+          },
+          "throughput_last_1h": {
+            "p50": 195,
+            "p95": 339
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "pareto",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1029,
+            "p95": 3509.7999999999984
+          },
+          "throughput_last_1h": {
+            "p50": 160.5,
+            "p95": 163.64999999999998
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "particle",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1137,
+            "p95": 2347.25
+          },
+          "throughput_last_1h": {
+            "p50": 144,
+            "p95": 144
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "relace",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 250,
+            "p95": 1666
+          },
+          "throughput_last_1h": {
+            "p50": 114,
+            "p95": 142.79999999999998
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "runinfra",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 524,
+            "p95": 1137.5
+          },
+          "throughput_last_1h": null,
+          "quantization": null
+        },
+        {
+          "provider_name": "runware",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 492,
+            "p95": 1514
+          },
+          "throughput_last_1h": {
+            "p50": 164,
+            "p95": 222
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "togetherai",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 369,
+            "p95": 1697.6999999999962
+          },
+          "throughput_last_1h": {
+            "p50": 280,
+            "p95": 308
+          },
+          "quantization": "fp8"
+        },
+        {
+          "provider_name": "wafer",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 482,
+            "p95": 953.5999999999999
+          },
+          "throughput_last_1h": {
+            "p50": 136,
+            "p95": 136
+          },
+          "quantization": null
+        }
+      ]
+    },
+    {
+      "id": "deepseek/deepseek-v4.1-flash-fast",
+      "source": "https://ai-gateway.vercel.sh/v1/models/deepseek/deepseek-v4.1-flash-fast/endpoints",
+      "reasoning": {
+        "mandatory": false,
+        "supported_efforts": [
+          "none",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "endpoints": [
+        {
+          "provider_name": "baseten",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 510,
+            "p95": 1451
+          },
+          "throughput_last_1h": null,
+          "quantization": null
+        }
+      ]
+    },
+    {
+      "id": "google/gemini-3.5-flash-lite",
+      "source": "https://ai-gateway.vercel.sh/v1/models/google/gemini-3.5-flash-lite/endpoints",
+      "reasoning": {
+        "supported_efforts": [
+          "low",
+          "high"
+        ]
+      },
+      "endpoints": [
+        {
+          "provider_name": "google",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 513,
+            "p95": 698
+          },
+          "throughput_last_1h": {
+            "p50": 279.5,
+            "p95": 502.8499999999999
+          },
+          "quantization": null
+        },
+        {
+          "provider_name": "vertex",
+          "status": 0,
+          "latency_last_1h": {
+            "p50": 1064,
+            "p95": 2004
+          },
+          "throughput_last_1h": {
+            "p50": 439.5,
+            "p95": 533.55
+          },
+          "quantization": null
+        }
+      ]
+    }
+  ]
+}

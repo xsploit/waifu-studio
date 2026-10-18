@@ -50,6 +50,12 @@ pub struct LiveStats {
     /// Number of SSE audio/timing payloads; these are not independently playable clips.
     pub frames: usize,
     pub first_audio_ms: Option<u64>,
+    /// WebSocket-only diagnostics, relative to this session's worker start.
+    pub connection_ready_ms: Option<u64>,
+    /// First text command accepted by the socket writer, not server acknowledgement.
+    pub first_text_written_ms: Option<u64>,
+    /// First explicit Fish flush command accepted by the socket writer.
+    pub first_flush_written_ms: Option<u64>,
 }
 #[derive(Debug)]
 pub enum LiveEvent {

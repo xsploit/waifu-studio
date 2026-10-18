@@ -1,0 +1,272 @@
+{
+  "asr_backend": "fish",
+  "asr_model": "transcribe-1",
+  "max_tokens": "1024",
+  "method": "production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+  "prerecorded_asr": false,
+  "prewarm_ms": "0",
+  "provider_only": "baseten",
+  "provider_order": "",
+  "reasoning": "none",
+  "routing": "default",
+  "routing_matrix": "",
+  "rows": [
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7569.705215419501,
+      "decoded_done_ms": 1734.880372,
+      "earliest_playback_end_ms": 8655.840351419502,
+      "error": null,
+      "first_decoded_audio_ms": 1086.135136,
+      "first_nonzero_audio_ms": 1086.1384,
+      "first_token_ms": 645.8154699999999,
+      "llm_done_ms": 725.767305,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 645.1628900000001,
+        "input_tokens": 52,
+        "output_tokens": 25,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DC5386WSM34GQ5ZBR2END",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 1733.408046,
+      "nonzero_samples": 316695,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 103,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1081,
+      "ws_connection_ready_ms": 631,
+      "ws_first_flush_written_ms": 654,
+      "ws_first_text_written_ms": 646,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 248,
+        "generation_time": 302,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7476.825396825398,
+      "decoded_done_ms": 2145.8306939999998,
+      "earliest_playback_end_ms": 8805.490404825397,
+      "error": null,
+      "first_decoded_audio_ms": 1328.665008,
+      "first_nonzero_audio_ms": 1328.6691099999998,
+      "first_token_ms": 758.95492,
+      "llm_done_ms": 968.056657,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 757.847599,
+        "input_tokens": 52,
+        "output_tokens": 24,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DC6HF234SYTRQGJ6NHVCF",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 2141.636798,
+      "nonzero_samples": 309096,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 104,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1325,
+      "ws_connection_ready_ms": 624,
+      "ws_first_flush_written_ms": 893,
+      "ws_first_text_written_ms": 760,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 585,
+        "generation_time": 829,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 7941.224489795919,
+      "decoded_done_ms": 1787.168753,
+      "earliest_playback_end_ms": 8982.64707479592,
+      "error": null,
+      "first_decoded_audio_ms": 1041.422585,
+      "first_nonzero_audio_ms": 1041.426091,
+      "first_token_ms": 258.677046,
+      "llm_done_ms": 330.103561,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 247.85083799999998,
+        "input_tokens": 52,
+        "output_tokens": 25,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DC8KMQ786423BKW8P1R3P",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 1784.3927410000001,
+      "nonzero_samples": 325676,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 100,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1037,
+      "ws_connection_ready_ms": 611,
+      "ws_first_flush_written_ms": 611,
+      "ws_first_text_written_ms": 611,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 136,
+        "generation_time": 211,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8452.063492063493,
+      "decoded_done_ms": 1991.2920139999999,
+      "earliest_playback_end_ms": 9521.650620063492,
+      "error": null,
+      "first_decoded_audio_ms": 1069.587128,
+      "first_nonzero_audio_ms": 1069.590435,
+      "first_token_ms": 359.272863,
+      "llm_done_ms": 661.809349,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 358.563855,
+        "input_tokens": 52,
+        "output_tokens": 34,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DCABC0TGZ6C57X3Z6NXJ3",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 1975.1389550000001,
+      "nonzero_samples": 354340,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 4,
+      "speech_model": "drama-3",
+      "text_chars": 121,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1065,
+      "ws_connection_ready_ms": 621,
+      "ws_first_flush_written_ms": 621,
+      "ws_first_text_written_ms": 621,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 242,
+        "generation_time": 546,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    },
+    {
+      "asr_done_ms": null,
+      "audio_duration_ms": 8544.943310657596,
+      "decoded_done_ms": 1937.445628,
+      "earliest_playback_end_ms": 9599.832681657595,
+      "error": null,
+      "first_decoded_audio_ms": 1054.889371,
+      "first_nonzero_audio_ms": 1054.892105,
+      "first_token_ms": 298.352825,
+      "llm_done_ms": 828.3918580000001,
+      "llm_model": "deepseek/deepseek-v4.1-flash",
+      "llm_observation": {
+        "first_event_ms": 297.453241,
+        "input_tokens": 52,
+        "output_tokens": 31,
+        "reasoning_tokens": 0,
+        "response_id": "gen_01M57DCCA0T7BNWXMFX771BEZT",
+        "served_provider": "baseten",
+        "attribution_source": "vercel_generation_lookup"
+      },
+      "mode": "ws",
+      "network_done_ms": 1937.157835,
+      "nonzero_samples": 368359,
+      "phase": "pipeline",
+      "provider_routing": {
+        "allow_fallbacks": true,
+        "only": [
+          "baseten"
+        ],
+        "order": [],
+        "sort": "default"
+      },
+      "routing_case": "default",
+      "run": 5,
+      "speech_model": "drama-3",
+      "text_chars": 117,
+      "transcript_chars": null,
+      "transport_first_wire_audio_ms": 1050,
+      "ws_connection_ready_ms": 627,
+      "ws_first_flush_written_ms": 627,
+      "ws_first_text_written_ms": 627,
+      "generation_lookup": {
+        "provider_name": "baseten",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "latency": 171,
+        "generation_time": 693,
+        "native_tokens_reasoning": 0,
+        "native_tokens_cached": 0
+      }
+    }
+  ],
+  "version": 1,
+  "voice_tuning": {
+    "chunk_length": 160,
+    "condition_on_previous_chunks": true,
+    "latency": "low",
+    "min_chunk_length": 20
+  }
+}
