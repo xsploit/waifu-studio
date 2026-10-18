@@ -5,7 +5,7 @@
 //! https://github.com/not-elm/bevy_vrm1/tree/v0.7.1/src/vrma/animation
 //! Application placement is excluded from all rest-space calculations.
 use crate::loading::AvatarLoadState;
-use bevy::prelude::*;
+use bevy::{math::Affine3A, prelude::*};
 use serde_vrm::vrm1::vrmc_vrm::humanoid::HumanBoneName;
 use std::{
     collections::{HashMap, HashSet},
@@ -75,6 +75,7 @@ pub struct BvhClip {
     translation_tracks: Vec<Option<animation_import::TranslationTrack>>,
     rest_world: Vec<Quat>,
     rest_positions: Vec<Vec3>,
+    rest_parents: Vec<Affine3A>,
     source_format: &'static str,
     exact_duration: Option<f32>,
 }
@@ -202,6 +203,7 @@ impl BvhClip {
     fn populate_rest_geometry(&mut self) -> Result<(), String> {
         let mut globals: Vec<GlobalTransform> = Vec::with_capacity(self.joints.len());
         self.rest_positions.clear();
+        self.rest_parents.clear();
         self.rest_world.clear();
         for joint in &self.joints {
             let local = Transform {
@@ -209,6 +211,13 @@ impl BvhClip {
                 rotation: joint.rest_rotation,
                 scale: joint.rest_scale,
             };
+            self.rest_parents.push(
+                joint
+                    .parent
+                    .and_then(|p| globals.get(p))
+                    .map(GlobalTransform::affine)
+                    .unwrap_or(Affine3A::IDENTITY),
+            );
             let global = match joint.parent {
                 Some(parent) if parent < globals.len() => globals[parent].mul_transform(local),
                 Some(_) => return Err("Animation skeleton is not parent-first".into()),
@@ -361,6 +370,7 @@ pub fn parse_bvh(input: &str) -> Result<BvhClip, String> {
         tracks: Vec::new(),
         translation_tracks: Vec::new(),
         rest_world: Vec::new(),
+        rest_parents: Vec::new(),
         rest_positions: Vec::new(),
         source_format: "BVH",
         exact_duration: None,
@@ -788,6 +798,7 @@ struct PoseBone {
     idle: Transform,
     rest_rotation: Quat,
     rest_position: Vec3,
+    model_to_parent: Option<Affine3A>,
     joint: Option<usize>,
     depth: usize,
 }
@@ -854,6 +865,9 @@ fn clip_pose(
     );
     if bone.bone == HumanBoneName::Hips {
         let mut delta = clip.sample_translation(index, seconds, looping) - source.rest_translation;
+        // Translation tracks live in the source parent frame. Normalize the
+        // displacement into model space before facing/height conversion.
+        delta = clip.rest_parents[index].transform_vector3(delta);
         if reverse_facing {
             delta.x = -delta.x;
             delta.z = -delta.z;
@@ -867,7 +881,11 @@ fn clip_pose(
         } else {
             1.
         };
-        let position = bone.rest.translation + delta * scaling * weight;
+        let Some(model_to_parent) = bone.model_to_parent else {
+            return result;
+        };
+        let position =
+            bone.rest.translation + model_to_parent.transform_vector3(delta * scaling * weight);
         if position.is_finite() && position.abs().max_element() <= 10_000. {
             result.translation = position;
         }
@@ -921,6 +939,36 @@ fn relative_position(
     }
     None
 }
+/// Invert only the imported parent hierarchy; application placement is excluded.
+/// Singular/nonfinite armatures cannot safely translate a joint.
+fn parent_inverse(
+    entity: Entity,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    transforms: &Query<&mut Transform>,
+    rests: &Query<&HumanoidRestTransform>,
+) -> Option<Affine3A> {
+    let mut current = parents.get(entity).ok()?.parent();
+    let mut affine = Affine3A::IDENTITY;
+    for _ in 0..128 {
+        if current == root {
+            let determinant = affine.matrix3.determinant();
+            if !affine.is_finite() || !determinant.is_finite() || determinant.abs() < 1e-12 {
+                return None;
+            }
+            let inverse = affine.inverse();
+            return inverse.is_finite().then_some(inverse);
+        }
+        let transform = rests
+            .get(current)
+            .map(|r| r.0)
+            .or_else(|_| transforms.get(current).copied())
+            .ok()?;
+        affine = transform.compute_affine() * affine;
+        current = parents.get(current).ok()?.parent();
+    }
+    None
+}
 #[allow(clippy::too_many_arguments)]
 fn animate_humanoid(
     time: Res<Time>,
@@ -965,6 +1013,7 @@ fn animate_humanoid(
                     idle: *idle,
                     rest_rotation: rotation,
                     rest_position: position,
+                    model_to_parent: parent_inverse(entity, root, &parents, &transforms, &rests),
                     joint: None,
                     depth,
                 });
@@ -1640,6 +1689,7 @@ mod tests {
             idle: rest,
             rest_rotation: rest.rotation,
             rest_position: rest.translation,
+            model_to_parent: Some(Affine3A::IDENTITY),
             joint: Some(index),
             depth: 0,
         };
@@ -1649,6 +1699,52 @@ mod tests {
         let delta_z = 0.019633185 - 0.0036096585;
         assert!((pose.translation.z - delta_z * (1.2 / 0.8241627)).abs() < 1e-6);
         assert!(pose.rotation.angle_between(rest.rotation) < 0.001);
+    }
+
+    #[test]
+    fn hips_delta_converts_both_armature_frames_and_rejects_singular_target() {
+        let source = "HIERARCHY ROOT Armature { OFFSET 0 0 0 CHANNELS 3 Xrotation Yrotation Zrotation JOINT hips { OFFSET 0 2 0 CHANNELS 6 Xposition Yposition Zposition Xrotation Yrotation Zrotation End Site { OFFSET 0 -1 0 } } } MOTION Frames: 2 Frame Time: 0.1 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3 0 0 0";
+        let mut clip = parse_bvh(source).unwrap();
+        clip.joints[0].rest_rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        clip.joints[0].rest_scale = Vec3::new(2., 0.5, 3.);
+        clip.populate_rest_geometry().unwrap();
+        let parent = Transform::from_xyz(3., 0.5, -4.)
+            .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.3, -0.7, 0.2))
+            .with_scale(Vec3::new(0.5, 2., 3.))
+            .compute_affine();
+        let rest_position = Vec3::new(0., 2., 0.);
+        let rest = Transform::from_translation(parent.inverse().transform_point3(rest_position));
+        let mut bone = PoseBone {
+            entity: Entity::PLACEHOLDER,
+            bone: HumanBoneName::Hips,
+            rest,
+            idle: rest,
+            rest_rotation: Quat::IDENTITY,
+            rest_position,
+            model_to_parent: Some(parent.inverse()),
+            joint: Some(1),
+            depth: 2,
+        };
+        for reverse in [false, true] {
+            for weight in [0., 0.4, 1.] {
+                let pose = clip_pose(&clip, 1, Quat::IDENTITY, 0.1, false, &bone, reverse, weight);
+                // Source (1,2,3) -> scaled (2,1,9) -> +90Y (9,1,-2).
+                // Target/source model-space hips heights are 2/1.
+                let sign = if reverse { -1. } else { 1. };
+                let expected = rest_position + Vec3::new(sign * 18., 2., sign * -4.) * weight;
+                assert!(
+                    parent
+                        .transform_point3(pose.translation)
+                        .abs_diff_eq(expected, 1e-4)
+                );
+                assert_eq!(pose.scale, rest.scale);
+            }
+        }
+        bone.model_to_parent = None;
+        assert_eq!(
+            clip_pose(&clip, 1, Quat::IDENTITY, 0.1, false, &bone, false, 1.).translation,
+            rest.translation
+        );
     }
 
     #[test]
@@ -1719,64 +1815,84 @@ mod tests {
         let clip = Arc::new(parse_bvh(&source).unwrap());
         for reverse in [false, true] {
             for placed in [false, true] {
-                let mut app = App::new();
-                app.add_plugins(MinimalPlugins)
-                    .init_resource::<AvatarLoadState>()
-                    .add_plugins(BvhAnimationPlugin);
-                let placement = if placed {
-                    Transform::from_xyz(80., -40., 60.)
-                        .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.4, -1.8, 0.2))
-                        .with_scale(Vec3::splat(3.))
-                } else {
-                    Transform::default()
-                };
-                let root = app.world_mut().spawn(placement).id();
-                let internal = app
-                    .world_mut()
-                    .spawn((Transform::from_xyz(0., 0.5, 0.), ChildOf(root)))
-                    .id();
-                let rest = Transform::from_xyz(0., 1.5, 0.);
-                let hips = app
-                    .world_mut()
-                    .spawn((HumanBoneName::Hips, rest, ChildOf(internal)))
-                    .id();
-                let side = if reverse { -0.2 } else { 0.2 };
-                for (name, x) in [
-                    (HumanBoneName::LeftUpperArm, side),
-                    (HumanBoneName::RightUpperArm, -side),
-                ] {
-                    app.world_mut()
-                        .spawn((name, Transform::from_xyz(x, 0.3, 0.), ChildOf(hips)));
+                for armature in [false, true] {
+                    let mut app = App::new();
+                    app.add_plugins(MinimalPlugins)
+                        .init_resource::<AvatarLoadState>()
+                        .add_plugins(BvhAnimationPlugin);
+                    let placement = if placed {
+                        Transform::from_xyz(80., -40., 60.)
+                            .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.4, -1.8, 0.2))
+                            .with_scale(Vec3::splat(3.))
+                    } else {
+                        Transform::default()
+                    };
+                    let root = app.world_mut().spawn(placement).id();
+                    let internal_transform = if armature {
+                        Transform::from_xyz(0., 0.5, 0.)
+                            .with_rotation(Quat::from_rotation_y(0.7))
+                            .with_scale(Vec3::new(2., 0.5, 3.))
+                    } else {
+                        Transform::from_xyz(0., 0.5, 0.)
+                    };
+                    let internal = app
+                        .world_mut()
+                        .spawn((internal_transform, ChildOf(root)))
+                        .id();
+                    let rest = Transform::from_translation(
+                        internal_transform
+                            .compute_affine()
+                            .inverse()
+                            .transform_point3(Vec3::new(0., 2., 0.)),
+                    );
+                    let hips = app
+                        .world_mut()
+                        .spawn((HumanBoneName::Hips, rest, ChildOf(internal)))
+                        .id();
+                    let side = if reverse { -0.2 } else { 0.2 };
+                    for (name, x) in [
+                        (HumanBoneName::LeftUpperArm, side),
+                        (HumanBoneName::RightUpperArm, -side),
+                    ] {
+                        app.world_mut().spawn((
+                            name,
+                            Transform::from_xyz(x, 0.3, 0.),
+                            ChildOf(hips),
+                        ));
+                    }
+                    app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+                    {
+                        let mut state = app.world_mut().resource_mut::<AnimationState>();
+                        state.clip = Some(clip.clone());
+                        state.play();
+                    }
+                    app.update();
+                    {
+                        let mut state = app.world_mut().resource_mut::<AnimationState>();
+                        state.position = 0.1;
+                        state.pause();
+                    }
+                    app.update();
+                    let pose = app.world().get::<Transform>(hips).unwrap();
+                    let sign = if reverse { -1. } else { 1. };
+                    assert!(
+                        internal_transform
+                            .transform_point(pose.translation)
+                            .abs_diff_eq(Vec3::new(sign * 0.2, 2.4, sign * 0.6), 1e-5),
+                        "{pose:?}"
+                    );
+                    assert!(
+                        pose.rotation.angle_between(destination_pose(
+                            Quat::IDENTITY,
+                            internal_transform.rotation,
+                            Quat::from_rotation_z(sign * std::f32::consts::FRAC_PI_2)
+                        )) < 0.001
+                    );
+                    app.world_mut().resource_mut::<AnimationState>().stop();
+                    app.update();
+                    assert_eq!(*app.world().get::<Transform>(hips).unwrap(), rest);
+                    assert_eq!(*app.world().get::<Transform>(root).unwrap(), placement);
                 }
-                app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
-                {
-                    let mut state = app.world_mut().resource_mut::<AnimationState>();
-                    state.clip = Some(clip.clone());
-                    state.play();
-                }
-                app.update();
-                {
-                    let mut state = app.world_mut().resource_mut::<AnimationState>();
-                    state.position = 0.1;
-                    state.pause();
-                }
-                app.update();
-                let pose = app.world().get::<Transform>(hips).unwrap();
-                let sign = if reverse { -1. } else { 1. };
-                assert!(
-                    pose.translation
-                        .abs_diff_eq(Vec3::new(sign * 0.2, 1.9, sign * 0.6), 1e-5),
-                    "{pose:?}"
-                );
-                assert!(
-                    pose.rotation
-                        .angle_between(Quat::from_rotation_z(sign * std::f32::consts::FRAC_PI_2))
-                        < 0.001
-                );
-                app.world_mut().resource_mut::<AnimationState>().stop();
-                app.update();
-                assert_eq!(*app.world().get::<Transform>(hips).unwrap(), rest);
-                assert_eq!(*app.world().get::<Transform>(root).unwrap(), placement);
             }
         }
     }

@@ -362,6 +362,7 @@ fn build_clip(
         translation_tracks: sorted_translations,
         rest_world,
         rest_positions: Vec::new(),
+        rest_parents: Vec::new(),
         source_format: format,
         exact_duration: Some(duration),
     };

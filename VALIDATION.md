@@ -229,3 +229,11 @@ Query scanning is bounded to the first 16 KiB at UTF-8/word boundaries, then at 
 Offline regressions cover tea/steak separation, common-word-only queries, VR/AI/NY and numeric terms, duplicate-query terms, contraction negation, preserved pinned notes, unspaced Japanese text, bounded long UTF-8 inputs and exact trace scores. No inference requests or storage migration are added. Dataset-level recall accuracy and interactive acceptance remain unmeasured.
 
 Final checks: 398 library + 87 app + 6 integration + 1 benchmark = 492 passing tests. After the final irregular-contraction cleanup, all 50 targeted memory/term tests pass; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. Fable review dispatch was rejected by the orchestration causal-hop limit; no external-model review is claimed.
+
+## Hips translation across armature frames
+
+Hips translation deltas now pass from source-parent coordinates into the source model frame, through facing and model-height conversion, and into the target-parent coordinates. The transforms retain nonuniform scale and rotation, while application placement remains excluded. Singular/nonfinite target parent transforms leave the hips at their rest translation rather than applying an invalid inverse; rotation retargeting remains independent. This uses rest armature frames, not a general animated-parent constraint solver.
+
+Offline coverage includes a rotated/scaled source and target together, partial/zero weights and reversed facing, plus full app updates with rotated/nonuniformly scaled target armatures and independent desktop placement. Existing bundled sitting, restoration, omitted-bone and crossfade regressions remain covered. Arbitrary FBX rigs and visible foot placement still require visual acceptance.
+
+Final checks: 399 library + 87 app + 6 integration + 1 benchmark = 493 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Temporarily restoring the old local-space displacement makes the new armature-conversion regression fail; the corrected implementation was restored before the full suite. All builds used one job. No new external-model review or live visual acceptance is claimed.
