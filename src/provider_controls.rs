@@ -125,14 +125,21 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             if config.uses_server_sampling() {
                 ui.small("This GPT-5 gateway model uses server sampling defaults. Saved temperature and Top P settings are not sent.");
             }
+            let supported = config.supported_reasoning_efforts();
             egui::ComboBox::from_id_salt("connection-reasoning-effort")
                 .selected_text(config.reasoning_effort.map_or("Automatic", ReasoningEffort::label))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut config.reasoning_effort, None, "Automatic");
                     for effort in ReasoningEffort::ALL {
+                        if supported.as_ref().is_some_and(|listed| !listed.contains(&effort)) {
+                            continue;
+                        }
                         ui.selectable_value(&mut config.reasoning_effort, Some(effort), effort.label());
                     }
                 });
+            if let Some(error) = config.reasoning_effort_error() {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            }
             ui.small("Reasoning levels depend on the selected model. None explicitly disables reasoning where supported.");
             let mut budget = config.max_tokens.is_some();
             if ui

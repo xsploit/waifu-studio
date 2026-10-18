@@ -2626,8 +2626,19 @@ fn composer_connection(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
     let label = format!("{short}{effort}     ");
     let mut changed = false;
     let mut fetch = false;
-    let menu = ui
-        .menu_button(RichText::new(label).size(15.0).color(TEXT), |ui| {
+    let open_id = ui.make_persistent_id("composer-connection-open");
+    let mut open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    let menu = ui.button(RichText::new(label).size(15.0).color(TEXT));
+    if menu.clicked() {
+        open = !open;
+    }
+    egui::Popup::from_response(&menu)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_width(520.0_f32.min(ui.ctx().content_rect().width() - 48.0));
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.strong("Model & connection");
@@ -2711,16 +2722,33 @@ fn composer_connection(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
                     ui.ctx().data_mut(|d| d.insert_temp(draft_id, draft));
                     let old_effort = provider.reasoning_effort;
                     ui.label("Reasoning effort");
-                    ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut provider.reasoning_effort, None, "Auto");
-                        for effort in ReasoningEffort::ALL {
-                            ui.selectable_value(
-                                &mut provider.reasoning_effort,
-                                Some(effort),
-                                effort.label(),
-                            );
-                        }
-                    });
+                    let supported = provider.supported_reasoning_efforts();
+                    egui::ComboBox::from_id_salt("composer-reasoning-effort")
+                        .height(400.0)
+                        .selected_text(
+                            provider
+                                .reasoning_effort
+                                .map_or("Auto", ReasoningEffort::label),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut provider.reasoning_effort, None, "Auto");
+                            for effort in ReasoningEffort::ALL {
+                                if supported
+                                    .as_ref()
+                                    .is_some_and(|listed| !listed.contains(&effort))
+                                {
+                                    continue;
+                                }
+                                ui.selectable_value(
+                                    &mut provider.reasoning_effort,
+                                    Some(effort),
+                                    effort.label(),
+                                );
+                            }
+                        });
+                    if let Some(error) = provider.reasoning_effort_error() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
                     changed |= old_effort != provider.reasoning_effort;
                     ui.small(
                         "Reasoning support depends on your model. Auto uses its default settings.",
@@ -2732,9 +2760,9 @@ fn composer_connection(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
                     ui.close();
                 }
             });
-        })
-        .response
-        .on_hover_text("Choose connection, model and reasoning effort");
+        });
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
+    let menu = menu.on_hover_text("Choose connection, model and reasoning effort");
     let arrow = egui::pos2(menu.rect.right() - 11.0, menu.rect.center().y);
     ui.painter().add(egui::Shape::line(
         vec![
@@ -3299,7 +3327,7 @@ mod composer_tests {
         let pos = text_rect(&output, "fixture-second-model").center();
         frame(click(pos));
         let output = frame(vec![]);
-        let pos = text_rect(&output, "fixture-second-model").center();
+        let pos = text_rect(&output, "Auto").center();
         frame(click(pos));
         let output = frame(vec![]);
         let pos = text_rect(&output, "High").center();

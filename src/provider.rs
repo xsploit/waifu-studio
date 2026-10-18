@@ -4,9 +4,10 @@ use crate::data::Turn;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Read},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::Sender,
     },
@@ -47,6 +48,53 @@ impl ReasoningEffort {
             Self::Max => "Maximum",
         }
     }
+    fn from_wire(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|effort| {
+            serde_json::to_value(effort)
+                .ok()
+                .as_ref()
+                .and_then(Value::as_str)
+                == Some(value)
+        })
+    }
+}
+
+/// Vercel catalog `reasoning_options`: model ID -> listed effort values.
+/// Models whose entry omits the field are absent (capabilities unknown).
+type ReasoningCatalog = HashMap<String, Vec<ReasoningEffort>>;
+fn vercel_reasoning() -> &'static Mutex<ReasoningCatalog> {
+    static CATALOG: OnceLock<Mutex<ReasoningCatalog>> = OnceLock::new();
+    CATALOG.get_or_init(Mutex::default)
+}
+
+/// Listed efforts for one catalog row; None when `reasoning_options` is absent.
+/// An array without an `effort` entry (toggle/budget only) lists no selectable effort.
+/// Unrecognized values such as `instant` are ignored.
+fn listed_efforts(model: &Value) -> Option<Vec<ReasoningEffort>> {
+    let options = model.get("reasoning_options")?.as_array()?;
+    let mut efforts: Vec<ReasoningEffort> = options
+        .iter()
+        .filter(|option| option.get("type").and_then(Value::as_str) == Some("effort"))
+        .filter_map(|option| option.get("values").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|value| value.as_str().and_then(ReasoningEffort::from_wire))
+        .collect();
+    efforts.sort_by_key(|effort| ReasoningEffort::ALL.iter().position(|e| e == effort));
+    efforts.dedup();
+    Some(efforts)
+}
+
+fn reasoning_catalog(value: &Value) -> ReasoningCatalog {
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let id = model.get("id").and_then(Value::as_str)?;
+            Some((id.to_owned(), listed_efforts(model)?))
+        })
+        .collect()
 }
 
 /// WebWaifu's two pinned LLM backends (src/lib/chat/types.ts `LlmProvider`).
@@ -339,7 +387,10 @@ impl ProviderConfig {
                 && matches!(
                     model.as_str(),
                     "openai/gpt-5" | "openai/gpt-5-mini" | "openai/gpt-5-nano"
-                ))
+                )
+                && self
+                    .supported_reasoning_efforts()
+                    .is_none_or(|listed| listed.contains(&ReasoningEffort::Minimal)))
             .then_some(ReasoningEffort::Minimal)
         });
         if let Some(effort) = effort {
@@ -360,6 +411,52 @@ impl ProviderConfig {
             }
         }
         body
+    }
+    /// Efforts the Vercel catalog lists for the effective model, once discovery has run.
+    /// None means unknown (non-Vercel route, not yet fetched, or no `reasoning_options`):
+    /// offer every effort. Some(empty) means only Automatic is valid.
+    pub fn supported_reasoning_efforts(&self) -> Option<Vec<ReasoningEffort>> {
+        self.supported_reasoning_efforts_in(
+            &vercel_reasoning()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+    fn supported_reasoning_efforts_in(
+        &self,
+        catalog: &ReasoningCatalog,
+    ) -> Option<Vec<ReasoningEffort>> {
+        (self.route == Some(GatewayRoute::VercelGateway))
+            .then(|| catalog.get(&self.effective_model()).cloned())
+            .flatten()
+    }
+    /// Explicit efforts the catalog does not list are refused, never rewritten.
+    pub fn reasoning_effort_error(&self) -> Option<String> {
+        self.reasoning_effort_error_in(
+            &vercel_reasoning()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+    fn reasoning_effort_error_in(&self, catalog: &ReasoningCatalog) -> Option<String> {
+        let effort = self.reasoning_effort?;
+        let listed = self.supported_reasoning_efforts_in(catalog)?;
+        if listed.contains(&effort) {
+            return None;
+        }
+        let model = self.effective_model();
+        Some(if listed.is_empty() {
+            format!(
+                "{model} offers no selectable reasoning effort on Vercel AI Gateway; choose Automatic"
+            )
+        } else {
+            let names: Vec<_> = listed.iter().map(|e| e.label()).collect();
+            format!(
+                "{model} does not support reasoning effort {} on Vercel AI Gateway (supported: {}); choose a listed effort or Automatic",
+                effort.label(),
+                names.join(", ")
+            )
+        })
     }
     fn key(&self) -> String {
         if !self.session_key.is_empty() {
@@ -610,7 +707,7 @@ fn client() -> Result<reqwest::blocking::Client, String> {
             reqwest::blocking::Client::builder()
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(180))
-                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_idle_timeout(Duration::from_secs(90))
                 .pool_max_idle_per_host(2)
                 .redirect(reqwest::redirect::Policy::none())
                 .user_agent("WaifuStudio/0.1")
@@ -709,6 +806,9 @@ fn stream_chat_observed_inner(
     }
     if config.effective_model().is_empty() {
         return Err("Choose a model in Connections first".into());
+    }
+    if let Some(error) = config.reasoning_effort_error() {
+        return Err(error);
     }
     let context_bytes = turns.iter().try_fold(0usize, |total, turn| {
         total
@@ -940,7 +1040,14 @@ pub fn fetch_models(
                 }
                 let response = checked_response(request.send().map_err(|e| e.to_string())?)?;
                 let value: Value = read_json(response, 5_000_000)?;
-                chat_model_ids(&value, config.route)
+                let ids = chat_model_ids(&value, config.route)?;
+                if config.route == Some(GatewayRoute::VercelGateway) {
+                    *vercel_reasoning()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        reasoning_catalog(&value);
+                }
+                Ok(ids)
             })()
             .map_err(|error| redact(error, &key));
             let _ = tx.send(ProviderEvent::Models(index, generation, result));
@@ -1149,6 +1256,92 @@ mod tests {
                 .contains(&"vendor/unknown".into())
         );
         assert!(chat_model_ids(&json!({}), None).is_err());
+    }
+
+    #[test]
+    fn vercel_reasoning_options_parse_and_unlisted_explicit_efforts_are_refused() {
+        // Shapes copied from the Vercel AI Gateway /v1/models catalog.
+        let value = json!({"data": [
+            {"id":"google/gemini-2.5-flash","type":"language","reasoning_options":[
+                {"type":"toggle"},
+                {"type":"effort","values":["none","low","medium","high"]},
+                {"type":"budget_tokens"}]},
+            {"id":"google/gemini-3.5-flash-lite","type":"language","reasoning_options":[
+                {"type":"effort","values":["high","low","instant"]}]},
+            {"id":"vendor/toggle-only","type":"language","reasoning_options":[{"type":"toggle"}]},
+            {"id":"vendor/no-field","type":"language"},
+            {"id":"vendor/null-field","type":"language","reasoning_options":null}
+        ]});
+        let catalog = reasoning_catalog(&value);
+        use ReasoningEffort::*;
+        assert_eq!(
+            catalog["google/gemini-2.5-flash"],
+            [None, Low, Medium, High]
+        );
+        assert_eq!(catalog["google/gemini-3.5-flash-lite"], [Low, High]);
+        assert_eq!(catalog["vendor/toggle-only"], []);
+        assert!(!catalog.contains_key("vendor/no-field"));
+        assert!(!catalog.contains_key("vendor/null-field"));
+
+        let mut config = ProviderConfig::pinned(GatewayRoute::VercelGateway);
+        config.model = "google/gemini-3.5-flash-lite".into();
+        assert_eq!(
+            config.supported_reasoning_efforts_in(&catalog),
+            Some(vec![Low, High])
+        );
+        // Automatic sends no field and stays valid.
+        assert_eq!(config.reasoning_effort_error_in(&catalog), Option::None);
+        config.reasoning_effort = Some(None);
+        let error = config.reasoning_effort_error_in(&catalog).unwrap();
+        assert!(error.contains("google/gemini-3.5-flash-lite") && error.contains("Low, High"));
+        // The explicit choice is refused, not rewritten.
+        assert_eq!(config.chat_body(&[])["reasoning_effort"], "none");
+        config.reasoning_effort = Some(Low);
+        assert_eq!(config.reasoning_effort_error_in(&catalog), Option::None);
+
+        config.model = "google/gemini-2.5-flash".into();
+        config.reasoning_effort = Some(None);
+        assert_eq!(config.reasoning_effort_error_in(&catalog), Option::None);
+        config.reasoning_effort = Some(Minimal);
+        assert!(config.reasoning_effort_error_in(&catalog).is_some());
+
+        config.model = "vendor/toggle-only".into();
+        assert!(
+            config
+                .reasoning_effort_error_in(&catalog)
+                .unwrap()
+                .contains("Automatic")
+        );
+        // Unknown capabilities and other routes are never blocked.
+        for model in ["vendor/no-field", "vendor/null-field", "vendor/unlisted"] {
+            config.model = model.into();
+            assert_eq!(
+                config.supported_reasoning_efforts_in(&catalog),
+                Option::None
+            );
+            assert_eq!(config.reasoning_effort_error_in(&catalog), Option::None);
+        }
+        let mut router = ProviderConfig::pinned(GatewayRoute::OpenRouterResponses);
+        router.model = "google/gemini-3.5-flash-lite".into();
+        router.reasoning_effort = Some(None);
+        assert_eq!(router.reasoning_effort_error_in(&catalog), Option::None);
+    }
+
+    #[test]
+    fn unlisted_explicit_effort_fails_before_any_request() {
+        let catalog_model = "test-only/reasoning-guard-fixture";
+        vercel_reasoning()
+            .lock()
+            .unwrap()
+            .insert(catalog_model.into(), vec![ReasoningEffort::Low]);
+        let mut config = ProviderConfig::pinned(GatewayRoute::VercelGateway);
+        config.model = catalog_model.into();
+        config.reasoning_effort = Some(ReasoningEffort::None);
+        let error = stream_chat(&config, &[], &AtomicBool::new(false), |_| {}).unwrap_err();
+        assert!(
+            error.contains("does not support reasoning effort None"),
+            "{error}"
+        );
     }
 
     #[test]
