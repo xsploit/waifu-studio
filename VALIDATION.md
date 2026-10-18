@@ -4,10 +4,12 @@ Date: 2026-10-18; earlier GPU observations are identified below. Linux KDE/Wayla
 
 ## Compiled and automated checks
 
+Integration snapshot `cd6fcc5`: `cargo test --all-targets` passed **443 tests** (355 library, 82 controller/runtime/UI, 6 inspection). This includes deterministic reply-emotion motion bindings and stale automatic-pick cancellation. Snapshot `04cb63f` additionally passed the mocked HTTP request test for history → recalled memory → latest user ordering, package formatting, and strict all-target Clippy. Concurrent follow-up edits require their own receipt; these results do not validate later worktree changes.
+
 - `cargo build --bin waifu-studio`: passed, development profile.
 - `cargo fmt --package waifu-studio -- --check`: passed.
 - `cargo clippy --all-targets -- -D warnings`: passed.
-- `cargo test --all-targets`: **377 passed** (315 library, 56 controller/runtime/UI, 6 inspection; example targets have zero tests).
+- Earlier baseline `cargo test --all-targets`: **377 passed** (315 library, 56 controller/runtime/UI, 6 inspection; example targets have zero tests).
 
 Tests cover VRM generation/metadata/container checks, malformed inputs, failed replacement and unload cleanup, material conversion/restoration and weak-cache release, profile isolation/persistence/duplication/removal, connection index remapping, secret exclusion, bounded history/serialization/worker counts, SSE Unicode/truncation/limits/cancellation, mocked HTTP chat/model data, Fish hosted/local/OpenAI speech request bodies and error handling, BVH channel order/interpolation/mapping/rest orientation/avatar isolation, control-window recovery logic, image size/format/metadata preparation and multimodal message shape, energy VAD/WAV/multipart transcription, microphone disable/stale-result cancellation, per-character note isolation/persistence/deletion/retrieval bounds, MCP current/legacy fallback, persistent request IDs, cancellation headers, error classification and immutable tool-result provenance.
 
