@@ -59,3 +59,5 @@ pub mod visuals;
 pub mod model_catalog;
 
 pub mod vercel_speech;
+
+pub mod reply_speech;

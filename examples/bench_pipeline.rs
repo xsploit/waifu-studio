@@ -2,7 +2,9 @@
 //! --phase llm|speech|pipeline --models ID,ID --speech-models ID,ID
 //! --modes buffered,http,sse,ws,ws-timestamps --repeat 3 --run --output FILE.json
 //! --app-path drives spawn_chat ProviderEvents polled every --frame-ms (default 16)
-//! like the Bevy app; the default direct path reads stream_chat_observed per ms.
+//! like the Bevy app; pipeline HTTP/buffered use its shared sentence/prefetch queue
+//! with simulated real-time consumption. The default direct path reads per ms
+//! and retains the older full-reply HTTP baseline. No render/audio device is modelled.
 //! All requests retain the configured proxy; results contain no keys or chat history.
 use bevy::audio::Decodable;
 use rodio::Source;
@@ -26,6 +28,7 @@ use waifu_studio::{
     provider::{
         self, ChatJob, GatewayRoute, ProviderConfig, ProviderEvent, ReasoningEffort, RoutingSort,
     },
+    reply_speech::HttpReplySpeech,
     voice::{VoiceAdapter, VoiceConfig, VoiceDelivery, VoiceEvent, VoiceWorker},
     voice_stream::StreamingVoice,
 };
@@ -232,13 +235,20 @@ struct Speech {
     ws: FishWsState,
     sse: FishLiveState,
     http: VoiceWorker,
+    reply: Option<HttpReplySpeech>,
+    last_drain: Option<Instant>,
+    drain_fraction: f64,
+    clip_network_done: bool,
+    audio_duration_ms: f64,
+    chunk_ready_ms: Vec<f64>,
+    chunk_gaps_ms: Vec<f64>,
+    last_clip_end: Option<Instant>,
     started: bool,
     decoder: Option<Box<dyn Iterator<Item = f32> + Send>>,
     streaming: Option<StreamingVoice>,
     first_ready: Option<f64>,
     first_nonzero: Option<f64>,
     network_end: Option<f64>,
-    playback_start: Option<Instant>,
     samples: usize,
     nonzero: usize,
     channels: usize,
@@ -251,8 +261,16 @@ struct Speech {
     first_flush_written: Option<u64>,
 }
 impl Speech {
-    fn new(config: VoiceConfig) -> Self {
+    fn new(config: VoiceConfig, http_reply: bool) -> Self {
         Self {
+            reply: http_reply.then(|| HttpReplySpeech::new(1, config.clone(), None)),
+            last_drain: None,
+            drain_fraction: 0.0,
+            clip_network_done: false,
+            audio_duration_ms: 0.0,
+            chunk_ready_ms: Vec::new(),
+            chunk_gaps_ms: Vec::new(),
+            last_clip_end: None,
             config,
             ws: FishWsState::default(),
             sse: FishLiveState::default(),
@@ -263,7 +281,6 @@ impl Speech {
             first_ready: None,
             first_nonzero: None,
             network_end: None,
-            playback_start: None,
             samples: 0,
             nonzero: 0,
             channels: 1,
@@ -285,6 +302,10 @@ impl Speech {
         Ok(())
     }
     fn text(&mut self, text: &str) -> Result<(), String> {
+        if let Some(reply) = &mut self.reply {
+            reply.push(text);
+            return Ok(());
+        }
         self.open()?;
         if self.config.delivery.is_websocket() {
             self.ws.push_text(text)?;
@@ -292,6 +313,10 @@ impl Speech {
         Ok(())
     }
     fn finish_text(&mut self, text: &str) -> Result<(), String> {
+        if let Some(reply) = &mut self.reply {
+            reply.finish();
+            return Ok(());
+        }
         if self.config.delivery.is_websocket() {
             self.open()?;
             self.ws.finish()
@@ -310,8 +335,7 @@ impl Speech {
         self.channels = usize::from(decoder.channels().get());
         self.decoder = Some(Box::new(decoder));
         self.streaming = Some(audio);
-        self.first_ready = Some(ms(start));
-        self.playback_start = Some(Instant::now());
+        self.clip_started(start);
     }
     fn poll(&mut self, start: Instant) {
         for event in self.ws.poll().into_iter().chain(self.sse.poll()) {
@@ -329,33 +353,28 @@ impl Speech {
             }
         }
         while let Some(event) = self.http.try_recv() {
-            match event {
-                VoiceEvent::Streaming { audio, .. } => self.ready(audio, start),
-                VoiceEvent::Ready { audio, .. } => {
-                    self.network_end = Some(ms(start));
-                    match rodio::Decoder::try_from(Cursor::new(audio.bytes)) {
-                        Ok(decoder) => {
-                            self.rate = decoder.sample_rate().get();
-                            self.channels = usize::from(decoder.channels().get());
-                            self.decoder = Some(Box::new(decoder));
-                            self.first_ready = Some(ms(start));
-                            self.playback_start = Some(Instant::now());
-                        }
-                        Err(_) => {
-                            self.error =
-                                Some("Buffered audio failed production codec decoding".into())
-                        }
-                    }
+            if let Some(reply) = &mut self.reply {
+                if let Err(error) = reply.receive(event) {
+                    self.error = Some(error);
                 }
-                VoiceEvent::Failed { message, .. } => self.error = Some(message),
+            } else {
+                self.http_ready(event, start);
+            }
+        }
+        if let Some(reply) = &mut self.reply {
+            match reply.pump(&mut self.http, self.decoder.is_some()) {
+                Ok(Some(event)) => self.http_ready(event, start),
+                Ok(None) => {}
+                Err(error) => self.error = Some(error),
             }
         }
         if let Some(audio) = &self.streaming {
             if audio.is_failed() {
                 self.error.get_or_insert("Streaming decoder failed".into());
             }
-            if audio.is_finished() {
-                self.network_end.get_or_insert_with(|| ms(start));
+            if audio.is_finished() && !self.clip_network_done {
+                self.network_end = Some(ms(start));
+                self.clip_network_done = true;
             }
         }
         // Drain only published PCM, with no artificial underflow zeroes. This
@@ -364,18 +383,35 @@ impl Speech {
             .streaming
             .as_ref()
             .map(|audio| audio.buffered_frames() * self.channels);
+        let budget = if self.reply.is_some() {
+            // Simulated real-time consumption preserves Studio's playback
+            // backpressure without opening a device. Never consume underflow zeros.
+            let now = Instant::now();
+            let elapsed = self
+                .last_drain
+                .replace(now)
+                .map_or(0.0, |at| now.duration_since(at).as_secs_f64());
+            let due = elapsed * self.rate as f64 * self.channels as f64 + self.drain_fraction;
+            self.drain_fraction = due.fract();
+            due as usize
+        } else {
+            4096
+        };
+        let mut clip_done = false;
         if let Some(decoder) = self.decoder.as_mut() {
-            for _ in 0..available.unwrap_or(4096).min(4096) {
+            for _ in 0..available.unwrap_or(4096).min(4096).min(budget) {
                 match decoder.next() {
                     Some(sample) => {
                         self.samples += 1;
+                        self.audio_duration_ms +=
+                            1000.0 / (self.rate as f64 * self.channels as f64);
                         if sample.abs() > 0.00001 {
                             self.nonzero += 1;
                             self.first_nonzero.get_or_insert_with(|| ms(start));
                         }
                     }
                     None => {
-                        self.done = true;
+                        clip_done = true;
                         break;
                     }
                 }
@@ -384,8 +420,53 @@ impl Speech {
                 && audio.is_finished()
                 && audio.buffered_frames() == 0
             {
+                clip_done = true;
+            }
+        }
+        if clip_done {
+            if self.reply.is_some() {
+                self.decoder = None;
+                self.streaming = None;
+                self.last_clip_end = Some(Instant::now());
+            } else {
                 self.done = true;
             }
+        }
+        if let Some(reply) = &self.reply {
+            self.done = reply.is_done() && self.decoder.is_none();
+        }
+    }
+    fn clip_started(&mut self, start: Instant) {
+        let now = Instant::now();
+        self.first_ready.get_or_insert_with(|| ms(start));
+        self.chunk_ready_ms.push(ms(start));
+        if let Some(end) = self.last_clip_end.take() {
+            self.chunk_gaps_ms
+                .push(now.duration_since(end).as_secs_f64() * 1000.0);
+        }
+        self.last_drain = Some(now);
+        self.drain_fraction = 0.0;
+        self.clip_network_done = false;
+    }
+    fn http_ready(&mut self, event: VoiceEvent, start: Instant) {
+        match event {
+            VoiceEvent::Streaming { audio, .. } => self.ready(audio, start),
+            VoiceEvent::Ready { audio, .. } => {
+                self.network_end = Some(ms(start));
+                match rodio::Decoder::try_from(Cursor::new(audio.bytes)) {
+                    Ok(decoder) => {
+                        self.rate = decoder.sample_rate().get();
+                        self.channels = usize::from(decoder.channels().get());
+                        self.decoder = Some(Box::new(decoder));
+                        self.streaming = None;
+                        self.clip_started(start);
+                    }
+                    Err(_) => {
+                        self.error = Some("Buffered audio failed production codec decoding".into())
+                    }
+                }
+            }
+            VoiceEvent::Failed { message, .. } => self.error = Some(message),
         }
     }
     fn cancel(&mut self) {
@@ -394,9 +475,16 @@ impl Speech {
         self.http.cancel();
     }
     fn result(&self) -> Value {
-        let duration = self.samples as f64 / (f64::from(self.rate) * self.channels as f64) * 1000.0;
+        let duration = self.audio_duration_ms;
+        // A later prefetched stream can finish before it becomes the active
+        // decoder. Observing it only on activation is not a wire completion time.
+        let network_done = self.reply.is_none().then_some(self.network_end).flatten();
         json!({"first_decoded_audio_ms":self.first_ready,"first_nonzero_audio_ms":self.first_nonzero,
-            "network_done_ms":self.network_end,"audio_duration_ms":duration,
+            "network_done_ms":network_done,
+            "last_clip_finished_observed_ms":self.reply.as_ref().and(self.network_end),"audio_duration_ms":duration,
+            "speech_path":if self.reply.is_some() { "shared-studio-http-reply" } else if self.config.delivery.is_websocket() { "live-websocket-adapter" } else { "full-reply-adapter" },
+            "simulated_realtime_drain":self.reply.is_some(),
+            "chunk_ready_ms":self.chunk_ready_ms,"simulated_chunk_gaps_ms":self.chunk_gaps_ms,
             "earliest_playback_end_ms":self.first_ready.map(|t| t+duration),
             "nonzero_samples":self.nonzero,"transport_first_wire_audio_ms":self.first_wire,
             "ws_connection_ready_ms":self.connection_ready,"ws_first_text_written_ms":self.first_text_written,"ws_first_flush_written_ms":self.first_flush_written,
@@ -531,7 +619,13 @@ fn main() -> Result<(), String> {
                         let mut config = voice.clone();
                         config.model.clone_from(speech_model);
                         config.delivery = mode(delivery)?;
-                        let mut speech = Speech::new(config);
+                        let http_reply = app_path
+                            && phase == "pipeline"
+                            && matches!(
+                                config.delivery,
+                                VoiceDelivery::Buffered | VoiceDelivery::HttpWavStream
+                            );
+                        let mut speech = Speech::new(config, http_reply);
                         let prewarm_ms = arg("--prewarm-ms", "0")
                             .parse::<u64>()
                             .map_err(|_| "Invalid prewarm duration")?
@@ -629,7 +723,10 @@ fn main() -> Result<(), String> {
                                     }),
                                 ));
                             }
-                            if phase == "pipeline" {
+                            // Studio defers opening until filtered text arrives.
+                            // Keep the historical eager-open policy only on the
+                            // direct baseline or for explicit prewarm experiments.
+                            if phase == "pipeline" && (!app_path || prewarm_ms > 0) {
                                 speech.open()?;
                             }
                         } else if phase == "speech" {
@@ -693,6 +790,13 @@ fn main() -> Result<(), String> {
                         row["provider_routing"] = json!(route.routing);
                         row["result_path"] = result_path.into();
                         row["frame_ms"] = json!(app_path.then_some(frame_ms));
+                        row["ws_open_policy"] = json!(if prewarm_ms > 0 {
+                            "explicit-prewarm"
+                        } else if app_path {
+                            "first-text"
+                        } else {
+                            "send"
+                        });
                         // spawn_chat exposes no raw events; never fabricate observation metadata.
                         if !app_path {
                             row["llm_observation"] = observation.lock().unwrap().clone();
@@ -714,7 +818,7 @@ fn main() -> Result<(), String> {
                         }
                         println!("{}", serde_json::to_string(&row).unwrap());
                         rows.push(row);
-                        let result = json!({"version":1,"method":"production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+                        let result = json!({"version":2,"method":"production adapters; configured proxy; sequential benchmark rows; no speakers; app pipeline HTTP uses shared Studio queue and simulated real-time consumption; other paths drain PCM; first audio means decoder readiness, not audible onset",
                 "voice_tuning":{"latency":voice.latency,"chunk_length":voice.chunk_length,"min_chunk_length":voice.min_chunk_length,"condition_on_previous_chunks":voice.condition_on_previous_chunks},
                 "prerecorded_asr":input_audio.is_some(),"asr_backend":arg("--asr-backend","fish"),"asr_model":asr_config.model,
                 "routing":arg("--routing","default"),"routing_matrix":arg("--routing-matrix",""),"provider_only":arg("--provider-only",""),"provider_order":arg("--provider-order",""),"max_tokens":arg("--max-tokens","1024"),"reasoning":arg("--reasoning","low"),"prewarm_ms":arg("--prewarm-ms","0"),"result_path":result_path,"frame_ms":app_path.then_some(frame_ms),"rows":rows});
@@ -726,4 +830,109 @@ fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_http_path_speaks_before_finish_and_drains_every_chunk() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = VoiceConfig::preset(VoiceAdapter::FishLocal);
+        config.delivery = VoiceDelivery::HttpWavStream;
+        config.endpoint = format!("http://{}/v1/tts", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = vec![];
+            for incoming in listener.incoming().take(2) {
+                let mut stream = incoming.unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let body = loop {
+                    let mut buffer = [0; 4096];
+                    let n = stream.read(&mut buffer).unwrap();
+                    assert!(n > 0 && request.len() < 65536);
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let length: usize = String::from_utf8_lossy(&request[..end])
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break request[end + 4..end + 4 + length].to_vec();
+                        }
+                    }
+                };
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let text = body["text"].as_str().unwrap().to_owned();
+                let rate: u32 = if text.starts_with("The first") {
+                    8000
+                } else {
+                    16000
+                };
+                requests.push(text);
+                let mut wav = b"RIFF".to_vec();
+                wav.extend(1636u32.to_le_bytes());
+                wav.extend(b"WAVEfmt ");
+                wav.extend(16u32.to_le_bytes());
+                wav.extend(1u16.to_le_bytes());
+                wav.extend(1u16.to_le_bytes());
+                wav.extend(rate.to_le_bytes());
+                wav.extend((rate * 2).to_le_bytes());
+                wav.extend(2u16.to_le_bytes());
+                wav.extend(16u16.to_le_bytes());
+                wav.extend(b"data");
+                wav.extend(1600u32.to_le_bytes());
+                wav.extend((0..800).flat_map(|_| 8192i16.to_le_bytes()));
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    wav.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(&wav).unwrap();
+            }
+            requests
+        });
+        let first = "The first sentence is long enough to synthesize before completion.";
+        let second = "The second sentence must play in full after the first sentence.";
+        let mut speech = Speech::new(config, true);
+        let start = Instant::now();
+        speech.text(&format!("{first} {second} ")).unwrap();
+        while speech.first_ready.is_none() {
+            speech.poll(start);
+            assert!(speech.error.is_none(), "{:?}", speech.error);
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!speech.done, "unfinished text must keep the reply open");
+        let first_ready = speech.first_ready;
+        speech.finish_text("").unwrap();
+        while !speech.done {
+            speech.poll(start);
+            assert!(speech.error.is_none(), "{:?}", speech.error);
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            speech.first_ready, first_ready,
+            "later clips must not overwrite first audio"
+        );
+        assert_eq!(speech.samples, 1600);
+        assert_eq!(speech.nonzero, 1600);
+        assert_eq!(speech.chunk_ready_ms.len(), 2);
+        assert_eq!(speech.chunk_gaps_ms.len(), 1);
+        assert!((speech.audio_duration_ms - 150.0).abs() < 0.001);
+        assert!(start.elapsed() >= Duration::from_millis(150));
+        let mut requests = server.join().unwrap();
+        requests.sort();
+        assert_eq!(requests, [first.to_owned(), second.to_owned()]);
+        speech.cancel();
+    }
 }

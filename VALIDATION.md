@@ -186,3 +186,11 @@ All-target offline tests pass: 382 library, 83 app and 6 integration tests (471 
 Facts memory conservatively deduplicates filler-only variants, retaining added qualifiers, locations, ingredients, numbers and negation. Saving prunes fully expired correction trees while preserving live corrections and their evidence; Expire now explains the later permanent prune. Legacy near-duplicate files still load. All 32 facts-memory tests pass.
 
 Fable review fixes preserve recent Hyprland geometry and queued moves over transient failures, sort never-focused windows below focused peers, stop RGB correction when its extracted component is removed, order correction before bloom, and restrict pointer gaze to primary-window cameras. Fake-socket and fixture checks pass; no real Hyprland or new GPU/interactive acceptance is claimed. Chromatic-aberration relative ordering remains unpinned because its system is private upstream.
+
+## Shared reply scheduler and current-mode benchmark
+
+Studio, scene speech and `bench_pipeline` now share one sentence splitter; Studio and the app-cadence benchmark share the bounded HTTP reply queue itself. Offline checks cover stale events, queue accounting, unfinished replies, ordered multi-clip consumption with different sample rates, and first-audio timestamps surviving later clips. The app path opens WebSocket on first text rather than granting it the historical eager-open head start.
+
+A new 24-row authenticated Low-latency run compared Drama3 and S2.1 Pro across WS/HTTP/SSE/buffered, with three repeats, real chat-worker events, 16 ms polling and the configured proxy. 24/24 succeeded and all chat workers closed. S2.1 Pro HTTP had a 1336 ms median first decoded audio in this sample; the target remains unmet. See benchmarks/RESULTS.md for the complete table, mode-dependent draining scopes and short-reply limitations. These are decoder observations, not physical speaker or interactive desktop acceptance.
+
+Final shared-scheduler checks: 384 library + 83 app + 6 integration + 1 benchmark test = 474 passing tests; all-target clippy with warnings denied and package formatting pass. Builds used one job to limit local resource use.

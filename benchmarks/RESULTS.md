@@ -4,9 +4,9 @@ Target: **500–700 ms from Send to first usable speech audio**. This target has
 
 ## What the measurements mean
 
-- The clock starts before the LLM request and WebSocket connection. WebSocket sessions open immediately and receive LLM deltas; HTTP, SSE and buffered modes wait for the completed LLM response, matching the native implementation.
+- Historical rows below start before the LLM request and open WebSocket immediately; HTTP, SSE and buffered wait for the completed reply. That describes the older implementation. The shared-queue follow-up at the end uses current HTTP/buffered chunking and opens WebSocket on first text, matching Studio’s policy.
 - First token means first non-empty text delta. First audio means a production decoder was available, and nonzero samples were verified separately. No speakers or audio device were opened; device latency, audible onset, dropouts and perceived quality are unmeasured.
-- PCM is drained as quickly as published, without synthesized underflow silence. Network/decode completion is not real-time playback completion. `earliest_playback_end_ms` is only first-ready + sample duration, a lower-bound estimate.
+- Historical PCM is drained as quickly as published, without synthesized underflow silence. The shared-queue follow-up consumes HTTP/buffered PCM at a simulated real-time rate to preserve playback backpressure. Neither method opens a device. `earliest_playback_end_ms` is only first-ready + sample duration, a lower-bound estimate that excludes gaps.
 - The prompts are a controlled short greeting with no history, memory, images, reply metadata or tools. Generated wording and output duration vary. This is not a benchmark of every persona or a loaded interactive session.
 - Sequential network requests; candidates interleaved between repetitions. Initial requests can include cold connections. Local development/build/render work continued during parts of the run, so this is exploratory tuning, not an isolated performance certification. Three samples do not establish p95 latency or a permanent winner.
 - Production startup buffering is retained (180 ms). No latency claim is based on reducing the buffering that protects against crackling.
@@ -275,6 +275,29 @@ This follow-up uses `--app-path`: the real `spawn_chat` coalescer and worker lim
 | s2.1-pro | ws | 3/3 | 386 | 1159 |
 | s2.1-pro | http | 3/3 | 312 | 1205 |
 
-Raw results: [pipeline-app-path-low.json](pipeline-app-path-low.json). The first phrase now bypasses the later 32 ms delta batching, bounded to 68 characters or 24 events. The run includes this fix; it is not a controlled before/after measurement of its network benefit. HTTP waits for the complete reply; WebSocket can overlap generation. Three sequential samples do not establish a universal transport winner.
+Raw results: [pipeline-app-path-low.json](pipeline-app-path-low.json). The first phrase now bypasses the later 32 ms delta batching, bounded to 68 characters or 24 events. The run includes this fix; it is not a controlled before/after measurement of its network benefit. Those historical HTTP rows wait for the complete reply; they do not measure the newer shared sentence/prefetch queue. Three sequential samples do not establish a universal transport winner.
 
 This models frame cadence, not real render jitter or audio-device scheduling. First decoded audio is decoder readiness, not audible speaker onset. Startup-buffer protections remain intact. No raw gateway observation metadata is available through the app event API, so these rows record the requested strict pin without claiming independent served-provider attribution. The repeatable 500–700 ms target remains unmet.
+
+## Shared Studio HTTP reply queue and matched WebSocket opening policy
+
+This follow-up uses the production `HttpReplySpeech` queue shared by Studio and the harness: the same task filtering, 40–300-character sentence grouping, two-request lookahead and ordered events. `--app-path` polls the real chat worker every 16 ms. WebSocket opens when text arrives, matching Studio; this differs from the eager-open historical baselines. HTTP/buffered PCM is consumed at a simulated real-time rate to preserve playback backpressure. SSE still waits for the full focused reply. No render loop or audio device is exercised.
+
+DeepSeek V4.1 Flash, Baseten-only requested routing, reasoning none, Fish Low latency; three interleaved samples per combination. All 24 rows succeeded and every chat worker closed. The gateway's actual served-provider attribution is not exposed by the app event API.
+
+| Fish model | Mode | Success | Median first text ms | Median first decoded audio ms |
+|---|---|---:|---:|---:|
+| drama-3 | ws | 3/3 | 595 | 1624 |
+| drama-3 | http | 3/3 | 322 | 1385 |
+| drama-3 | sse | 3/3 | 626 | 1559 |
+| drama-3 | buffered | 3/3 | 627 | 1965 |
+| s2.1-pro | ws | 3/3 | 450 | 1559 |
+| s2.1-pro | http | 3/3 | 338 | 1336 |
+| s2.1-pro | sse | 3/3 | 290 | 1673 |
+| s2.1-pro | buffered | 3/3 | 515 | 3075 |
+
+Raw results: [pipeline-shared-http-reply-low.json](pipeline-shared-http-reply-low.json). HTTP S2.1 Pro had the lowest median in this batch; varying LLM first-token times prevent attributing the entire difference to transport. This is not a controlled before/after speedup claim or a p95 result. The 500–700 ms target remains unmet.
+
+These short greetings yielded one HTTP chunk each. One Drama buffered reply yielded two chunks with a 16 ms simulated boundary gap. That is limited evidence about multi-chunk performance; offline held-stream tests separately verify prefetch overlap, boundedness, ordering and cancellation. `simulated_chunk_gaps_ms` is frame-observed time between draining one clip and starting the next, not an audible gap. `network_done_ms` is null on shared-queue rows because a prefetched stream can finish before it becomes the observed active decoder; `last_clip_finished_observed_ms` is observation time, not a wire timestamp. `decoded_done_ms` includes simulated playback for shared rows and fast draining for other modes, so it must not rank total pipeline latency across these paths.
+
+The JSON format is version 2 and labels each row's `speech_path`, `simulated_realtime_drain` and `ws_open_policy`. Use `--app-path` for this current pipeline scope; omit it to retain the older direct/full-reply comparison. The run uses the configured proxy and opens no speakers.

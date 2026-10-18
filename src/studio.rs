@@ -9,6 +9,8 @@ use std::{
     },
 };
 use uuid::Uuid;
+#[cfg(test)]
+use waifu_studio::reply_speech::{SPEECH_CHUNK_MAX, take_speech_chunk};
 use waifu_studio::{
     data::{Library, Store, Turn, find_models, trim_history},
     loading::{LoadAvatar, UnloadAvatar},
@@ -66,77 +68,6 @@ struct PendingWsSpeech {
     finished: bool,
     opened: bool,
 }
-/// Focused HTTP replies speak sentence groups while the LLM is still streaming.
-/// Chunks join one worker turn (`VoiceWorker::enqueue`), so the next sentence
-/// synthesizes during current playback without interrupting it. At most
-/// `HTTP_SLOTS` chunks are requested or waiting ahead of playback; the worker
-/// delivers them in order and `ready` holds them until playback drains.
-struct PendingHttpSpeech {
-    id: u64,
-    config: waifu_studio::voice::VoiceConfig,
-    key: Option<String>,
-    filter: waifu_studio::speech_text::ReplySpeechText,
-    text: String,
-    ready: VecDeque<VoiceEvent>,
-    outstanding: usize,
-    finished: bool,
-}
-impl PendingHttpSpeech {
-    fn push(&mut self, text: &str) {
-        self.text.push_str(&self.filter.push(text));
-    }
-    fn finish(&mut self) {
-        self.text.push_str(&self.filter.finish());
-        self.finished = true;
-    }
-    fn done(&self) -> bool {
-        self.finished
-            && self.text.trim().is_empty()
-            && self.outstanding == 0
-            && self.ready.is_empty()
-    }
-}
-const SPEECH_CHUNK_MIN: usize = 40;
-const SPEECH_CHUNK_MAX: usize = 300;
-/// Takes the next sentence group (40–300 characters). Western terminators split
-/// only before whitespace, so decimals, URLs and a still-streaming "…" survive.
-fn take_speech_chunk(text: &mut String, finished: bool) -> Option<String> {
-    loop {
-        let mut end = None;
-        let mut last_space = None;
-        let mut chars = text.char_indices().enumerate().peekable();
-        while let Some((count, (index, c))) = chars.next() {
-            let next = index + c.len_utf8();
-            if c.is_whitespace() {
-                last_space = Some(next);
-            }
-            let boundary = match c {
-                '。' | '！' | '？' | '\n' => true,
-                '.' | '!' | '?' | '…' => {
-                    chars.peek().is_some_and(|(_, (_, n))| n.is_whitespace())
-                }
-                _ => false,
-            };
-            if boundary && count + 1 >= SPEECH_CHUNK_MIN {
-                end = Some(next);
-                break;
-            }
-            if count + 1 >= SPEECH_CHUNK_MAX {
-                end = Some(last_space.unwrap_or(next));
-                break;
-            }
-        }
-        let end = end.or_else(|| finished.then_some(text.len()))?;
-        let chunk: String = text.drain(..end).collect();
-        let chunk = chunk.trim();
-        if !chunk.is_empty() {
-            return Some(chunk.to_owned());
-        }
-        if text.is_empty() {
-            return None;
-        }
-    }
-}
 fn playback_speed(config: &waifu_studio::voice::VoiceConfig) -> f32 {
     if config.adapter == waifu_studio::voice::VoiceAdapter::FishLocal {
         config.speed
@@ -177,7 +108,7 @@ pub struct Studio {
     voice_id: u64,
     pending_live: Option<PendingLiveSpeech>,
     pending_ws: Option<PendingWsSpeech>,
-    pending_http: Option<PendingHttpSpeech>,
+    pending_http: Option<waifu_studio::reply_speech::HttpReplySpeech>,
     reply_speech_job: Option<Uuid>,
     stop_audio: bool,
     dialog_open: Arc<AtomicBool>,
@@ -567,16 +498,11 @@ impl Studio {
             self.speech_character = self.library.selected;
             self.voice_playback_speed = playback_speed(&config);
             self.active_voice = Some(config.clone());
-            self.pending_http = Some(PendingHttpSpeech {
-                id: self.voice_id,
-                key: self.speech_key(&config),
-                config,
-                filter: Default::default(),
-                text: String::new(),
-                ready: VecDeque::new(),
-                outstanding: 0,
-                finished: false,
-            });
+            self.pending_http = Some(waifu_studio::reply_speech::HttpReplySpeech::new(
+                self.voice_id,
+                config.clone(),
+                self.speech_key(&config),
+            ));
             self.voice_busy = true;
         }
     }
@@ -595,56 +521,37 @@ impl Studio {
     /// and returns the next ready clip or stream once nothing else is playing.
     fn pump_http(&mut self, playing: bool) -> Option<VoiceEvent> {
         let request = self.pending_http.as_mut()?;
-        let next = if playing {
-            None
-        } else {
-            request.ready.pop_front()
-        };
-        while request.outstanding + request.ready.len() < waifu_studio::voice::HTTP_SLOTS
-            && self.voice.lock().unwrap().can_prefetch()
-            && let Some(text) = take_speech_chunk(&mut request.text, request.finished)
-        {
-            let result = self.voice.lock().unwrap().enqueue(
-                request.id,
-                request.config.clone(),
-                text,
-                request.key.clone(),
-            );
-            if let Err(error) = result {
+        let result = request.pump(&mut self.voice.lock().unwrap(), playing);
+        match result {
+            Err(error) => {
                 self.stop_voice();
                 self.error = Some(error);
-                return None;
+                None
             }
-            request.outstanding += 1;
+            Ok(next) => {
+                if self.pending_http.as_ref().is_some_and(|r| r.is_done()) {
+                    self.pending_http = None;
+                    self.voice_busy = false;
+                }
+                next
+            }
         }
-        if request.done() {
-            self.pending_http = None;
-            self.voice_busy = false;
-        }
-        next
     }
     /// Routes a current worker event; returns events that should play now.
     fn receive_voice_event(&mut self, event: VoiceEvent) -> Option<VoiceEvent> {
         let Some(request) = self
             .pending_http
             .as_mut()
-            .filter(|request| request.id == event.id())
+            .filter(|request| request.id() == event.id())
         else {
             self.voice_busy = false;
             return Some(event);
         };
-        request.outstanding = request.outstanding.saturating_sub(1);
-        match event {
-            VoiceEvent::Ready { .. } | VoiceEvent::Streaming { .. } => {
-                request.ready.push_back(event);
-                None
-            }
-            VoiceEvent::Failed { message, .. } => {
-                self.stop_voice();
-                self.error = Some(message);
-                None
-            }
+        if let Err(message) = request.receive(event) {
+            self.stop_voice();
+            self.error = Some(message);
         }
+        None
     }
     fn finish_reply_speech(&mut self, id: Uuid) -> bool {
         if self.reply_speech_job != Some(id) {
@@ -2065,7 +1972,7 @@ mod tests {
         assert!(studio.receive_voice_event(event).is_none());
         // Bounded: the ready clip waits for playback and nothing else starts.
         assert!(studio.pump_http(true).is_none());
-        assert_eq!(studio.pending_http.as_ref().unwrap().ready.len(), 1);
+        assert_eq!(studio.pending_http.as_ref().unwrap().ready_count(), 1);
         assert!(studio.voice_busy);
         assert!(studio.pump_http(false).is_some());
         assert!(studio.pending_http.is_none() && !studio.voice_busy);
@@ -2193,7 +2100,7 @@ mod tests {
         arrived.sort();
         assert_eq!(arrived, vec![first.to_owned(), second.to_owned()]);
         assert!(!playing.is_finished() && !playing.is_failed());
-        assert_eq!(studio.pending_http.as_ref().unwrap().outstanding, 1);
+        assert_eq!(studio.pending_http.as_ref().unwrap().outstanding(), 1);
         let reply_voice = studio.voice_id;
         let selected = studio.library.selected.unwrap();
         studio.select_character(selected);
@@ -2225,7 +2132,6 @@ mod tests {
         let id = Uuid::new_v4();
         studio.begin_reply_speech(id);
         let voice = studio.voice_id;
-        studio.pending_http.as_mut().unwrap().outstanding = 1;
         assert!(
             studio
                 .receive_voice_event(VoiceEvent::Failed {

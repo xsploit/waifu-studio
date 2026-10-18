@@ -65,8 +65,6 @@ pub struct SceneChat {
 }
 /// Matches the studio's eight-entry speech queue, so one submit never overflows it.
 const SPEECH_EVENTS: usize = 8;
-const SPEECH_CHUNK_MIN: usize = 40;
-const SPEECH_CHUNK_MAX: usize = 300;
 /// Speaks sentence groups while a recipient's reply is still streaming. Task
 /// and affect metadata are filtered incrementally, so hidden blocks split
 /// across deltas are never spoken; the saved reply stays the raw text.
@@ -90,7 +88,7 @@ impl SpeechStream {
         self.text.push_str(&self.tasks.push(&visible));
         let mut chunks = vec![];
         while self.early > 0 {
-            let Some(chunk) = take_speech_chunk(&mut self.text) else {
+            let Some(chunk) = crate::reply_speech::take_speech_chunk(&mut self.text, false) else {
                 break;
             };
             self.early -= 1;
@@ -105,41 +103,6 @@ impl SpeechStream {
         self.text.push_str(&self.tasks.finish());
         let text = self.text.trim();
         (!text.is_empty()).then(|| text.to_owned())
-    }
-}
-/// Takes the next complete sentence group (40–300 characters). Western
-/// terminators split only before whitespace, so decimals and URLs survive.
-fn take_speech_chunk(text: &mut String) -> Option<String> {
-    loop {
-        let mut end = None;
-        let mut last_space = None;
-        let mut chars = text.char_indices().enumerate().peekable();
-        while let Some((count, (index, c))) = chars.next() {
-            let next = index + c.len_utf8();
-            if c.is_whitespace() {
-                last_space = Some(next);
-            }
-            let boundary = match c {
-                '。' | '！' | '？' | '\n' => true,
-                '.' | '!' | '?' | '…' => {
-                    chars.peek().is_some_and(|(_, (_, n))| n.is_whitespace())
-                }
-                _ => false,
-            };
-            if boundary && count + 1 >= SPEECH_CHUNK_MIN {
-                end = Some(next);
-                break;
-            }
-            if count + 1 >= SPEECH_CHUNK_MAX {
-                end = Some(last_space.unwrap_or(next));
-                break;
-            }
-        }
-        let chunk: String = text.drain(..end?).collect();
-        let chunk = chunk.trim();
-        if !chunk.is_empty() {
-            return Some(chunk.to_owned());
-        }
     }
 }
 fn available(library: &Library, roster: &SceneRoster, id: Uuid) -> bool {
@@ -1022,7 +985,11 @@ mod tests {
         let long = "word ".repeat(400);
         let mut stream = SpeechStream::new(SPEECH_EVENTS);
         let chunks = stream.push(&long);
-        assert!(chunks.iter().all(|c| c.chars().count() <= SPEECH_CHUNK_MAX));
+        assert!(
+            chunks
+                .iter()
+                .all(|c| c.chars().count() <= crate::reply_speech::SPEECH_CHUNK_MAX)
+        );
         let mut none = SpeechStream::new(0);
         assert!(none.push(&format!("{FIRST}{FIRST}")).is_empty());
         assert_eq!(none.finish().unwrap(), format!("{FIRST}{FIRST}").trim());
