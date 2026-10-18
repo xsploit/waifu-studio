@@ -68,7 +68,7 @@ Use the included character library or import your own models. Bring your own API
 - Fish supports buffered, progressive HTTP, timestamp SSE and WebSocket delivery. Fish also has a read-only voice library browser and paid Voice Design previews.
 - **Playback-driven RMS lip-sync** needs no calibration. Saved zero-valued manual sliders no longer block automatic mouth movement; perceived synchronization still needs acceptance.
 - Optional calibrated A/I/U/E/O vowel lip-sync takes a uLipSync JSON or wLipSync `.bin` profile that you supply. No calibration is bundled.
-- Opt-in microphone capture uses energy VAD or optional Silero ONNX VAD. Transcripts go to the composer for review and are never sent automatically.
+- Opt-in microphone capture uses energy VAD or optional Silero ONNX VAD. Transcripts go to the composer for review by default. An optional off-by-default **Send transcript automatically** setting completes a manually started microphone → chat → reply-speech turn when the same character is selected, both the starting/current draft are empty and chat/memory are ready. Otherwise text stays for review. It never restarts the microphone or enables full-duplex listening; automatic chat/speech can incur provider charges.
 
 **Memory, tools and agents**
 

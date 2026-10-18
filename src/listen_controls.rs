@@ -3,6 +3,8 @@ use waifu_studio::listen::{ListeningState, SttBackend};
 pub fn ui(
     ui: &mut egui::Ui,
     state: &mut ListeningState,
+    character: Option<uuid::Uuid>,
+    composer_empty: bool,
     catalog: &mut waifu_studio::model_catalog::ModelCatalog,
 ) {
     let mut enabled = state.config.enabled;
@@ -12,7 +14,12 @@ pub fn ui(
     {
         state.set_enabled(enabled);
     }
-    ui.label("Manual Start opens your microphone. Stop, speech followed by silence, or the 30-second limit uploads a WAV automatically; review the transcript before sending. Disable or Cancel stops recording and discards the result; an upload already sent cannot be recalled.");
+    ui.label("Manual Start opens your microphone. Stop, speech followed by silence, or the 30-second limit uploads a WAV automatically; the default is to review the transcript before sending. Disable or Cancel stops recording and discards the result; an upload already sent cannot be recalled.");
+    ui.checkbox(
+        &mut state.config.auto_send,
+        "Send transcript automatically (optional)",
+    );
+    ui.small("Applies only to recordings started with an empty draft. Sends to the same selected character if chat and memory are ready; otherwise keeps the text for review. This may trigger paid chat and speech requests. Start is still manual; the microphone never restarts itself.");
     let openrouter = state.config.backend == SttBackend::OpenAiCompatible
         && state.config.endpoint.contains("openrouter.ai/");
     let mut selected = if openrouter {
@@ -137,7 +144,7 @@ pub fn ui(
             )
             .clicked()
         {
-            state.start();
+            state.start_for(character, composer_empty);
         }
         if ui
             .add_enabled(state.is_recording(), egui::Button::new("Stop + transcribe"))

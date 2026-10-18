@@ -97,6 +97,7 @@ pub struct ListenConfig {
     pub api_key_env: String,
     pub vad_threshold: f32,
     pub trailing_silence_ms: u32,
+    pub auto_send: bool,
 }
 impl Default for ListenConfig {
     fn default() -> Self {
@@ -113,6 +114,7 @@ impl Default for ListenConfig {
             api_key_env: "OPENAI_API_KEY".into(),
             vad_threshold: 0.015,
             trailing_silence_ms: 1200,
+            auto_send: false,
         }
     }
 }
@@ -148,6 +150,14 @@ impl ListenConfig {
         self.api_key_env = "OPENROUTER_API_KEY".into();
     }
 }
+/// One completed manual recording. Automatic send intent is captured at Start,
+/// never inferred from the transcript or enabled retroactively.
+#[derive(Clone, Debug)]
+pub struct Transcript {
+    pub text: String,
+    pub character: Option<uuid::Uuid>,
+    pub auto_send: bool,
+}
 /// Receiver is mutex-wrapped so this state can be a Bevy resource.
 #[derive(bevy::prelude::Resource)]
 pub struct ListeningState {
@@ -155,6 +165,7 @@ pub struct ListeningState {
     pub config: ListenConfig,
     /// Session-only credential; never part of serialized config.
     pub session_key: String,
+    origin: Option<(u64, Option<uuid::Uuid>, bool)>,
     pub status: String,
     pub vad_status: Arc<Mutex<String>>,
     busy: Arc<AtomicBool>,
@@ -171,6 +182,7 @@ impl Default for ListeningState {
             vad_cache: Arc::new(Mutex::new(VadCache::default())),
             config: ListenConfig::default(),
             session_key: String::new(),
+            origin: None,
             status: "Microphone idle".into(),
             vad_status: Arc::new(Mutex::new("Energy VAD".into())),
             busy: Arc::new(AtomicBool::new(false)),
@@ -198,6 +210,11 @@ impl ListeningState {
         self.recording.load(Ordering::SeqCst)
     }
     pub fn start(&mut self) {
+        self.start_for(None, false);
+    }
+    /// Host supplies the selected character and whether its draft is empty.
+    /// Existing context-free callers remain review-only.
+    pub fn start_for(&mut self, character: Option<uuid::Uuid>, composer_empty: bool) {
         if !self.config.enabled || self.is_busy() {
             return;
         }
@@ -219,6 +236,11 @@ impl ListeningState {
         self.busy.store(true, Ordering::SeqCst);
         self.stop.store(false, Ordering::SeqCst);
         let id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.origin = Some((
+            id,
+            character,
+            self.config.auto_send && composer_empty && character.is_some(),
+        ));
         let (config, key) = (self.config.clone(), self.session_key.clone());
         let (busy, recording, stop, generation, tx) = (
             self.busy.clone(),
@@ -253,11 +275,15 @@ impl ListeningState {
     }
     /// In-flight HTTP finishes within its timeout; its result is discarded.
     pub fn cancel(&mut self) {
+        self.origin = None;
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.stop.store(true, Ordering::SeqCst);
         self.status = "Cancelled; worker may still be finishing".into();
     }
     pub fn poll(&mut self) -> Option<String> {
+        self.poll_transcript().map(|result| result.text)
+    }
+    pub fn poll_transcript(&mut self) -> Option<Transcript> {
         let rx = self.rx.lock().ok()?;
         while let Ok((id, result)) = rx.try_recv() {
             if id != self.generation.load(Ordering::SeqCst) {
@@ -266,9 +292,21 @@ impl ListeningState {
             match result {
                 Ok(text) => {
                     self.status = "Transcript added to composer; review before sending".into();
-                    return Some(text);
+                    let (_, character, auto_send) = self
+                        .origin
+                        .take()
+                        .filter(|(generation, _, _)| *generation == id)
+                        .unwrap_or((id, None, false));
+                    return Some(Transcript {
+                        text,
+                        character,
+                        auto_send,
+                    });
                 }
-                Err(e) => self.status = e,
+                Err(e) => {
+                    self.origin = None;
+                    self.status = e;
+                }
             }
         }
         None
@@ -725,6 +763,30 @@ fn clean_fish_transcript(text: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automatic_send_intent_is_scoped_consumed_once_and_cancelled() {
+        let mut state = ListeningState::default();
+        let character = uuid::Uuid::new_v4();
+        state.generation.store(7, Ordering::SeqCst);
+        state.origin = Some((7, Some(character), true));
+        state.tx.send((6, Ok("stale".into()))).unwrap();
+        state.tx.send((7, Ok("new transcript".into()))).unwrap();
+        let result = state.poll_transcript().unwrap();
+        assert_eq!(result.character, Some(character));
+        assert_eq!(result.text, "new transcript");
+        assert!(result.auto_send);
+        assert!(state.origin.is_none());
+        state.tx.send((7, Ok("no armed intent".into()))).unwrap();
+        assert!(!state.poll_transcript().unwrap().auto_send);
+        state.origin = Some((7, Some(character), true));
+        state.cancel();
+        assert!(state.origin.is_none());
+        state.tx.send((7, Ok("cancelled".into()))).unwrap();
+        assert!(state.poll_transcript().is_none());
+        let old: ListenConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.auto_send);
+    }
+
     #[test]
     fn vad_session_reuse_is_scoped_to_configuration_and_failed_replacements_evict() {
         use std::cell::Cell;

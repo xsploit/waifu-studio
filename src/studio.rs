@@ -1336,6 +1336,8 @@ pub fn poll_input(
     mut voice_library: ResMut<waifu_studio::voice_library::VoiceLibraryState>,
     mut studio: ResMut<Studio>,
     mut listening: ResMut<waifu_studio::listen::ListeningState>,
+    mut memory: ResMut<waifu_studio::memory::MemoryState>,
+    mut semantic: ResMut<waifu_studio::semantic_memory::SemanticMemory>,
     mut selected: Local<Option<Uuid>>,
 ) {
     if *selected != studio.library.selected {
@@ -1351,14 +1353,53 @@ pub fn poll_input(
         *selected = studio.library.selected;
     }
     voice_library.poll();
-    if let Some(transcript) = listening.poll() {
-        if !studio.composer.is_empty() {
-            studio.composer.push('\n');
-        }
-        studio.composer.push_str(&transcript);
-        studio.notice = Some("Transcript ready. Review it, then send.".into());
-        studio.tab = Tab::Chat;
+    if let Some(transcript) = listening.poll_transcript()
+        && apply_transcript(
+            &mut studio,
+            &mut memory,
+            &mut semantic,
+            transcript,
+            listening.config.auto_send,
+        )
+    {
+        listening.status = "Transcript sent automatically.".into();
     }
+}
+fn apply_transcript(
+    studio: &mut Studio,
+    memory: &mut waifu_studio::memory::MemoryState,
+    semantic: &mut waifu_studio::semantic_memory::SemanticMemory,
+    transcript: waifu_studio::listen::Transcript,
+    auto_send_enabled: bool,
+) -> bool {
+    // A delayed completion must never be attached to a different character.
+    if transcript.character.is_some() && transcript.character != studio.library.selected {
+        return false;
+    }
+    if transcript.text.trim().is_empty() {
+        return false;
+    }
+    let send = auto_send_enabled
+        && transcript.auto_send
+        && transcript.character.is_some()
+        && studio.composer.trim().is_empty()
+        && studio.job.is_none();
+    if !studio.composer.is_empty() {
+        studio.composer.push('\n');
+    }
+    studio.composer.push_str(&transcript.text);
+    studio.notice = Some("Transcript ready. Review it, then send.".into());
+    studio.tab = Tab::Chat;
+    if send {
+        // Uses the normal send path, including memory readiness, model/route
+        // validation, semantic freshness and production streamed reply speech.
+        studio.send_chat_with_semantic(memory, Some(semantic));
+        if studio.job.is_some() {
+            studio.notice = Some("Transcript sent automatically.".into());
+            return true;
+        }
+    }
+    false
 }
 
 pub fn poll_assistant(
@@ -1381,6 +1422,193 @@ pub fn poll_assistant(
 mod tests {
     use super::*;
     use waifu_studio::data::Character;
+    fn settle_input_fixture(
+        studio: &mut Studio,
+        memory: &mut waifu_studio::memory::MemoryState,
+        semantic: &mut waifu_studio::semantic_memory::SemanticMemory,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            memory.poll();
+            studio.facts.poll();
+            semantic.sync(studio.library.selected, memory);
+            if !memory.busy
+                && !studio.facts.busy
+                && !studio.facts.pending_saving()
+                && semantic.settings_loaded()
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn transcript_auto_send_guards_preserve_drafts_and_discard_wrong_character() {
+        use waifu_studio::{
+            listen::Transcript, memory::MemoryState, semantic_memory::SemanticMemory,
+        };
+        for case in [
+            "off",
+            "not-armed",
+            "draft",
+            "busy",
+            "wrong-character",
+            "empty",
+            "memory-loading",
+            "invalid-model",
+        ] {
+            let (mut studio, directory) = studio();
+            let character = studio.library.selected;
+            let mut memory = MemoryState::load(directory.join("notes"));
+            let mut semantic = SemanticMemory::load(directory.join("semantic"));
+            if case == "invalid-model" {
+                studio.library.providers[studio.library.provider]
+                    .model
+                    .clear();
+                memory.select_character(character);
+                settle_input_fixture(&mut studio, &mut memory, &mut semantic);
+            }
+            if case == "draft" {
+                studio.composer = "Keep my draft".into();
+            }
+            if case == "busy" {
+                studio.job = Some(ChatJob {
+                    id: Uuid::new_v4(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                });
+            }
+            apply_transcript(
+                &mut studio,
+                &mut memory,
+                &mut semantic,
+                Transcript {
+                    text: if case == "empty" {
+                        "  "
+                    } else {
+                        "Spoken words"
+                    }
+                    .into(),
+                    character: if case == "wrong-character" {
+                        Some(Uuid::new_v4())
+                    } else {
+                        character
+                    },
+                    auto_send: case != "not-armed",
+                },
+                case != "off",
+            );
+            if matches!(case, "wrong-character" | "empty") {
+                assert!(studio.composer.is_empty());
+            } else if case == "draft" {
+                assert_eq!(studio.composer, "Keep my draft\nSpoken words");
+            } else {
+                assert_eq!(studio.composer, "Spoken words");
+            }
+            assert_eq!(studio.job.is_some(), case == "busy", "{case}");
+            assert!(
+                studio.turns.is_empty(),
+                "No guarded transcript was sent: {case}"
+            );
+            // Complete outstanding fixture loads before removing their directory.
+            // A review fallback may have just started the normal notes load.
+            settle_input_fixture(&mut studio, &mut memory, &mut semantic);
+            drop(studio);
+            drop(memory);
+            drop(semantic);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn transcript_auto_send_uses_production_chat_path_with_memory_ready() {
+        use std::{
+            io::{BufRead, BufReader, Read, Write},
+            net::TcpListener,
+        };
+        use waifu_studio::{
+            listen::Transcript, memory::MemoryState, semantic_memory::SemanticMemory,
+        };
+        let (mut studio, directory) = studio();
+        let selected = studio.library.selected;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        studio.library.providers[studio.library.provider] =
+            waifu_studio::provider::ProviderConfig {
+                base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+                model: "offline-transcript-model".into(),
+                key_env: "WAIFU_STUDIO_OFFLINE_TRANSCRIPT_TEST_UNUSED".into(),
+                ..Default::default()
+            };
+        studio.library.voice.enabled = false;
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break stream;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            assert!(length < 64000);
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let response = "data: [DONE]\n\n";
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            body
+        });
+        let mut memory = MemoryState::load(directory.join("notes"));
+        let mut semantic = SemanticMemory::load(directory.join("semantic"));
+        memory.select_character(selected);
+        settle_input_fixture(&mut studio, &mut memory, &mut semantic);
+        apply_transcript(
+            &mut studio,
+            &mut memory,
+            &mut semantic,
+            Transcript {
+                text: "Hello from the microphone".into(),
+                character: selected,
+                auto_send: true,
+            },
+            true,
+        );
+        assert!(studio.job.is_some());
+        assert!(studio.composer.is_empty());
+        assert_eq!(
+            studio.turns.last().unwrap().content,
+            "Hello from the microphone"
+        );
+        let body = server.join().unwrap();
+        assert_eq!(
+            body["messages"].as_array().unwrap().last().unwrap()["content"],
+            "Hello from the microphone"
+        );
+        studio.cancel_chat();
+        drop(studio);
+        drop(memory);
+        drop(semantic);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn streamed_affect_is_hidden_from_speech_display_and_history() {
         let (mut studio, directory) = studio();

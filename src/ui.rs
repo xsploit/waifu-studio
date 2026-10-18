@@ -412,7 +412,13 @@ pub fn studio_ui(
                     );
                     crate::voice_design_controls::ui(ui, &mut voice_design);
                     anchored_section(ui, &tab_key, "Microphone", "Microphone & transcription.");
-                    crate::listen_controls::ui(ui, &mut listening, &mut avatar_ui.catalogs.stt);
+                    crate::listen_controls::ui(
+                        ui,
+                        &mut listening,
+                        studio.library.selected,
+                        studio.composer.trim().is_empty(),
+                        &mut avatar_ui.catalogs.stt,
+                    );
                     if ui.button("Save microphone settings").clicked() {
                         studio.library.listen = listening.config.clone();
                         studio.save();
@@ -2474,7 +2480,10 @@ fn composer(
                                 } else if listening.is_busy() {
                                     listening.cancel();
                                 } else {
-                                    listening.start();
+                                    listening.start_for(
+                                        studio.library.selected,
+                                        studio.composer.trim().is_empty(),
+                                    );
                                 }
                             }
                             ui.add_enabled_ui(!busy, |ui| composer_connection(ui, studio, compact));
