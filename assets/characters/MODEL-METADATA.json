@@ -1,0 +1,390 @@
+[
+  {
+    "model": "models/55f2fa2ac87c-Elmer.vrm",
+    "sha256": "55f2fa2ac87cb8dfa21cb9b50eab7e549bacfd26077e51109be90bb20338376b",
+    "metadata": {
+      "name": "Elmer",
+      "version": "0.1.0",
+      "authors": [
+        "notelm"
+      ],
+      "copyrightInformation": "@　2025 notelm",
+      "thumbnailImage": 24,
+      "licenseUrl": "https://vrm.dev/licenses/1.0/",
+      "avatarPermission": "onlyAuthor",
+      "allowExcessivelyViolentUsage": false,
+      "allowExcessivelySexualUsage": false,
+      "commercialUsage": "personalNonProfit",
+      "allowPoliticalOrReligiousUsage": false,
+      "allowAntisocialOrHateUsage": false,
+      "creditNotation": "required",
+      "allowRedistribution": false,
+      "modification": "allowModificationRedistribution",
+      "otherLicenseUrl": "https://github.com/not-elm/desktop_homunculus"
+    }
+  },
+  {
+    "model": "models/55badf725d08-AliciaSolid.vrm",
+    "sha256": "55badf725d08ca7ab57c48e097adfea9c44d7025cef0065d128d23d853464058",
+    "metadata": {
+      "allowAntisocialOrHateUsage": false,
+      "allowExcessivelySexualUsage": false,
+      "allowExcessivelyViolentUsage": false,
+      "allowPoliticalOrReligiousUsage": false,
+      "allowRedistribution": false,
+      "authors": [
+        "© DWANGO Co., Ltd."
+      ],
+      "avatarPermission": "everyone",
+      "commercialUsage": "personalProfit",
+      "contactInformation": "https://3d.nicovideo.jp/alicia/",
+      "creditNotation": "required",
+      "licenseUrl": "https://vrm.dev/licenses/1.0/",
+      "modification": "prohibited",
+      "name": "Alicia Solid",
+      "otherLicenseUrl": "https://3d.nicovideo.jp/alicia/rule.html",
+      "references": [
+        ""
+      ],
+      "thumbnailImage": 7,
+      "version": "1.10"
+    }
+  },
+  {
+    "model": "models/848f99eb76e6-Zome.vrm",
+    "sha256": "848f99eb76e6e6fa3bed249b5e86be4e46e1d9a58a7b51ee1292d0d04dab6e52",
+    "metadata": {
+      "allowedUserName": "Everyone",
+      "author": "Yorshka",
+      "commercialUssageName": "Allow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Allow",
+      "texture": 4,
+      "title": "ゾメちゃん",
+      "version": "1.3",
+      "violentUssageName": "Allow"
+    }
+  },
+  {
+    "model": "models/0afa94b999e8-aldina.vrm",
+    "sha256": "0afa94b999e8521aaae3f6df1eba386412800e08fa5f51232456e1471a876c5b",
+    "metadata": {
+      "title": "アルディナ",
+      "version": "1.12",
+      "author": "よるしか船長",
+      "contactInformation": "",
+      "reference": "",
+      "texture": 6,
+      "allowedUserName": "Everyone",
+      "violentUssageName": "Allow",
+      "sexualUssageName": "Allow",
+      "commercialUssageName": "Allow",
+      "otherPermissionUrl": "",
+      "licenseName": "Redistribution_Prohibited"
+    }
+  },
+  {
+    "model": "models/78950b046daa-Lazuli_VRM.vrm",
+    "sha256": "78950b046daa169859025d1c1616e302da3a0980c29ef9d4049195f27f8ca462",
+    "metadata": {
+      "allowedUserName": "Everyone",
+      "author": "Elychiffon",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "reference": "https://elychiffon.booth.pm/items/5255692",
+      "sexualUssageName": "Allow",
+      "texture": 5,
+      "title": "ラズリ-Lazuli-",
+      "version": "v2.0.2",
+      "violentUssageName": "Allow"
+    }
+  },
+  {
+    "model": "models/23933c7aa9f2-vrm1_mtoon_uv_test.vrm",
+    "sha256": "23933c7aa9f2b1515bf44835d50080baa8d9698202cf20eb652f28c3d4537c81",
+    "metadata": {
+      "allowAntisocialOrHateUsage": false,
+      "allowExcessivelySexualUsage": true,
+      "allowExcessivelyViolentUsage": true,
+      "allowPoliticalOrReligiousUsage": true,
+      "allowRedistribution": true,
+      "authors": [
+        "pixiv Inc."
+      ],
+      "avatarPermission": "everyone",
+      "commercialUsage": "corporation",
+      "creditNotation": "unnecessary",
+      "licenseUrl": "https://vrm.dev/licenses/1.0/",
+      "modification": "allowModificationRedistribution",
+      "name": "VRMC_materials_mtoon UV Animation Test",
+      "version": "v1.0.0"
+    }
+  },
+  {
+    "model": "models/5db73f16ada0-suzuha.vrm",
+    "sha256": "5db73f16ada06afb2b8714e2b03cb3fa530424819e520162c17e4aefed6ae615",
+    "metadata": {
+      "author": "anon",
+      "title": "suzuha",
+      "texture": 11,
+      "allowedUserName": "Everyone",
+      "violentUssageName": "Allow",
+      "sexualUssageName": "Allow",
+      "commercialUssageName": "Allow",
+      "licenseName": "Other",
+      "otherPermissionUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=allow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow",
+      "otherLicenseUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=allow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow"
+    }
+  },
+  {
+    "model": "models/9c4ff68eafed-cool_loops.vrm",
+    "sha256": "9c4ff68eafed0751d30fcedf16aaf9be3a31214be74a8e77b411dcaae8f0865e",
+    "metadata": {
+      "title": "Cool_loops",
+      "version": "1",
+      "author": "Polygonal Mind",
+      "contactInformation": "www.polygonalmind.com",
+      "reference": "",
+      "allowedUserName": "Everyone",
+      "violentUssageName": "Allow",
+      "sexualUssageName": "Allow",
+      "commercialUssageName": "Allow",
+      "otherPermissionUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=allow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow",
+      "licenseName": "Other",
+      "otherLicenseUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=allow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow"
+    }
+  },
+  {
+    "model": "models/60aa3dbe6468-catbot.vrm",
+    "sha256": "60aa3dbe6468003fa363770a8c1b2fc1c65d246af32fc640bc869a02a912ee0e",
+    "metadata": {
+      "allowedUserName": "Everyone",
+      "author": "ベースモデル：1B (わんびぃ)、二次：たびマル",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "https://tabimal.booth.pm/items/4943875",
+      "licenseName": "Other",
+      "otherLicenseUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow",
+      "otherPermissionUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=unnecessary&modification=allow&personal_commercial_use=profit&redistribution=allow&sexual_expression=allow&version=1&violent_expression=allow",
+      "reference": "https://daidokoro.booth.pm/items/3775741",
+      "sexualUssageName": "Allow",
+      "texture": 1,
+      "title": "フリット 256fes ver.",
+      "version": "1.0.0",
+      "violentUssageName": "Allow"
+    }
+  },
+  {
+    "model": "models/237bb02efadf-alicia.vrm",
+    "sha256": "237bb02efadf8c13a114af91dd8e860173081457dee87017e51011c448d05dc2",
+    "metadata": {
+      "title": "Alicia Solid",
+      "version": "1.10",
+      "author": "© DWANGO Co., Ltd.",
+      "contactInformation": "https://3d.nicovideo.jp/alicia/",
+      "reference": "",
+      "texture": 7,
+      "allowedUserName": "Everyone",
+      "violentUssageName": "Disallow",
+      "sexualUssageName": "Disallow",
+      "commercialUssageName": "Allow",
+      "otherPermissionUrl": "https://3d.nicovideo.jp/alicia/rule.html",
+      "licenseName": "Other",
+      "otherLicenseUrl": "https://3d.nicovideo.jp/alicia/rule.html"
+    }
+  },
+  {
+    "model": "models/729f68fd0b17-jim-v2.vrm",
+    "sha256": "729f68fd0b17d53ff603a8be6e3078c4c30d2bd8d3412cfb24552181b2800d0a",
+    "metadata": {
+      "allowAntisocialOrHateUsage": false,
+      "allowExcessivelySexualUsage": false,
+      "allowExcessivelyViolentUsage": false,
+      "allowPoliticalOrReligiousUsage": false,
+      "allowRedistribution": false,
+      "authors": [
+        "subsect"
+      ],
+      "avatarPermission": "onlyAuthor",
+      "commercialUsage": "personalNonProfit",
+      "creditNotation": "required",
+      "licenseUrl": "https://vrm.dev/licenses/1.0/",
+      "modification": "prohibited",
+      "name": "Jim Lahey (Liquor Stories)",
+      "version": "undefined"
+    }
+  },
+  {
+    "model": "models/13d1c7868662-jim.vrm",
+    "sha256": "13d1c7868662696fe974d8beae104fe3a03945536ffd37fe803635e668bd1eb2",
+    "metadata": {
+      "title": "EMPTY_NAME",
+      "version": "1.0",
+      "author": "UnionAvatars",
+      "contactInformation": "techsupport@unionavatars.com",
+      "allowedUserName": "ExplicitlyLicensedPerson",
+      "violentUssageName": "Disallow",
+      "sexualUssageName": "Disallow",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Other",
+      "otherLicenseUrl": "https://app.unionavatars.com/vrm-license"
+    }
+  },
+  {
+    "model": "models/065f77de30f9-model.vrm",
+    "sha256": "065f77de30f91b66845cf75c7dbbac4c528eda975c12fa1afa85e8cdfa7048db",
+    "metadata": {
+      "name": "Sendagaya_Shibu",
+      "version": "v2.0",
+      "authors": [
+        "coati"
+      ],
+      "thumbnailImage": 24,
+      "licenseUrl": "https://vrm.dev/licenses/1.0/",
+      "avatarPermission": "everyone",
+      "allowExcessivelyViolentUsage": true,
+      "allowExcessivelySexualUsage": true,
+      "commercialUsage": "corporation",
+      "allowPoliticalOrReligiousUsage": true,
+      "allowAntisocialOrHateUsage": true,
+      "creditNotation": "unnecessary",
+      "allowRedistribution": true,
+      "modification": "allowModificationRedistribution"
+    }
+  },
+  {
+    "model": "models/b70818a59cb3-model.vrm",
+    "sha256": "b70818a59cb398a82c8ee82908db1b18a611f52507e4521b79bc3b983b89b9c8",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "cool_riko",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/06aee53a4435-avatar.vrm",
+    "sha256": "06aee53a4435033a4975dc2518184740f505c6c6d7b66cdc8c7623a7cfd63253",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "eee",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "eee",
+      "licenseName": "Redistribution_Prohibited",
+      "reference": "eee",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "hikkyc24",
+      "version": "ee",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/d30d2d04b220-rikov343.vrm",
+    "sha256": "d30d2d04b22029d107e35ec7df1d192a26e85f5d07f6c997673aaf9de54e6be9",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "pixiv VRoid Project",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 38,
+      "title": "RIKOV343",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/b2fab2612c28-rikov3.vrm",
+    "sha256": "b2fab2612c28a46f008f7211b64b548c10f14c89a6f6bc1ec772b87444753fa8",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "pixiv VRoid Project",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 41,
+      "title": "RIKOV3",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/36def4e3592a-riko-final-fixed-v2.vrm",
+    "sha256": "36def4e3592a11462796d0d11b0f6ef76f4bd91863fbbe5a0754fd17f4041666",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "subsect",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 37,
+      "title": "Riko final",
+      "version": "69",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/7f2ff2bf5af7-peakriko.vrm",
+    "sha256": "7f2ff2bf5af7dcb084eb37301325825fc139a951c1c2243e11af761a545dfdcd",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "pixiv VRoid Project",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 38,
+      "title": "AvatarSample_H",
+      "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/4e5c5188c39e-neuro-sama.vrm",
+    "sha256": "4e5c5188c39e478fb12744bf6ae3c6b53359767cd5537c07b34ec8de4a680d13",
+    "metadata": {
+      "allowedUserName": "Everyone",
+      "author": "Ppgrules945",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Other",
+      "reference": "Neuro-Sama(Twitch.tv/Vedal987)",
+      "sexualUssageName": "Disallow",
+      "texture": 35,
+      "title": "Neuro-Sama 2.0",
+      "version": "2.0",
+      "violentUssageName": "Allow",
+      "otherPermissionUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=necessary&modification=disallow&personal_commercial_use=disallow&redistribution=disallow&sexual_expression=disallow&version=1&violent_expression=allow",
+      "otherLicenseUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=necessary&modification=disallow&personal_commercial_use=disallow&redistribution=disallow&sexual_expression=disallow&version=1&violent_expression=allow"
+    }
+  },
+  {
+    "model": "models/bff1aeb96f36-neuro-clown.vrm",
+    "sha256": "bff1aeb96f366f519bccefd276559e31e2c00b7c371aab76c8ffa0e34bd204b6",
+    "metadata": {
+      "allowedUserName": "Everyone",
+      "author": "Ppgrules945",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Other",
+      "sexualUssageName": "Disallow",
+      "texture": 54,
+      "title": "Neuro-Sama: Clown Outfit",
+      "violentUssageName": "Disallow",
+      "otherPermissionUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=necessary&modification=disallow&personal_commercial_use=disallow&redistribution=disallow&sexual_expression=disallow&version=1&violent_expression=disallow",
+      "otherLicenseUrl": "https://hub.vroid.com/license?allowed_to_use_user=everyone&characterization_allowed_user=everyone&corporate_commercial_use=disallow&credit=necessary&modification=disallow&personal_commercial_use=disallow&redistribution=disallow&sexual_expression=disallow&version=1&violent_expression=disallow"
+    }
+  },
+  {
+    "model": "models/9bcc6aedeb4b-hikkyc2.vrm",
+    "sha256": "9bcc6aedeb4b19843faa3c753c7d7cc2fc7061bb07ddfea01260fcc501481b98",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "pixiv VRoid Project",
+      "commercialUssageName": "Disallow",
+      "licenseName": "Redistribution_Prohibited",
+      "sexualUssageName": "Disallow",
+      "texture": 25,
+      "title": "hikkyc2",
+      "violentUssageName": "Disallow"
+    }
+  }
+]

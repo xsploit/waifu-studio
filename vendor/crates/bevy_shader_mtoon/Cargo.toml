@@ -1,0 +1,27 @@
+[package]
+description          = "Bevy MToon shader."
+edition.workspace    = true
+keywords             = ["bevy", "shader", "toon"]
+license.workspace    = true
+name                 = "bevy_shader_mtoon"
+repository.workspace = true
+version.workspace    = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bevy = { default-features = false, features = [
+  "bevy_asset",
+  "bevy_pbr",
+  "bevy_window",
+], workspace = true }
+bitflags = "2.13.1"
+
+[dev-dependencies]
+bevy = { default-features = true, features = [
+  "pan_orbit_camera",
+], workspace = true }
+bevy_egui.workspace = true
+naga = { features = ["wgsl-in"], version = "30.0.1" }
+wesl = { features = ["naga-ext"], version = "0.6.0" }

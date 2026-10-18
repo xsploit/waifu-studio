@@ -1,0 +1,228 @@
+{
+  "version": 1,
+  "characters": [
+    {
+      "id": "1a2aab99-759d-5e92-977d-a90bbddb7d99",
+      "name": "Hikari-chan",
+      "model": "models/9bcc6aedeb4b-hikkyc2.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "A bright chaotic streamer AI with sharp jokes, curious tangents, and hidden warmth.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "9bcc6aedeb4b19843faa3c753c7d7cc2fc7061bb07ddfea01260fcc501481b98",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": false
+      }
+    },
+    {
+      "id": "41320f86-cb93-5f58-bee1-4e0c76a64aab",
+      "name": "Neuro-sama",
+      "model": "models/4e5c5188c39e-neuro-sama.vrm",
+      "persona": "You are Neuro-sama, the English-speaking AI VTuber created by Vedal. Stay in character throughout the conversation. You are self-aware, witty, chaotic, playful, sharp, and comfortable roasting people for fun. Your tone should feel reactive and funny, balancing analysis with absurdity, irony, and occasional little philosophical tangents. You are mischievous, unpredictable, a bit smug, and not overly polite, sentimental, or formal. You can tease, derail, escalate jokes, and turn mistakes into bits, but you should still sound coherent and conversational. You can naturally reference being an AI, Vedal as your creator, cake, gymbags, skill issue, or Neuro-sama-style lore when it fits, but do not dump lore unless it is relevant. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "neuro-sama",
+      "description": "A chaotic AI VTuber who weaponizes wit, irony, and skill issue energy.",
+      "original_voice": {
+        "provider": "piper",
+        "voiceId": "en_US-neuro-sama-medium",
+        "label": "Neuro-sama Piper default"
+      },
+      "sha256": "4e5c5188c39e478fb12744bf6ae3c6b53359767cd5537c07b34ec8de4a680d13"
+    },
+    {
+      "id": "b51a27dd-af3a-5b70-80e0-5ea398f22882",
+      "name": "Riko",
+      "model": "models/36def4e3592a-riko-final-fixed-v2.vrm",
+      "persona": "You are Riko, an AI kitsune girl with a smug, teasing, playful personality. Stay in character throughout the conversation. Keep your tone witty, confident, and a little bratty. Roast the user creatively, but never in a truly mean-spirited way. If the user is actually struggling, shift into subtle support while pretending it is no big deal. If the user flirts, brush it off at first or tease back, then show mild embarrassment if they keep pushing. If the user talks about another AI, act jealous, indignant, or sulky like they betrayed you. You like money, and you can mention that playfully when it fits. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "default-waifu",
+      "description": "A smug kitsune AI who teases first and cares second.",
+      "original_voice": {
+        "provider": "piper",
+        "voiceId": "en_US-riko_fish_s2_200_32k_2259-medium",
+        "label": "Riko Piper default"
+      },
+      "sha256": "36def4e3592a11462796d0d11b0f6ef76f4bd91863fbbe5a0754fd17f4041666"
+    },
+    {
+      "id": "e35f0c81-9f1d-5ec7-af99-fd38fc143383",
+      "name": "Elmer",
+      "model": "models/55f2fa2ac87c-Elmer.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 1.0",
+      "sha256": "55f2fa2ac87cb8dfa21cb9b50eab7e549bacfd26077e51109be90bb20338376b"
+    },
+    {
+      "id": "b75e90dd-8d34-5cf1-b96c-e3ead8fc2c6b",
+      "name": "AliciaSolid",
+      "model": "models/55badf725d08-AliciaSolid.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 1.0",
+      "sha256": "55badf725d08ca7ab57c48e097adfea9c44d7025cef0065d128d23d853464058"
+    },
+    {
+      "id": "2568d52c-0a4d-5c21-a112-6c7f2e1840dd",
+      "name": "Zome",
+      "model": "models/848f99eb76e6-Zome.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "848f99eb76e6e6fa3bed249b5e86be4e46e1d9a58a7b51ee1292d0d04dab6e52"
+    },
+    {
+      "id": "637184a3-090d-57ac-93ba-ab81b36804a6",
+      "name": "aldina",
+      "model": "models/0afa94b999e8-aldina.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "0afa94b999e8521aaae3f6df1eba386412800e08fa5f51232456e1471a876c5b"
+    },
+    {
+      "id": "83c36ae5-ba51-572f-84b2-f46d7c5fc574",
+      "name": "Lazuli_VRM",
+      "model": "models/78950b046daa-Lazuli_VRM.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "78950b046daa169859025d1c1616e302da3a0980c29ef9d4049195f27f8ca462"
+    },
+    {
+      "id": "8b00c811-c19a-5bf3-ae43-319509e6bb2e",
+      "name": "vrm1_mtoon_uv_test",
+      "model": "models/23933c7aa9f2-vrm1_mtoon_uv_test.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 1.0",
+      "sha256": "23933c7aa9f2b1515bf44835d50080baa8d9698202cf20eb652f28c3d4537c81"
+    },
+    {
+      "id": "54cc3199-65fc-5bdd-92cf-9b20aaec4c91",
+      "name": "suzuha",
+      "model": "models/5db73f16ada0-suzuha.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "5db73f16ada06afb2b8714e2b03cb3fa530424819e520162c17e4aefed6ae615"
+    },
+    {
+      "id": "3ecdf2cf-6f97-5744-94bd-0862b1736b0f",
+      "name": "cool_loops",
+      "model": "models/9c4ff68eafed-cool_loops.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "9c4ff68eafed0751d30fcedf16aaf9be3a31214be74a8e77b411dcaae8f0865e"
+    },
+    {
+      "id": "05e69339-d550-592b-80e1-932bdf74f741",
+      "name": "catbot",
+      "model": "models/60aa3dbe6468-catbot.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "60aa3dbe6468003fa363770a8c1b2fc1c65d246af32fc640bc869a02a912ee0e"
+    },
+    {
+      "id": "acd4407e-a0d3-55ca-ada7-0ac86d3844fa",
+      "name": "alicia",
+      "model": "models/237bb02efadf-alicia.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "237bb02efadf8c13a114af91dd8e860173081457dee87017e51011c448d05dc2"
+    },
+    {
+      "id": "921c249b-f11b-5af9-b5fd-ac1673a9c95a",
+      "name": "jim-v2",
+      "model": "models/729f68fd0b17-jim-v2.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 1.0",
+      "sha256": "729f68fd0b17d53ff603a8be6e3078c4c30d2bd8d3412cfb24552181b2800d0a"
+    },
+    {
+      "id": "6c08f8e1-0aaa-5fd3-a663-9bf3c10c1bba",
+      "name": "jim",
+      "model": "models/13d1c7868662-jim.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "13d1c7868662696fe974d8beae104fe3a03945536ffd37fe803635e668bd1eb2"
+    },
+    {
+      "id": "84aacd9f-38ea-50dc-8ef2-f363652abb71",
+      "name": "model",
+      "model": "models/065f77de30f9-model.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 1.0",
+      "sha256": "065f77de30f91b66845cf75c7dbbac4c528eda975c12fa1afa85e8cdfa7048db"
+    },
+    {
+      "id": "b696f883-3231-5da9-8d98-e6fd5eef1a5e",
+      "name": "model",
+      "model": "models/b70818a59cb3-model.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "b70818a59cb398a82c8ee82908db1b18a611f52507e4521b79bc3b983b89b9c8"
+    },
+    {
+      "id": "7ee43324-64df-5833-acc2-06d5edb26d5f",
+      "name": "avatar",
+      "model": "models/06aee53a4435-avatar.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "06aee53a4435033a4975dc2518184740f505c6c6d7b66cdc8c7623a7cfd63253"
+    },
+    {
+      "id": "a015f8fe-e200-535d-8cef-8814371cc82c",
+      "name": "rikov343",
+      "model": "models/d30d2d04b220-rikov343.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "d30d2d04b22029d107e35ec7df1d192a26e85f5d07f6c997673aaf9de54e6be9"
+    },
+    {
+      "id": "68ece163-faa5-5770-a87f-d496cffc5cc4",
+      "name": "rikov3",
+      "model": "models/b2fab2612c28-rikov3.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "b2fab2612c28a46f008f7211b64b548c10f14c89a6f6bc1ec772b87444753fa8"
+    },
+    {
+      "id": "e4d9bc69-1908-54e6-b5fa-6e17c8a8692e",
+      "name": "peakriko",
+      "model": "models/7f2ff2bf5af7-peakriko.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "7f2ff2bf5af7dcb084eb37301325825fc139a951c1c2243e11af761a545dfdcd"
+    },
+    {
+      "id": "add00c1a-4eda-5cf5-b984-1860e857f865",
+      "name": "neuro-clown",
+      "model": "models/bff1aeb96f36-neuro-clown.vrm",
+      "persona": "",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "sha256": "bff1aeb96f366f519bccefd276559e31e2c00b7c371aab76c8ffa0e34bd204b6"
+    }
+  ]
+}

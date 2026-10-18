@@ -1,0 +1,1004 @@
+//! Desktop interaction host; native compositor dragging keeps working on Wayland.
+//! Window-edge placement is applied only when the backend supplies a global position.
+use crate::{
+    desktop_menu::DesktopMenu,
+    desktop_settings::{DesktopMoveRequest, DesktopSettings},
+    studio::{Studio, ViewMode},
+};
+use bevy::{
+    prelude::*,
+    window::{PrimaryWindow, WindowPosition},
+};
+use bevy_egui::PrimaryEguiContext;
+use serde_vrm::vrm1::vrmc_vrm::humanoid::HumanBoneName;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, Instant},
+};
+use waifu_studio::{
+    animation::{AnimationState, BvhClip, parse_vrma},
+    desktop_interaction::{
+        DesktopInteraction, DesktopSurface, InteractionFrame, InteractionInput, InteractionState,
+        ScreenRect, SurfaceId,
+    },
+    desktop_platform::{DesktopSnapshot, KwinDesktopBridge},
+    loading::AvatarLoadState,
+};
+
+pub struct DesktopBehaviorPlugin;
+impl Plugin for DesktopBehaviorPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<DesktopInteraction>()
+            .init_resource::<DesktopGrab>()
+            .init_resource::<DesktopMenu>()
+            .init_resource::<DesktopMotions>()
+            .init_resource::<DesktopPlatform>()
+            .init_resource::<DesktopPointerHit>()
+            .add_systems(
+                PostUpdate,
+                grab_companion.after(bevy::transform::TransformSystems::Propagate),
+            )
+            .add_systems(Update, (sync_desktop_platform, play_desktop_motion))
+            .add_systems(
+                Update,
+                consume_desktop_move_request
+                    .after(crate::runtime::DesktopPerchRequests)
+                    .after(sync_desktop_platform),
+            )
+            .add_systems(
+                Update,
+                track_desktop_pointer.before(crate::runtime::DesktopWindowInput),
+            )
+            .add_systems(bevy_egui::EguiPrimaryContextPass, crate::desktop_menu::ui);
+    }
+}
+
+fn route_move_request(
+    request: DesktopMoveRequest,
+    window: &mut Window,
+    bridge_move: Option<&dyn Fn(Vec2) -> Result<(), String>>,
+) -> String {
+    let mut failure = None;
+    if let Some(send) = bridge_move {
+        match send(request.logical_origin) {
+            Ok(()) => {
+                return "Snap requested through KWin; waiting for the compositor position.".into();
+            }
+            Err(error) => failure = Some(error),
+        }
+    }
+    if request.native_position_supported {
+        window.position = WindowPosition::At(request.physical_origin);
+        "Snap requested on the current monitor.".into()
+    } else {
+        format!("Could not snap: {}", failure.unwrap_or_else(|| "Wayland needs connected window detection to move the companion. Enable it and try again.".into()))
+    }
+}
+
+fn consume_desktop_move_request(
+    platform: Res<DesktopPlatform>,
+    mut settings: ResMut<DesktopSettings>,
+    mut primary: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let Some(request) = settings.move_requested.take() else {
+        return;
+    };
+    let Ok(mut window) = primary.single_mut() else {
+        settings.placement_status = "Could not snap: the companion window is unavailable.".into();
+        return;
+    };
+    settings.placement_status = if let Some(bridge) = &platform.bridge {
+        route_move_request(
+            request,
+            &mut window,
+            Some(&|origin| bridge.request_move(origin)),
+        )
+    } else {
+        route_move_request(request, &mut window, None)
+    };
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub(crate) struct DesktopPointerHit {
+    pub avatar_hit: bool,
+    /// A global cursor remains observable while native hit testing is disabled.
+    pub tracking_available: bool,
+    sampled_at: Option<Instant>,
+}
+impl DesktopPointerHit {
+    pub fn hit_test(
+        self,
+        manual_pass: bool,
+        recovery_ready: bool,
+        dragging: bool,
+        menu_open: bool,
+        now: Instant,
+    ) -> bool {
+        if !recovery_ready {
+            return true;
+        }
+        if manual_pass {
+            return false;
+        }
+        if dragging || menu_open {
+            return true;
+        }
+        let fresh = self
+            .sampled_at
+            .and_then(|at| now.checked_duration_since(at))
+            .is_some_and(|age| age <= Duration::from_millis(500));
+        !self.tracking_available || !fresh || self.avatar_hit
+    }
+}
+
+fn trusted_viewport_cursor(snapshot: &DesktopSnapshot, now: Instant) -> Option<Vec2> {
+    let age = now.checked_duration_since(snapshot.received_at)?;
+    if age > Duration::from_millis(500) {
+        return None;
+    }
+    let cursor = snapshot.cursor - snapshot.own_window_rect?.origin;
+    cursor.is_finite().then_some(cursor)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn track_desktop_pointer(
+    studio: Res<Studio>,
+    platform: Res<DesktopPlatform>,
+    state: Res<AvatarLoadState>,
+    primary: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<PrimaryEguiContext>>,
+    parents: Query<&ChildOf>,
+    outlines: Query<(), With<MeshMaterial3d<bevy_shader_mtoon::OutlineMaterial>>>,
+    mut raycast: MeshRayCast,
+    mut hit: ResMut<DesktopPointerHit>,
+) {
+    *hit = DesktopPointerHit::default();
+    if studio.mode != ViewMode::Desktop {
+        return;
+    }
+    let (Ok(window), Ok((camera, transform)), Some(root)) =
+        (primary.single(), cameras.single(), state.active)
+    else {
+        return;
+    };
+    let now = Instant::now();
+    let snapshot = platform
+        .bridge
+        .as_ref()
+        .and_then(|bridge| bridge.snapshot().ok());
+    let trusted = snapshot
+        .as_ref()
+        .and_then(|snapshot| trusted_viewport_cursor(snapshot, now));
+    let Some(cursor) = trusted.or_else(|| window.cursor_position()) else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(transform, cursor) else {
+        return;
+    };
+    hit.avatar_hit = !raycast
+        .cast_ray(
+            ray,
+            &MeshRayCastSettings {
+                filter: &|entity| {
+                    (entity == root
+                        || parents
+                            .iter_ancestors(entity)
+                            .any(|ancestor| ancestor == root))
+                        && outlines.get(entity).is_err()
+                },
+                ..default()
+            },
+        )
+        .is_empty();
+    // Native window cursors alone cannot safely recover hover after passthrough.
+    hit.tracking_available = trusted.is_some();
+    hit.sampled_at = Some(now);
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct DesktopGrab {
+    pub active: bool,
+    compositor_seen: bool,
+    started: Option<std::time::Instant>,
+    avatar: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+struct DesktopPlatform {
+    bridge: Option<Arc<KwinDesktopBridge>>,
+    pending: Option<Mutex<mpsc::Receiver<Result<KwinDesktopBridge, String>>>>,
+    attempted: bool,
+}
+
+fn sync_desktop_platform(
+    studio: Res<Studio>,
+    mut settings: ResMut<DesktopSettings>,
+    mut platform: ResMut<DesktopPlatform>,
+) {
+    if studio.mode != ViewMode::Desktop || !settings.kwin_window_surfaces {
+        platform.pending = None;
+        platform.attempted = false;
+        if let Some(bridge) = platform.bridge.take() {
+            // Unloading a compositor script may block on D-Bus, never the frame loop.
+            std::thread::spawn(move || drop(bridge));
+        }
+        settings.surface_status.clear();
+        return;
+    }
+    if !platform.attempted {
+        platform.attempted = true;
+        settings.surface_status = "Starting temporary KWin window tracking…".into();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        platform.pending = Some(Mutex::new(receiver));
+        std::thread::spawn(move || {
+            let _ = sender.send(KwinDesktopBridge::start("Waifu Studio"));
+        });
+    }
+    let result = platform.pending.as_ref().and_then(|pending| {
+        pending
+            .lock()
+            .ok()
+            .and_then(|receiver| receiver.try_recv().ok())
+    });
+    if let Some(result) = result {
+        platform.pending = None;
+        match result {
+            Ok(bridge) => platform.bridge = Some(Arc::new(bridge)),
+            Err(error) => settings.surface_status = error,
+        }
+    }
+    if let Some(bridge) = &platform.bridge {
+        settings.surface_status = match bridge.snapshot() {
+            Ok(snapshot) if snapshot.own_window_rect.is_some() => {
+                "KWin geometry connected; drag above a window edge to sit.".into()
+            }
+            Ok(_) => "KWin connected; waiting for the companion window.".into(),
+            Err(error) => error,
+        };
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Motion {
+    Idle,
+    Grabbed,
+    Sitting,
+}
+#[derive(Resource, Default)]
+struct DesktopMotions {
+    clips: Vec<(Motion, Arc<BvhClip>, PathBuf)>,
+    initialized: bool,
+    previous: Option<AnimationState>,
+    selected: Option<Motion>,
+}
+impl DesktopMotions {
+    fn initialize(&mut self) {
+        if self.initialized {
+            return;
+        }
+        self.initialized = true;
+        for (motion, name, bytes) in [
+            (
+                Motion::Idle,
+                "idle-maid.vrma",
+                include_bytes!("../assets/animations/desktop/idle-maid.vrma").as_slice(),
+            ),
+            (
+                Motion::Grabbed,
+                "grabbed.vrma",
+                include_bytes!("../assets/animations/desktop/grabbed.vrma").as_slice(),
+            ),
+            (
+                Motion::Sitting,
+                "idle-sitting.vrma",
+                include_bytes!("../assets/animations/desktop/idle-sitting.vrma").as_slice(),
+            ),
+        ] {
+            match parse_vrma(bytes) {
+                Ok(clip) => self.clips.push((
+                    motion,
+                    Arc::new(clip),
+                    PathBuf::from("assets/animations/desktop").join(name),
+                )),
+                Err(error) => error!("Bundled desktop motion {name}: {error}"),
+            }
+        }
+    }
+}
+
+fn play_desktop_motion(
+    studio: Res<Studio>,
+    settings: Res<DesktopSettings>,
+    grab: Res<DesktopGrab>,
+    interaction: Res<DesktopInteraction>,
+    mut motions: ResMut<DesktopMotions>,
+    mut animation: ResMut<AnimationState>,
+) {
+    if studio.mode != ViewMode::Desktop || !settings.automatic_motions {
+        if let Some(previous) = motions.previous.take() {
+            *animation = previous;
+        }
+        motions.selected = None;
+        return;
+    }
+    motions.initialize();
+    let next = if grab.active {
+        Motion::Grabbed
+    } else if interaction.state == InteractionState::Sitting && settings.sitting {
+        Motion::Sitting
+    } else {
+        Motion::Idle
+    };
+    if motions.selected == Some(next) {
+        return;
+    }
+    let Some((_, clip, path)) = motions.clips.iter().find(|(motion, _, _)| *motion == next) else {
+        return;
+    };
+    let (clip, path) = (clip.clone(), path.clone());
+    if motions.previous.is_none() {
+        motions.previous = Some(std::mem::take(&mut *animation));
+    }
+    animation.select_clip(clip, Some(path));
+    motions.selected = Some(next);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grab_companion(
+    (_main_thread, time): (bevy::ecs::system::NonSendMarker, Res<Time>),
+    studio: Res<Studio>,
+    menu: Res<DesktopMenu>,
+    platform: Res<DesktopPlatform>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    state: Res<AvatarLoadState>,
+    mut grab: ResMut<DesktopGrab>,
+    mut interaction: ResMut<DesktopInteraction>,
+    mut settings: ResMut<DesktopSettings>,
+    mut primary: Query<
+        (Entity, &mut Window, Option<&bevy::window::OnMonitor>),
+        With<PrimaryWindow>,
+    >,
+    cameras: Query<(&Camera, &GlobalTransform), With<PrimaryEguiContext>>,
+    (bones, globals): (
+        Query<(Entity, &HumanBoneName, &GlobalTransform)>,
+        Query<&GlobalTransform>,
+    ),
+    parents: Query<&ChildOf>,
+    outlines: Query<(), With<MeshMaterial3d<bevy_shader_mtoon::OutlineMaterial>>>,
+    monitors: Query<&bevy::window::Monitor>,
+    mut raycast: MeshRayCast,
+) {
+    if studio.mode != ViewMode::Desktop {
+        *grab = DesktopGrab::default();
+        *interaction = DesktopInteraction::default();
+        settings.sitting = false;
+        if settings.sit_requested.take() == Some(true) {
+            settings.sitting_status = "Switch to Desktop mode to sit on a detected surface.".into();
+        }
+        return;
+    }
+    let (
+        Ok((window_entity, mut window, current_monitor)),
+        Ok((camera, camera_transform)),
+        Some(root),
+    ) = (primary.single_mut(), cameras.single(), state.active)
+    else {
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "Sitting needs a loaded avatar and its desktop viewport.",
+        );
+        return;
+    };
+    if grab.avatar != Some(root) {
+        *grab = DesktopGrab {
+            avatar: Some(root),
+            ..default()
+        };
+        *interaction = DesktopInteraction::default();
+        settings.sitting = false;
+    }
+    let cursor = window.cursor_position();
+    let snapshot = platform
+        .bridge
+        .as_ref()
+        .and_then(|bridge| bridge.snapshot().ok());
+    let native_origin = bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        windows
+            .get_window(window_entity)
+            .and_then(|window| window.inner_position().ok())
+            .map(|position| IVec2::new(position.x, position.y))
+    });
+    let descendant = |entity: Entity| {
+        entity == root
+            || parents
+                .iter_ancestors(entity)
+                .any(|ancestor| ancestor == root)
+    };
+    let logical_origin = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.own_window_rect.map(|rect| rect.origin))
+        .or_else(|| native_origin.map(|origin| origin.as_vec2() / window.scale_factor()));
+    if !studio.click_through
+        && !menu.blocks_drag()
+        && buttons.just_pressed(MouseButton::Left)
+        && let Some(cursor) = cursor
+        && let Ok(ray) = camera.viewport_to_world(camera_transform, cursor)
+        && !raycast
+            .cast_ray(
+                ray,
+                &MeshRayCastSettings {
+                    filter: &|entity| descendant(entity) && outlines.get(entity).is_err(),
+                    ..default()
+                },
+            )
+            .is_empty()
+    {
+        grab.active = true;
+        grab.compositor_seen = false;
+        grab.started = Some(std::time::Instant::now());
+        settings.sitting = false;
+        settings.sit_requested = None;
+        // Use the compositor's native pointer grab: no global-cursor polling or
+        // arbitrary surface positioning is required for moving on Wayland.
+        window.start_drag_move();
+        if let Some(origin) = logical_origin {
+            let frame = InteractionFrame {
+                avatar_origin: origin,
+                avatar_size: window.resolution.size(),
+                hips_offset: Vec2::ZERO,
+                root_offset: Vec2::ZERO,
+                feet_offset: None,
+                pixels_per_unit: 1.0,
+                surfaces: &[],
+                own_window_ids: &[],
+            };
+            interaction.handle(
+                InteractionInput::Start {
+                    cursor: frame.avatar_origin + cursor,
+                },
+                &frame,
+            );
+        }
+    }
+    let compositor_drag = snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.own_interactive_move);
+    grab.compositor_seen |= grab.active && compositor_drag;
+    let released = native_drag_released(
+        &grab,
+        compositor_drag,
+        snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.own_window_rect.is_some())
+            .map(|snapshot| snapshot.received_at),
+        buttons.pressed(MouseButton::Left),
+        window.focused,
+        std::time::Instant::now(),
+    );
+    if released {
+        grab.active = false;
+    }
+    if grab.active {
+        if settings.sit_requested.take() == Some(true) {
+            settings.sitting_status =
+                "Finish moving the companion before requesting a seat.".into();
+        }
+        settings.sitting = false;
+        return;
+    }
+    // Native Wayland intentionally does not disclose global surface positions.
+    // Do not reuse a guessed/stale monitor origin to pretend it can track windows.
+    let Some(origin) = logical_origin else {
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "Sitting needs trusted window coordinates. Enable window detection and try again.",
+        );
+        return;
+    };
+    let Some(hip_transform) = bones
+        .iter()
+        .find(|(entity, name, _)| **name == HumanBoneName::Hips && descendant(*entity))
+        .map(|(_, _, transform)| transform)
+    else {
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "Sitting needs the avatar's projected hips.",
+        );
+        return;
+    };
+    let Ok(hips) = camera.world_to_viewport(camera_transform, hip_transform.translation()) else {
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "The avatar's hips are outside the desktop viewport.",
+        );
+        return;
+    };
+    let Some(root_offset) = globals.get(root).ok().and_then(|root| {
+        camera
+            .world_to_viewport(camera_transform, root.translation())
+            .ok()
+    }) else {
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "Sitting needs the avatar's projected root.",
+        );
+        return;
+    };
+    let feet = bones
+        .iter()
+        .filter(|(entity, name, _)| {
+            descendant(*entity)
+                && matches!(
+                    **name,
+                    HumanBoneName::LeftFoot
+                        | HumanBoneName::RightFoot
+                        | HumanBoneName::LeftToes
+                        | HumanBoneName::RightToes
+                )
+        })
+        .filter_map(|(_, _, transform)| {
+            camera
+                .world_to_viewport(camera_transform, transform.translation())
+                .ok()
+        })
+        .max_by(|a, b| a.y.total_cmp(&b.y));
+    let pixels_per_unit = camera
+        .world_to_viewport(camera_transform, hip_transform.translation() + Vec3::Y)
+        .map_or(window.height() / 2.0, |above| above.distance(hips));
+    let scale = window.scale_factor();
+    let monitor = current_monitor.and_then(|current| monitors.get(current.0).ok());
+    let fallback_surfaces: Vec<_> = monitor
+        .into_iter()
+        .map(|monitor| DesktopSurface {
+            id: SurfaceId::WorkArea(0),
+            // Full monitor floor only; this is not an inferred taskbar/work-area edge.
+            rect: ScreenRect {
+                origin: monitor.physical_position.as_vec2() / scale,
+                size: Vec2::new(
+                    monitor.physical_width as f32,
+                    monitor.physical_height as f32,
+                ) / scale,
+            },
+            z_order: i32::MAX,
+        })
+        .collect();
+    let surfaces = snapshot
+        .as_ref()
+        .map_or(fallback_surfaces.as_slice(), |snapshot| {
+            snapshot.surfaces.as_slice()
+        });
+    let own_ids = snapshot
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.own_window_ids.as_slice());
+    let frame = InteractionFrame {
+        avatar_origin: origin,
+        avatar_size: window.resolution.size(),
+        hips_offset: hips,
+        root_offset,
+        feet_offset: feet,
+        pixels_per_unit,
+        surfaces,
+        own_window_ids: own_ids,
+    };
+    let requested = settings.sit_requested.take();
+    let output = if let Some(sitting) = requested {
+        if sitting {
+            let output = interaction.sit_on_surface_below(&frame);
+            settings.sitting_status = if output.state == InteractionState::Sitting {
+                "Sitting on a detected surface.".into()
+            } else {
+                "No exposed window edge or monitor floor was detected below the companion.".into()
+            };
+            output
+        } else {
+            interaction.handle(InteractionInput::Cancel, &frame)
+        }
+    } else if released {
+        let cursor = snapshot.as_ref().map_or_else(
+            || frame.avatar_origin + cursor.unwrap_or(hips),
+            |snapshot| snapshot.cursor,
+        );
+        finish_native_drop(&mut interaction, &frame, cursor)
+    } else if interaction.state == InteractionState::Sitting {
+        interaction.tick(&frame, time.delta_secs())
+    } else {
+        settings.sitting = false;
+        return;
+    };
+    if output.state == InteractionState::Sitting {
+        let placement = if snapshot.is_some() {
+            platform
+                .bridge
+                .as_ref()
+                .ok_or_else(|| "Window detection is disconnected.".to_string())
+                .and_then(|bridge| bridge.request_move(output.window_origin))
+        } else if native_origin.is_some() {
+            window.position = WindowPosition::At((output.window_origin * scale).as_ivec2());
+            Ok(())
+        } else {
+            Err("The compositor does not support positioning this window.".into())
+        };
+        if let Err(error) = placement {
+            // A detected surface is not enough if the host rejected placement.
+            // Drop the seated pose instead of leaving it floating in place.
+            settings.sitting_status = format!("Could not sit on the surface: {error}");
+            settings.sitting = false;
+            *interaction = DesktopInteraction::default();
+            return;
+        }
+    }
+    settings.sitting = output.state == InteractionState::Sitting;
+}
+
+fn fail_sit_request(
+    settings: &mut DesktopSettings,
+    interaction: &mut DesktopInteraction,
+    notice: &str,
+) {
+    if settings.sit_requested.take() == Some(true) || settings.sitting {
+        settings.sitting_status = notice.into();
+    }
+    settings.sitting = false;
+    *interaction = DesktopInteraction::default();
+}
+
+fn native_drag_released(
+    grab: &DesktopGrab,
+    compositor_drag: bool,
+    sampled_at: Option<std::time::Instant>,
+    left_pressed: bool,
+    focused: bool,
+    now: std::time::Instant,
+) -> bool {
+    const START_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
+    if !grab.active || compositor_drag {
+        return false;
+    }
+    let waiting = sampled_at.is_some()
+        && !grab.compositor_seen
+        && grab
+            .started
+            .is_some_and(|start| now.saturating_duration_since(start) < START_GRACE);
+    // KWin can start and finish a short drag between samples, consuming the
+    // button release. Only a distinct sample received after the startup grace
+    // can confirm this case; repeatedly cloning a cached premove frame cannot.
+    let fresh_native_end = grab
+        .started
+        .zip(sampled_at)
+        .is_some_and(|(start, at)| at.saturating_duration_since(start) >= START_GRACE);
+    !waiting && (grab.compositor_seen || fresh_native_end || !left_pressed || !focused)
+}
+
+fn finish_native_drop(
+    interaction: &mut DesktopInteraction,
+    frame: &InteractionFrame<'_>,
+    cursor: Vec2,
+) -> waifu_studio::desktop_interaction::InteractionOutput {
+    // The actual mesh hit started this native drag. Geometry may have arrived
+    // after that hit, so establish the portable drag state before releasing it.
+    if interaction.state != InteractionState::Dragging {
+        interaction.handle(InteractionInput::Start { cursor }, frame);
+    }
+    interaction.handle(InteractionInput::NativeEnd { cursor }, frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snap_routes_logical_coordinates_through_bridge_and_only_uses_supported_native_fallback() {
+        let request = DesktopMoveRequest {
+            logical_origin: Vec2::new(-300., 480.),
+            physical_origin: IVec2::new(-600, 960),
+            native_position_supported: false,
+        };
+        let mut window = Window::default();
+        let original = window.position;
+        let sent = std::cell::Cell::new(None);
+        let status = route_move_request(
+            request,
+            &mut window,
+            Some(&|origin| {
+                sent.set(Some(origin));
+                Ok(())
+            }),
+        );
+        assert_eq!(sent.get(), Some(request.logical_origin));
+        assert_eq!(window.position, original);
+        assert!(status.contains("waiting for the compositor"));
+        let status = route_move_request(request, &mut window, None);
+        assert_eq!(window.position, original);
+        assert!(status.starts_with("Could not snap:"));
+        let failed = route_move_request(
+            request,
+            &mut window,
+            Some(&|_| Err("Current geometry expired".into())),
+        );
+        assert!(failed.contains("geometry expired"));
+        assert_eq!(window.position, original);
+        let status = route_move_request(
+            DesktopMoveRequest {
+                native_position_supported: true,
+                ..request
+            },
+            &mut window,
+            None,
+        );
+        assert_eq!(window.position, WindowPosition::At(request.physical_origin));
+        assert!(!status.starts_with("Could not"));
+    }
+
+    #[test]
+    fn transparent_margin_passes_clicks_but_avatar_drag_menu_and_recovery_remain_interactive() {
+        let now = Instant::now();
+        let margin = DesktopPointerHit {
+            avatar_hit: false,
+            tracking_available: true,
+            sampled_at: Some(now),
+        };
+        assert!(!margin.hit_test(false, true, false, false, now));
+        assert!(
+            DesktopPointerHit {
+                avatar_hit: true,
+                ..margin
+            }
+            .hit_test(false, true, false, false, now)
+        );
+        assert!(margin.hit_test(false, true, true, false, now));
+        assert!(margin.hit_test(false, true, false, true, now));
+        assert!(
+            margin.hit_test(true, false, false, false, now),
+            "Never disable the only recovery surface"
+        );
+        assert!(
+            !DesktopPointerHit {
+                avatar_hit: true,
+                ..margin
+            }
+            .hit_test(true, true, true, true, now),
+            "Explicit manual passthrough remains authoritative"
+        );
+        assert!(
+            DesktopPointerHit {
+                tracking_available: false,
+                ..margin
+            }
+            .hit_test(false, true, false, false, now)
+        );
+        assert!(
+            margin.hit_test(false, true, false, false, now + Duration::from_millis(501)),
+            "Stale hover must restore native input"
+        );
+    }
+
+    #[test]
+    fn trusted_global_pointer_recovers_after_native_leave_and_rejects_cached_or_missing_geometry() {
+        let now = Instant::now();
+        let mut snapshot = DesktopSnapshot {
+            received_at: now,
+            surfaces: Vec::new(),
+            own_window_ids: Vec::new(),
+            own_window_rect: Some(ScreenRect {
+                origin: Vec2::new(-500., 200.),
+                size: Vec2::new(420., 640.),
+            }),
+            own_interactive_move: false,
+            cursor: Vec2::new(-350., 350.),
+        };
+        assert_eq!(
+            trusted_viewport_cursor(&snapshot, now),
+            Some(Vec2::new(150., 150.))
+        );
+        assert!(trusted_viewport_cursor(&snapshot, now + Duration::from_millis(501)).is_none());
+        snapshot.own_window_rect = None;
+        assert!(trusted_viewport_cursor(&snapshot, now).is_none());
+    }
+
+    #[test]
+    fn failed_sit_request_clears_pose_and_explains_why() {
+        let mut settings = DesktopSettings::default();
+        settings.sitting = true;
+        settings.request_sitting(true);
+        let mut interaction = DesktopInteraction::default();
+        interaction.state = InteractionState::Sitting;
+        fail_sit_request(
+            &mut settings,
+            &mut interaction,
+            "No trusted surface is available.",
+        );
+        assert!(!settings.sitting && settings.sit_requested.is_none());
+        assert_eq!(interaction.state, InteractionState::Idle);
+        assert_eq!(settings.sitting_status, "No trusted surface is available.");
+    }
+    #[test]
+    fn short_native_drag_ends_from_a_fresh_sample_when_the_button_release_was_consumed() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let grab = DesktopGrab {
+            active: true,
+            started: Some(start),
+            ..default()
+        };
+        let now = start + Duration::from_millis(200);
+        assert!(native_drag_released(
+            &grab,
+            false,
+            Some(start + Duration::from_millis(160)),
+            true,
+            true,
+            now
+        ));
+        assert!(
+            !native_drag_released(
+                &grab,
+                false,
+                Some(start - Duration::from_millis(20)),
+                true,
+                true,
+                now
+            ),
+            "A cached premove snapshot must not finish an active native drag"
+        );
+        assert!(
+            !native_drag_released(
+                &grab,
+                false,
+                Some(start + Duration::from_millis(100)),
+                true,
+                true,
+                now
+            ),
+            "A sample captured during startup grace is still insufficient"
+        );
+        assert!(
+            !native_drag_released(
+                &grab,
+                true,
+                Some(start + Duration::from_millis(160)),
+                true,
+                true,
+                now
+            ),
+            "An active compositor drag must keep the grabbed state"
+        );
+    }
+
+    #[test]
+    fn mesh_confirmed_native_drop_can_seat_when_geometry_arrives_after_the_drag_started() {
+        let surfaces = [DesktopSurface {
+            id: SurfaceId::WorkArea(7),
+            rect: ScreenRect {
+                origin: Vec2::ZERO,
+                size: Vec2::new(1920., 1032.),
+            },
+            z_order: i32::MAX,
+        }];
+        let frame = InteractionFrame {
+            avatar_origin: Vec2::new(200., 600.),
+            avatar_size: Vec2::new(400., 480.),
+            hips_offset: Vec2::new(150., 200.),
+            root_offset: Vec2::new(150., 200.),
+            feet_offset: Some(Vec2::new(150., 420.)),
+            pixels_per_unit: 200.,
+            surfaces: &surfaces,
+            own_window_ids: &[],
+        };
+        let out = finish_native_drop(
+            &mut DesktopInteraction::default(),
+            &frame,
+            Vec2::new(350., 720.),
+        );
+        assert_eq!(out.state, InteractionState::Sitting);
+        assert_eq!(out.hips_anchor, Some(Vec2::new(350., 1032.)));
+        assert_eq!(out.window_origin, Vec2::new(200., 832.));
+    }
+
+    #[test]
+    fn actual_homunculus_motions_load_and_keep_humanoid_tracks() {
+        let mut motions = DesktopMotions::default();
+        motions.initialize();
+        assert_eq!(motions.clips.len(), 3);
+        for (_, clip, _) in &motions.clips {
+            assert!(clip.mapped_bones() >= 10);
+            assert!(clip.duration() > 0.0);
+            assert_eq!(clip.format(), "VRMA");
+        }
+    }
+    #[test]
+    fn desktop_motions_restore_the_complete_user_motion_on_exit_or_disable() {
+        for disable in [false, true] {
+            let directory =
+                std::env::temp_dir().join(format!("studio-motion-{}", uuid::Uuid::new_v4()));
+            let (store, library) = waifu_studio::data::Store::open(directory.clone()).unwrap();
+            let mut studio = Studio::new(store, library);
+            studio.mode = ViewMode::Desktop;
+            let original = Arc::new(
+                parse_vrma(include_bytes!(
+                    "../assets/animations/desktop/idle-maid.vrma"
+                ))
+                .unwrap(),
+            );
+            let mut animation = AnimationState::default();
+            animation.select_clip(original.clone(), Some("my-custom-motion.vrma".into()));
+            animation.position = 1.25;
+            animation.speed = 0.75;
+            animation.weight = 0.4;
+            animation.looping = false;
+            animation.pause();
+            let mut app = App::new();
+            app.insert_resource(studio)
+                .insert_resource(animation)
+                .init_resource::<DesktopSettings>()
+                .init_resource::<DesktopGrab>()
+                .init_resource::<DesktopMotions>()
+                .init_resource::<DesktopInteraction>()
+                .add_systems(Update, play_desktop_motion);
+            // A stale/manual flag cannot activate a pose without a real seat.
+            app.world_mut().resource_mut::<DesktopSettings>().sitting = true;
+            app.update();
+            assert!(!Arc::ptr_eq(
+                app.world()
+                    .resource::<AnimationState>()
+                    .clip
+                    .as_ref()
+                    .unwrap(),
+                &original
+            ));
+            assert!(
+                app.world()
+                    .resource::<AnimationState>()
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .ends_with("idle-maid.vrma")
+            );
+            app.world_mut().resource_mut::<DesktopInteraction>().state = InteractionState::Sitting;
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<AnimationState>()
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .ends_with("idle-sitting.vrma")
+            );
+            app.world_mut().resource_mut::<DesktopGrab>().active = true;
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<AnimationState>()
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .ends_with("grabbed.vrma")
+            );
+            if disable {
+                app.world_mut()
+                    .resource_mut::<DesktopSettings>()
+                    .automatic_motions = false;
+            } else {
+                app.world_mut().resource_mut::<Studio>().mode = ViewMode::Studio;
+            }
+            app.update();
+            let restored = app.world().resource::<AnimationState>();
+            assert!(Arc::ptr_eq(restored.clip.as_ref().unwrap(), &original));
+            assert_eq!(
+                restored.path.as_deref(),
+                Some(std::path::Path::new("my-custom-motion.vrma"))
+            );
+            assert_eq!(
+                (restored.position, restored.speed, restored.weight),
+                (1.25, 0.75, 0.4)
+            );
+            assert!(!restored.playing && !restored.looping);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+}

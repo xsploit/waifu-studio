@@ -1,0 +1,29 @@
+# Local builds, test fixtures and scratch research
+**/target/
+/work/
+/data/
+/dist/
+*.log
+*.tmp
+
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+credentials.env
+*.key
+*.pem
+*.p12
+*.pfx
+.netrc
+.DS_Store
+
+# App libraries and conversations belong in the user data directory
+library.json
+desktop-settings.json
+scene-roster.json
+conversation*.json
+
+# IDE state
+.idea/
+.vscode/

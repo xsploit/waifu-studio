@@ -1,0 +1,50 @@
+[workspace]
+members  = ["crates/bevy_vrm", "crates/bevy_shader_mtoon", "crates/serde_vrm"]
+resolver = "2"
+
+[workspace.package]
+edition    = "2024"
+license    = "MIT OR Apache-2.0"
+repository = "https://github.com/unavi-xyz/bevy_vrm"
+version    = "0.5.0"
+
+[workspace.lints.clippy]
+cast_possible_truncation = "allow"
+cast_precision_loss      = "allow"
+cast_sign_loss           = "allow"
+nursery                  = { level = "warn", priority = -1 }
+pedantic                 = { level = "warn", priority = -1 }
+unwrap_used              = "deny"
+
+# Bevy-specific patterns
+needless_pass_by_value = "allow"
+too_many_arguments     = "allow"
+type_complexity        = "allow"
+
+[workspace.dependencies]
+bevy_shader_mtoon = { path = "crates/bevy_shader_mtoon", version = "0.5.0" }
+bevy_vrm          = { path = "crates/bevy_vrm", version = "0.5.0" }
+serde_vrm         = { path = "crates/serde_vrm", version = "0.5.0" }
+
+bevy = { default-features = false, version = "0.19.0" }
+bevy_egui = { default-features = false, features = [
+  "default_fonts",
+  "open_url",
+  "render",
+], version = "0.42.0" }
+serde = { features = ["derive"], version = "1.0.228" }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+
+[workspace.metadata.release]
+shared-version = true
+tag-name       = "v{{version}}"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"

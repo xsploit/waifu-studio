@@ -1,0 +1,72 @@
+{
+  "max_tokens": "1024",
+  "method": "production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+  "reasoning": "low",
+  "routing": "default",
+  "rows": [
+    {
+      "audio_duration_ms": 4411.791383219955,
+      "decoded_done_ms": 1599.699681,
+      "earliest_playback_end_ms": 5920.779796219955,
+      "error": null,
+      "first_decoded_audio_ms": 1508.988413,
+      "first_nonzero_audio_ms": 1508.993908,
+      "first_token_ms": null,
+      "llm_done_ms": null,
+      "llm_model": "",
+      "mode": "ws",
+      "network_done_ms": 1583.686601,
+      "nonzero_samples": 175605,
+      "phase": "speech",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 63,
+      "transport_first_wire_audio_ms": 1504
+    },
+    {
+      "audio_duration_ms": 4318.91156462585,
+      "decoded_done_ms": 1736.9928959999997,
+      "earliest_playback_end_ms": 5954.31293062585,
+      "error": null,
+      "first_decoded_audio_ms": 1635.401366,
+      "first_nonzero_audio_ms": 1635.40647,
+      "first_token_ms": null,
+      "llm_done_ms": null,
+      "llm_model": "",
+      "mode": "ws",
+      "network_done_ms": 1719.2188669999998,
+      "nonzero_samples": 177831,
+      "phase": "speech",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 63,
+      "transport_first_wire_audio_ms": 1630
+    },
+    {
+      "audio_duration_ms": 4133.151927437642,
+      "decoded_done_ms": 1554.8990969999998,
+      "earliest_playback_end_ms": 5627.4610104376425,
+      "error": null,
+      "first_decoded_audio_ms": 1494.309083,
+      "first_nonzero_audio_ms": 1494.314114,
+      "first_token_ms": null,
+      "llm_done_ms": null,
+      "llm_model": "",
+      "mode": "ws",
+      "network_done_ms": 1528.150771,
+      "nonzero_samples": 167290,
+      "phase": "speech",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 63,
+      "transport_first_wire_audio_ms": 1489
+    }
+  ],
+  "version": 1,
+  "voice_tuning": {
+    "chunk_length": 160,
+    "condition_on_previous_chunks": true,
+    "latency": "normal",
+    "min_chunk_length": 20
+  }
+}

@@ -1,0 +1,73 @@
+Native Rust uLipSync / wLipSync analysis port
+============================================
+Source references inspected:
+  https://github.com/mrxz/wlipsync
+  commit 177f3ac4095dbad81be0a800a8c6f975abe4ae04
+  src/algo/*.c, src/score/*.c, src/main.c, tools/json2bin.js,
+  www/parse.ts, www/audio-node.ts, www/utils.ts
+  https://github.com/hecomi/uLipSync
+  commit 060587907655235dba86dc7052d0b395c8ecd840
+  Runtime/Core/Algorithm.cs, Profile.cs, LipSyncJob.cs,
+  Runtime/uLipSyncBlendShape.cs
+
+The Rust implementation derives the MFCC pipeline, scoring, calibration-file
+format and output smoothing from these MIT-licensed implementations. It uses
+native f32 math, not wLipSync's bundled approximate pt_math.h implementation.
+No upstream voice calibration data, avatar, or audio recording is bundled.
+
+Validation and deliberate differences:
+- Embedded golden tests contain 30 reference vectors: five rates, three scoring
+  methods and standardization on/off. They were computed using the pinned
+  wLipSync C kernels, native libm float functions, round-half-even and f32 PI.
+- The native reference fixes a wasm32-specific FFT bit-width calculation and
+  the C pre-emphasis loop's one-past-the-end write. Its small driver selects
+  all 12 MFCC coefficients directly, following uLipSync LipSyncJob rather than
+  src/main.c's phoneme-count-dependent coefficient-copy loop.
+- This is kernel-level numerical evidence, not bit-identical Unity Burst or
+  unmodified browser/WASM execution, nor a speech-recognition accuracy claim.
+- Inputs below the profile target rate and plans producing a non-power-of-two
+  decimated window are rejected. For a 16kHz/1024 profile, 22.05kHz input is
+  rejected; common 16/24/44.1/48kHz input has reference coverage.
+- Profile dimensions, names, finite coefficients, standard deviations, PCM
+  bounds, input-window memory and filter-work limits are validated. Degenerate
+  spectra are explicitly silent; diagnostic MFCC values remain finite.
+- Buffers/tables allocate on analyzer creation only. Audio analysis must run on
+  a bounded worker, never in the audio callback. Existing RMS may be used as a
+  fallback when no compatible calibration profile is loaded.
+
+Upstream wLipSync license (also preserves the uLipSync notice):
+
+The MIT License (MIT)
+
+Copyright (c) 2021 hecomi
+Copyright (c) 2024 Noeri Huisman
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+Upstream uLipSync license:
+
+The MIT License (MIT)
+
+Copyright (c) 2021 hecomi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

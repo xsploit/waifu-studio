@@ -1,0 +1,42 @@
+[package]
+description          = "Bevy plugin for loading VRM avatars."
+edition.workspace    = true
+keywords             = ["bevy", "vrm"]
+license.workspace    = true
+name                 = "bevy_vrm"
+repository.workspace = true
+version.workspace    = true
+
+[lints]
+workspace = true
+
+[features]
+animations = ["bevy/bevy_animation", "dep:paste"]
+default    = ["animations"]
+
+[dependencies]
+bevy = { features = [
+  "bevy_gltf",
+  "bevy_log",
+  "bevy_pbr",
+  "bevy_world_serialization",
+], workspace = true }
+bevy_shader_mtoon.workspace = true
+gltf = { default-features = false, features = [
+  "KHR_materials_emissive_strength",
+  "extensions",
+  "extras",
+  "names",
+  "utils",
+], version = "1.4.1" }
+paste = { optional = true, version = "1.0.15" }
+serde.workspace = true
+serde_json.workspace = true
+serde_vrm = { features = ["bevy"], workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+bevy = { default-features = true, features = [
+  "pan_orbit_camera",
+], workspace = true }
+bevy_egui.workspace = true

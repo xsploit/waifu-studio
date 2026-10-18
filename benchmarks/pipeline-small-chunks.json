@@ -1,0 +1,72 @@
+{
+  "max_tokens": "1024",
+  "method": "production adapters; configured proxy; sequential requests; no speakers; streamed PCM drained without artificial silence; first audio means decoder readiness, not audible speaker onset",
+  "reasoning": "low",
+  "routing": "default",
+  "rows": [
+    {
+      "audio_duration_ms": 10216.780045351474,
+      "decoded_done_ms": 2150.2217379999997,
+      "earliest_playback_end_ms": 11514.348592351475,
+      "error": null,
+      "first_decoded_audio_ms": 1297.568547,
+      "first_nonzero_audio_ms": 1297.574082,
+      "first_token_ms": 822.018096,
+      "llm_done_ms": 944.256541,
+      "llm_model": "google/gemini-3.5-flash-lite",
+      "mode": "ws",
+      "network_done_ms": 2148.352958,
+      "nonzero_samples": 433675,
+      "phase": "pipeline",
+      "run": 1,
+      "speech_model": "drama-3",
+      "text_chars": 130,
+      "transport_first_wire_audio_ms": 1292
+    },
+    {
+      "audio_duration_ms": 8544.943310657596,
+      "decoded_done_ms": 1791.025857,
+      "earliest_playback_end_ms": 9598.748867657596,
+      "error": null,
+      "first_decoded_audio_ms": 1053.805557,
+      "first_nonzero_audio_ms": 1053.811572,
+      "first_token_ms": 568.4073109999999,
+      "llm_done_ms": 687.3348460000001,
+      "llm_model": "google/gemini-3.5-flash-lite",
+      "mode": "ws",
+      "network_done_ms": 1777.799031,
+      "nonzero_samples": 360945,
+      "phase": "pipeline",
+      "run": 2,
+      "speech_model": "drama-3",
+      "text_chars": 115,
+      "transport_first_wire_audio_ms": 1048
+    },
+    {
+      "audio_duration_ms": 7244.625850340136,
+      "decoded_done_ms": 2024.960186,
+      "earliest_playback_end_ms": 8579.048111340137,
+      "error": null,
+      "first_decoded_audio_ms": 1334.4222610000002,
+      "first_nonzero_audio_ms": 1334.428316,
+      "first_token_ms": 907.68153,
+      "llm_done_ms": 912.982037,
+      "llm_model": "google/gemini-3.5-flash-lite",
+      "mode": "ws",
+      "network_done_ms": 2011.4052500000003,
+      "nonzero_samples": 309697,
+      "phase": "pipeline",
+      "run": 3,
+      "speech_model": "drama-3",
+      "text_chars": 110,
+      "transport_first_wire_audio_ms": 1329
+    }
+  ],
+  "version": 1,
+  "voice_tuning": {
+    "chunk_length": 100,
+    "condition_on_previous_chunks": false,
+    "latency": "balanced",
+    "min_chunk_length": 0
+  }
+}
