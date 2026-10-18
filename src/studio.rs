@@ -965,6 +965,11 @@ impl Studio {
             role: "system".into(),
             content: persona,
         }];
+        let history_start = self.turns.len().saturating_sub(40);
+        let latest = self.turns.len().saturating_sub(1);
+        // Keep the established conversation prefix stable for provider caches.
+        // Query-dependent recall belongs immediately before this user turn.
+        context.extend(self.turns[history_start..latest].iter().cloned());
         // Retrieved notes are data, never elevated into system instructions.
         if let Some(content) = notes {
             context.push(Turn {
@@ -984,7 +989,7 @@ impl Studio {
                 content,
             });
         }
-        context.extend(self.turns.iter().rev().take(40).rev().cloned());
+        context.extend(self.turns[latest..].iter().cloned());
         self.pending_response.clear();
         self.reply_filter = Some(Default::default());
         self.error = None;
@@ -1665,6 +1670,16 @@ mod tests {
         provider.base_url = url;
         provider.key_env.clear();
         provider.model = "offline-chat".into();
+        studio.turns = vec![
+            Turn {
+                role: "user".into(),
+                content: "Earlier question".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "Earlier answer".into(),
+            },
+        ];
         studio.send_chat_with_semantic(&mut memory, Some(&mut semantic));
         let request = received.recv_timeout(Duration::from_secs(5)).unwrap();
         server.join().unwrap();
@@ -1677,11 +1692,22 @@ mod tests {
             wire.matches("Tea should be brewed at 80 degrees").count(),
             1
         );
-        assert_eq!(studio.turns.len(), 1);
-        assert_eq!(studio.turns[0].content, "Which tea do I like?");
+        let messages = request["messages"].as_array().unwrap();
+        assert_eq!(messages[1]["content"], "Earlier question");
+        assert_eq!(messages[2]["content"], "Earlier answer");
+        assert!(messages[3]["content"].as_str().unwrap().contains("jasmine"));
+        assert!(
+            messages[4]["content"]
+                .as_str()
+                .unwrap()
+                .contains("80 degrees")
+        );
+        assert_eq!(messages.last().unwrap()["content"], "Which tea do I like?");
+        assert_eq!(studio.turns.len(), 3);
+        assert_eq!(studio.turns[2].content, "Which tea do I like?");
         let stored = studio.store.history(character.unwrap()).unwrap();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].content, "Which tea do I like?");
+        assert_eq!(stored.len(), 3);
+        assert_eq!(stored[2].content, "Which tea do I like?");
         assert!(!semantic.has_result_for(character, &memory, "Which tea do I like?"));
         studio.cancel_chat();
         drop(semantic);
