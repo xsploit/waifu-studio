@@ -227,7 +227,7 @@ impl DesktopSettings {
         let previous_detection = self.kwin_window_surfaces;
         egui::ComboBox::from_label("Window & taskbar detection")
             .selected_text(if self.kwin_window_surfaces {
-                "Automatic · KDE Wayland"
+                "Automatic · KDE / Hyprland"
             } else {
                 "Disabled"
             })
@@ -236,12 +236,12 @@ impl DesktopSettings {
                 ui.selectable_value(
                     &mut self.kwin_window_surfaces,
                     true,
-                    "Automatic · KDE Wayland",
+                    "Automatic · KDE / Hyprland",
                 );
                 ui.selectable_value(&mut self.kwin_window_surfaces, false, "Disabled");
             });
         changed |= previous_detection != self.kwin_window_surfaces;
-        ui.small("Enables a temporary KWin script while in Desktop mode. It tracks window geometry and moves only this companion; nothing is installed in desktop settings.");
+        ui.small("Uses temporary KWin scripting or the current Hyprland socket in Desktop mode. It tracks window geometry and moves only this companion; nothing is installed in desktop settings.");
         if !self.surface_status.is_empty() {
             ui.small(&self.surface_status);
         }

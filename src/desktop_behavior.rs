@@ -22,7 +22,7 @@ use waifu_studio::{
         DesktopInteraction, DesktopSurface, InteractionFrame, InteractionInput, InteractionState,
         ScreenRect, SurfaceId,
     },
-    desktop_platform::{DesktopSnapshot, KwinDesktopBridge},
+    desktop_platform::{DesktopBridge, DesktopSnapshot},
     loading::AvatarLoadState,
 };
 
@@ -63,7 +63,7 @@ fn route_move_request(
     if let Some(send) = bridge_move {
         match send(request.logical_origin) {
             Ok(()) => {
-                return "Snap requested through KWin; waiting for the compositor position.".into();
+                return "Snap requested through the desktop bridge; waiting for the compositor position.".into();
             }
             Err(error) => failure = Some(error),
         }
@@ -206,8 +206,8 @@ pub(crate) struct DesktopGrab {
 
 #[derive(Resource, Default)]
 struct DesktopPlatform {
-    bridge: Option<Arc<KwinDesktopBridge>>,
-    pending: Option<Mutex<mpsc::Receiver<Result<KwinDesktopBridge, String>>>>,
+    bridge: Option<Arc<DesktopBridge>>,
+    pending: Option<Mutex<mpsc::Receiver<Result<DesktopBridge, String>>>>,
     attempted: bool,
 }
 
@@ -228,11 +228,11 @@ fn sync_desktop_platform(
     }
     if !platform.attempted {
         platform.attempted = true;
-        settings.surface_status = "Starting temporary KWin window tracking…".into();
+        settings.surface_status = "Starting temporary desktop window tracking…".into();
         let (sender, receiver) = mpsc::sync_channel(1);
         platform.pending = Some(Mutex::new(receiver));
         std::thread::spawn(move || {
-            let _ = sender.send(KwinDesktopBridge::start("Waifu Studio"));
+            let _ = sender.send(DesktopBridge::start("Waifu Studio"));
         });
     }
     let result = platform.pending.as_ref().and_then(|pending| {
@@ -251,9 +251,9 @@ fn sync_desktop_platform(
     if let Some(bridge) = &platform.bridge {
         settings.surface_status = match bridge.snapshot() {
             Ok(snapshot) if snapshot.own_window_rect.is_some() => {
-                "KWin geometry connected; drag above a window edge to sit.".into()
+                "Desktop geometry connected; drag above a window edge to sit.".into()
             }
-            Ok(_) => "KWin connected; waiting for the companion window.".into(),
+            Ok(_) => "Desktop bridge connected; waiting for the companion window.".into(),
             Err(error) => error,
         };
     }

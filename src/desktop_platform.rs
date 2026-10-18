@@ -15,6 +15,9 @@ use bevy::prelude::Vec2;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
 
+mod hyprland;
+pub use hyprland::{HyprlandDesktopBridge, hyprland_session};
+
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const MAX_COORDINATE: f32 = 16_777_216.;
@@ -406,6 +409,46 @@ impl KwinDesktopBridge {
     pub fn request_move(&self, _: Vec2) -> Result<(), String> {
         Err("KWin desktop bridge is unavailable on this platform".into())
     }
+}
+
+/// Compositor-neutral bridge behind the same explicit window-surfaces opt-in.
+/// Hyprland is chosen only when this process runs inside a Hyprland session
+/// whose socket authenticates; otherwise the KWin bridge applies its own
+/// checks. No backend is probed on a compositor it does not belong to.
+pub enum DesktopBridge {
+    Kwin(KwinDesktopBridge),
+    Hyprland(HyprlandDesktopBridge),
+}
+
+impl DesktopBridge {
+    /// Blocking: may wait on D-Bus or the compositor socket. Call off the
+    /// render thread, like `KwinDesktopBridge::start`.
+    pub fn start(own_window_title: &str) -> Result<Self, String> {
+        if hyprland_session() {
+            HyprlandDesktopBridge::start(own_window_title).map(Self::Hyprland)
+        } else {
+            KwinDesktopBridge::start(own_window_title).map(Self::Kwin)
+        }
+    }
+
+    pub fn snapshot(&self) -> Result<DesktopSnapshot, String> {
+        match self {
+            Self::Kwin(bridge) => bridge.snapshot(),
+            Self::Hyprland(bridge) => bridge.snapshot(),
+        }
+    }
+
+    pub fn request_move(&self, client_origin: Vec2) -> Result<(), String> {
+        match self {
+            Self::Kwin(bridge) => bridge.request_move(client_origin),
+            Self::Hyprland(bridge) => bridge.request_move(client_origin),
+        }
+    }
+}
+
+/// Whether environment hints permit probing any supported geometry backend.
+pub fn window_surfaces_session() -> bool {
+    hyprland_session() || kwin_wayland_session()
 }
 
 #[cfg(test)]
