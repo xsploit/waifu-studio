@@ -139,6 +139,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                         }
                         if ui
                             .add_enabled(!state.busy, egui::Button::new("Expire now"))
+                            .on_hover_text("Hides this record from recall now. The next ledger save permanently removes fully expired correction chains; use Clear expiry before that save to keep it.")
                             .clicked()
                             && let Err(e) = state.set_expiry(record.id, Some(0))
                         {

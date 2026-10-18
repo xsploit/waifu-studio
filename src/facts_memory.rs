@@ -395,17 +395,14 @@ impl FactsMemoryState {
             }
         }
     }
-    /// Drops candidates already in the ledger or duplicated, keeping at most the cap.
+    /// Drops candidates already in the ledger or (near-)duplicated, keeping at most the cap.
     fn reconcile(&self, list: Vec<MemoryRecord>) -> Vec<MemoryRecord> {
         let superseded: HashSet<_> = self.records.iter().filter_map(|r| r.supersedes).collect();
         let mut kept: Vec<MemoryRecord> = Vec::new();
         for c in list {
             let duplicate = self.records.iter().any(|r| {
-                r.id == c.id
-                    || (!superseded.contains(&r.id) && normalized(&r.text) == normalized(&c.text))
-            }) || kept
-                .iter()
-                .any(|k| normalized(&k.text) == normalized(&c.text));
+                r.id == c.id || (!superseded.contains(&r.id) && similar(&r.text, &c.text))
+            }) || kept.iter().any(|k| similar(&k.text, &c.text));
             if !duplicate && kept.len() < MAX_CANDIDATES {
                 kept.push(c);
             }
@@ -506,8 +503,11 @@ impl FactsMemoryState {
             records: self.records.clone(),
         }
     }
-    fn submit(&mut self, d: Document) -> Result<(), String> {
+    /// Every ledger save first drops expired correction trees (see `prune_expired_records`);
+    /// `keep` protects the tree of a record whose expiry this save sets.
+    fn submit(&mut self, mut d: Document, keep: Option<Uuid>) -> Result<(), String> {
         self.ready()?;
+        prune_expired_records(&mut d.records, now(), keep);
         validate(&d)?;
         self.commands
             .try_send(Command::Save(self.generation, self.selected.unwrap(), d))
@@ -526,12 +526,12 @@ impl FactsMemoryState {
     pub fn set_enabled(&mut self, value: bool) -> Result<(), String> {
         let mut d = self.document();
         d.settings.enabled = value;
-        self.submit(d)
+        self.submit(d, None)
     }
     pub fn set_candidates_enabled(&mut self, value: bool) -> Result<(), String> {
         let mut d = self.document();
         d.settings.candidates_enabled = value;
-        self.submit(d)
+        self.submit(d, None)
     }
     pub fn add_record(
         &mut self,
@@ -559,15 +559,13 @@ impl FactsMemoryState {
             .chain(r.supersedes)
             .collect();
         if self.records.iter().any(|old| {
-            !superseded.contains(&old.id)
-                && old.kind == r.kind
-                && normalized(&old.text) == normalized(&r.text)
+            !superseded.contains(&old.id) && old.kind == r.kind && similar(&old.text, &r.text)
         }) {
-            return Err("Duplicate memory record".into());
+            return Err("Duplicate or near-duplicate memory record".into());
         }
         let mut d = self.document();
         d.records.push(r);
-        self.submit(d)
+        self.submit(d, None)
     }
     /// Called only for user-authored turns. Candidates stay out of recall until explicitly
     /// accepted; with retention on, the verbatim quote and turn id are also written to disk.
@@ -596,7 +594,7 @@ impl FactsMemoryState {
             .iter()
             .chain(self.candidates.iter())
             .chain(self.accepting.as_ref())
-            .any(|r| normalized(&r.text) == normalized(&value))
+            .any(|r| similar(&r.text, &value))
         {
             return;
         }
@@ -675,7 +673,7 @@ impl FactsMemoryState {
             .iter()
             .chain(self.candidates.iter())
             .chain(self.accepting.as_ref())
-            .any(|r| normalized(&r.text) == normalized(text))
+            .any(|r| similar(&r.text, text))
         {
             return Err("Duplicate reflection".into());
         }
@@ -715,7 +713,7 @@ impl FactsMemoryState {
             .iter()
             .chain(self.candidates.iter().filter(|c| c.id != id))
             .chain(self.accepting.as_ref())
-            .any(|r| normalized(&r.text) == normalized(text))
+            .any(|r| similar(&r.text, text))
         {
             return Err("Duplicate reflection".into());
         }
@@ -764,7 +762,8 @@ impl FactsMemoryState {
             .find(|r| r.id == id)
             .ok_or("Record no longer exists")?
             .expires_at = expires;
-        self.submit(d)
+        // Keep the record visible (and its expiry undoable) until the next ledger save.
+        self.submit(d, Some(id))
     }
     /// Forget removes quoted content and its obsolete ancestors, so forgetting a
     /// correction can never make a superseded claim eligible for recall again.
@@ -788,7 +787,7 @@ impl FactsMemoryState {
                 r.supersedes = None;
             }
         }
-        self.submit(d)
+        self.submit(d, None)
     }
     /// Deletes facts.jsonl and candidates.jsonl for the selected character.
     pub fn delete_character_data(&mut self) -> Result<(), String> {
@@ -1003,6 +1002,63 @@ fn recall_traced(
         }
     }
     Some(((count > 0).then_some(out), trace))
+}
+/// Exact normalized match or `near_duplicate`. Ledger and pending-file validation stay
+/// exact-only so files written before near-duplicate checks keep loading.
+fn similar(a: &str, b: &str) -> bool {
+    normalized(a) == normalized(b) || near_duplicate(a, b)
+}
+// Be conservative: extra qualifiers, locations, ingredients, numbers and negation
+// can add facts even when token overlap is high. Only these speech fillers may
+// be omitted, and all remaining tokens must match in order and multiplicity.
+const DUPLICATE_FILLER: &[&str] = &["that", "really", "please"];
+fn tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+/// Token Jaccard >= 0.8 is only a screening step, never semantic equivalence.
+/// Deduplicate only filler differences; preserve all other added information.
+fn near_duplicate(a: &str, b: &str) -> bool {
+    let (a, b) = (tokens(a), tokens(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let set_a: HashSet<&str> = a.iter().map(String::as_str).collect();
+    let set_b: HashSet<&str> = b.iter().map(String::as_str).collect();
+    if set_a.intersection(&set_b).count() * 5 < set_a.union(&set_b).count() * 4 {
+        return false;
+    }
+    a.iter()
+        .filter(|token| !DUPLICATE_FILLER.contains(&token.as_str()))
+        .eq(b
+            .iter()
+            .filter(|token| !DUPLICATE_FILLER.contains(&token.as_str())))
+}
+/// Drops correction trees (a record plus every record linked to it through `supersedes`)
+/// whose current claims have all expired; recall already ignores every record in them.
+/// Whole trees go together, so no link dangles, no superseded claim becomes current again,
+/// and a live correction always keeps the records and evidence it supersedes.
+fn prune_expired_records(records: &mut Vec<MemoryRecord>, now: u64, keep: Option<Uuid>) {
+    let superseded: HashSet<_> = records.iter().filter_map(|r| r.supersedes).collect();
+    let mut root = HashMap::new();
+    for r in records.iter() {
+        let tree = r
+            .supersedes
+            .and_then(|parent| root.get(&parent).copied())
+            .unwrap_or(r.id);
+        root.insert(r.id, tree);
+    }
+    let live: HashSet<Uuid> = records
+        .iter()
+        .filter(|r| {
+            Some(r.id) == keep
+                || (!superseded.contains(&r.id) && r.expires_at.is_none_or(|t| t > now))
+        })
+        .map(|r| root[&r.id])
+        .collect();
+    records.retain(|r| live.contains(&root[&r.id]));
 }
 fn normalized(s: &str) -> String {
     s.split_whitespace()
@@ -1360,6 +1416,9 @@ mod tests {
         s.set_expiry(corrected, Some(0)).unwrap();
         ready(&mut s);
         assert!(s.context("coffee").is_none());
+        // Pruning would drop the expired correction on the next save; restore it first.
+        s.set_expiry(corrected, None).unwrap();
+        ready(&mut s);
         s.forget(id).unwrap();
         ready(&mut s);
         assert_eq!(s.records()[0].supersedes, None);
@@ -2107,6 +2166,311 @@ mod tests {
         )
         .unwrap();
         assert!(read_pending(&root, id).is_err(), "v2 requires a reflection");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn near_duplicates_never_merge_distinct_claims() {
+        // Exact (case/whitespace/punctuation) and additive paraphrases.
+        assert!(similar("I like tea", "i  LIKE tea"));
+        assert!(similar("I like tea", "I like tea!"));
+        assert!(similar(
+            "remember my sister lives in Berlin",
+            "remember that my sister lives in Berlin"
+        ));
+        assert!(similar(
+            "I really like green tea in the morning",
+            "I like green tea in the morning"
+        ));
+        // Negation and polarity, short and long.
+        assert!(!similar("I like tea", "I don't like tea"));
+        assert!(!similar("I like tea", "I dislike tea"));
+        assert!(!similar(
+            "remember that my sister lives in Berlin with her two cats",
+            "remember that my sister no longer lives in Berlin with her two cats"
+        ));
+        assert!(!similar(
+            "remember my brother is allergic to peanuts and shellfish",
+            "remember my brother is not allergic to peanuts and shellfish"
+        ));
+        // Numbers, digit or word, added or substituted.
+        assert!(!similar(
+            "remember that my locker at the downtown gym is 1234",
+            "remember that my locker at the downtown gym is 1235"
+        ));
+        assert!(!similar(
+            "remember that my sister has kids and lives nearby now",
+            "remember that my sister has two kids and lives nearby now"
+        ));
+        assert!(!similar(
+            "remember the meeting with the design team is at 10",
+            "remember the meeting with the design team is at"
+        ));
+        // Substitutions and reordering keep high Jaccard but differ in meaning.
+        assert!(!similar(
+            "remember that my sister lives in tokyo with her husband",
+            "remember that my sister lives in osaka with her husband"
+        ));
+        assert!(!similar(
+            "I like cats more than dogs",
+            "I like dogs more than cats"
+        ));
+        assert!(!similar("dog bites man", "man bites dog"));
+        // High overlap cannot erase an added detail or a repeated content word.
+        for qualifier in ["cold", "daily", "honey", "outside", "Tokyo"] {
+            assert!(!similar(
+                "I like green tea in the morning",
+                &format!("I like green tea in the morning {qualifier}")
+            ));
+        }
+        assert!(!similar(
+            "I like green tea in the morning",
+            "I like green tea tea in the morning"
+        ));
+        // Below 0.8 Jaccard.
+        assert!(!similar("I like tea", "I like tea with lemon"));
+        assert!(!similar("!!!", "???"));
+    }
+    #[test]
+    fn near_duplicate_records_and_candidates_are_rejected() {
+        let mut s = fixture(vec![record(
+            0,
+            "remember my sister lives in Berlin",
+            None,
+            None,
+        )]);
+        s.candidates_enabled = true;
+        let err = s
+            .add_record(
+                RecordKind::Fact,
+                "Remember that my sister lives in Berlin.".into(),
+                "e".into(),
+            )
+            .unwrap_err();
+        assert!(err.contains("near-duplicate"));
+        assert!(!s.busy);
+        let character = Uuid::from_u128(1);
+        s.observe_user_turn(
+            character,
+            Uuid::new_v4(),
+            "remember that my sister lives in Berlin",
+        );
+        assert!(s.candidates().is_empty());
+        s.observe_user_turn(
+            character,
+            Uuid::new_v4(),
+            "remember my sister doesn't live in Berlin",
+        );
+        s.observe_user_turn(character, Uuid::new_v4(), "I like green tea in the morning");
+        s.observe_user_turn(
+            character,
+            Uuid::new_v4(),
+            "I really like green tea in the morning",
+        );
+        s.observe_user_turn(
+            character,
+            Uuid::new_v4(),
+            "I like green tea in the morning please",
+        );
+        // 7 of 9 tokens shared (0.78) stays a separate suggestion.
+        s.observe_user_turn(
+            character,
+            Uuid::new_v4(),
+            "I like green tea in the morning a lot",
+        );
+        assert_eq!(
+            texts(&s),
+            [
+                "I like green tea in the morning",
+                "I like green tea in the morning a lot",
+                "remember my sister doesn't live in Berlin"
+            ]
+        );
+        // Reloaded pending lists drop near-duplicates of the ledger and of each other.
+        let mut c = s.candidates()[1].clone();
+        assert_eq!(c.text, "I like green tea in the morning");
+        let mut near = c.clone();
+        near.id = Uuid::new_v4();
+        near.text = "I really like green tea in the morning".into();
+        let mut ledger = c.clone();
+        ledger.id = Uuid::new_v4();
+        ledger.text = "Remember: my sister lives in Berlin".into();
+        c.id = Uuid::new_v4();
+        let kept = s.reconcile(vec![ledger, c.clone(), near]);
+        assert_eq!(kept.iter().map(|k| k.id).collect::<Vec<_>>(), [c.id]);
+    }
+    #[test]
+    fn near_duplicates_already_on_disk_still_load() {
+        let root = temp_root("near-legacy");
+        let id = Uuid::new_v4();
+        let dir = root.join(id.to_string());
+        fs::create_dir_all(&dir).unwrap();
+        let d = Document {
+            settings: Settings {
+                enabled: true,
+                candidates_enabled: false,
+            },
+            records: vec![
+                record(0, "I like green tea in the morning", None, None),
+                record(1, "I really like green tea in the morning", None, None),
+            ],
+        };
+        write(&root, id, &d).unwrap();
+        let s = reopen(&root, id);
+        assert!(s.error.is_none());
+        assert_eq!(s.records().len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    fn ids(records: &[MemoryRecord]) -> Vec<u128> {
+        records.iter().map(|r| r.id.as_u128() - 100).collect()
+    }
+    #[test]
+    fn pruning_drops_only_fully_expired_correction_trees() {
+        let now = 1000;
+        let mut records = vec![
+            record(0, "standalone expired", Some(5), None),
+            record(1, "standalone live", Some(now + 1), None),
+            record(2, "expires exactly now", Some(now), None),
+            // Live correction keeps its expired parent and that parent's evidence.
+            record(3, "old claim, expired", Some(5), None),
+            record(4, "live correction", None, Some(3)),
+            // Expired correction: the superseded parent must not become current again.
+            record(5, "old claim, live", None, None),
+            record(6, "expired correction", Some(5), Some(5)),
+            // Branches: one live head keeps the whole tree.
+            record(7, "root", None, None),
+            record(8, "branch expired", Some(5), Some(7)),
+            record(9, "branch live", None, Some(7)),
+            record(10, "below expired branch", Some(5), Some(8)),
+        ];
+        let original = records.clone();
+        let before = recall_traced(
+            Uuid::from_u128(1),
+            &records,
+            "claim correction branch root live",
+        );
+        prune_expired_records(&mut records, now, None);
+        assert_eq!(ids(&records), [1, 3, 4, 7, 8, 9, 10]);
+        validate(&Document {
+            settings: Settings::default(),
+            records: records.clone(),
+        })
+        .unwrap();
+        // Recall only ever saw live records, so prompt bytes are unchanged.
+        let after = recall_traced(
+            Uuid::from_u128(1),
+            &records,
+            "claim correction branch root live",
+        );
+        assert_eq!(before.unwrap().0, after.unwrap().0);
+        // The record whose expiry is being set keeps its whole tree for this save.
+        let mut kept = original;
+        prune_expired_records(&mut kept, now, Some(Uuid::from_u128(105)));
+        assert_eq!(ids(&kept), [1, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
+    #[test]
+    fn expired_records_are_pruned_on_the_next_save_and_on_disk() {
+        let root = temp_root("prune");
+        let id = Uuid::new_v4();
+        let mut s = reopen(&root, id);
+        s.set_enabled(true).unwrap();
+        settle(&mut s);
+        for text in ["tea first", "cake standalone", "biscuits kept"] {
+            s.add_record(RecordKind::Fact, text.into(), text.into())
+                .unwrap();
+            settle(&mut s);
+        }
+        let (tea, cake) = (s.records()[0].id, s.records()[1].id);
+        s.correct_record(tea, "tea second".into(), "tea second".into())
+            .unwrap();
+        settle(&mut s);
+        let second = s.records()[3].id;
+        // Expiring the original keeps it: its live correction still cites it.
+        s.set_expiry(tea, Some(0)).unwrap();
+        settle(&mut s);
+        // "Expire now" stays visible and undoable until the next save.
+        s.set_expiry(cake, Some(0)).unwrap();
+        settle(&mut s);
+        assert_eq!(s.records().len(), 4);
+        s.set_expiry(cake, None).unwrap();
+        settle(&mut s);
+        s.set_expiry(cake, Some(0)).unwrap();
+        settle(&mut s);
+        s.set_expiry(second, Some(0)).unwrap();
+        settle(&mut s);
+        // That save pruned cake; the tea tree survives because `second` was the target.
+        assert!(s.records().iter().all(|r| r.id != cake));
+        assert_eq!(s.records().len(), 3);
+        assert!(s.context("tea").is_none());
+        // Any later save prunes the now fully expired tea tree.
+        s.add_record(RecordKind::Fact, "cake again".into(), "cake again".into())
+            .unwrap();
+        settle(&mut s);
+        let texts: Vec<_> = s.records().iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["biscuits kept", "cake again"]);
+        drop(s);
+        let disk = read(&root, id).unwrap();
+        assert_eq!(disk.records.len(), 2);
+        assert!(disk.settings.enabled);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pruning_makes_room_under_the_record_cap() {
+        let mut records: Vec<_> = (0..MAX_RECORDS as u128)
+            .map(|i| record(i, &format!("fact {i}"), Some(1), None))
+            .collect();
+        records[0].expires_at = None;
+        records.push(record(999, "new fact", None, None));
+        let mut d = Document {
+            settings: Settings::default(),
+            records,
+        };
+        // Without pruning the 257th record would exceed the cap; validate runs after it.
+        assert!(validate(&d).is_err());
+        prune_expired_records(&mut d.records, now(), None);
+        assert_eq!(d.records.len(), 2);
+        validate(&d).unwrap();
+    }
+    #[test]
+    fn pruning_saves_race_safely_with_mutations_and_character_switches() {
+        let root = temp_root("prune-race");
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        drop(suggesting(&root, b, true));
+        let mut s = suggesting(&root, a, true);
+        s.add_record(RecordKind::Fact, "old note".into(), "old note".into())
+            .unwrap();
+        settle(&mut s);
+        let old = s.records()[0].id;
+        s.set_expiry(old, Some(0)).unwrap();
+        settle(&mut s);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like apples");
+        s.observe_user_turn(a, Uuid::new_v4(), "I like pears");
+        s.poll();
+        let apples = s.candidates()[0].id;
+        // This acceptance save prunes the expired note while a pending write is in flight.
+        s.accept_candidate(apples).unwrap();
+        assert!(s.busy);
+        // Ledger mutations mid-save are refused, not merged over the pruned document.
+        assert!(s.set_expiry(old, None).is_err());
+        assert!(
+            s.add_record(RecordKind::Fact, "x y z".into(), "e".into())
+                .is_err()
+        );
+        // A near-duplicate suggestion of the in-flight acceptance is still rejected.
+        s.observe_user_turn(a, Uuid::new_v4(), "i like APPLES!");
+        s.observe_user_turn(a, Uuid::new_v4(), "I like plums");
+        // Switch away before it lands; the stale event must not touch b.
+        s.select_character(Some(b));
+        settle(&mut s);
+        assert!(s.records().is_empty());
+        s.select_character(Some(a));
+        settle(&mut s);
+        let records: Vec<_> = s.records().iter().map(|r| r.id).collect();
+        assert_eq!(records, [apples]);
+        assert_eq!(texts(&s), ["I like pears", "I like plums"]);
+        drop(s);
+        assert_eq!(read(&root, a).unwrap().records.len(), 1);
+        assert_eq!(reopen(&root, a).candidates().len(), 2);
+        assert!(read(&root, b).unwrap().records.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }
