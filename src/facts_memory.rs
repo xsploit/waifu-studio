@@ -1,21 +1,32 @@
 //! Opt-in, evidence-backed character memory. All filesystem work is serialized off-thread.
+//!
+//! Pending candidates are transient unless the separate "retain pending" opt-in is on. Then
+//! they also live in root/<uuid>/candidates.jsonl, which older binaries never read. Pending
+//! candidates are never part of recall; only accepted records in facts.jsonl are.
 use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 const MAX_BYTES: u64 = 1024 * 1024;
 const MAX_RECORDS: usize = 256;
+pub const MAX_CANDIDATES: usize = 16;
+/// Escaped JSON of 16 maximal candidates stays well below this.
+const MAX_PENDING_BYTES: u64 = 256 * 1024;
+/// Pending candidates carry an explicit expiry; accepted records start without one.
+pub const CANDIDATE_TTL_SECS: u64 = 14 * 24 * 60 * 60;
+const FACTS_FILE: &str = "facts.jsonl";
+const PENDING_FILE: &str = "candidates.jsonl";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordKind {
     Fact,
@@ -36,6 +47,7 @@ pub struct MemoryRecord {
     pub expires_at: Option<u64>,
     pub supersedes: Option<Uuid>,
 }
+/// Unchanged on disk: older binaries reject unknown fields, so new settings live elsewhere.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
@@ -53,63 +65,128 @@ enum Line {
     Settings(Settings),
     Record(MemoryRecord),
 }
+/// The header's presence is the retention opt-in; opting out deletes the file.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingHeader {
+    version: u32,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "entry", content = "value")]
+enum PendingLine {
+    Pending(PendingHeader),
+    Candidate(MemoryRecord),
+}
+/// `None` means no pending file: retention is off.
+type Pending = Option<Vec<MemoryRecord>>;
 enum Command {
     Load(u64, Uuid),
     Save(u64, Uuid, Document),
     Delete(u64, Uuid),
+    WritePending(Uuid, Pending),
 }
-struct Event {
-    generation: u64,
-    result: Result<Document, String>,
+enum Event {
+    Ledger {
+        generation: u64,
+        result: Result<Document, String>,
+        /// Set by Load and Delete only.
+        pending: Option<Result<Pending, String>>,
+    },
+    Pending {
+        id: Uuid,
+        result: Result<(), String>,
+    },
 }
 #[derive(Resource)]
 pub struct FactsMemoryState {
     pub enabled: bool,
     pub candidates_enabled: bool,
+    /// Separate opt-in: keep pending candidates in candidates.jsonl across restarts.
+    pub retain_pending: bool,
     pub loaded: bool,
     pub busy: bool,
     pub error: Option<String>,
+    /// The pending file is unreadable or unwritable; writes stop until it is removed.
+    pub pending_error: Option<String>,
     pub draft: String,
     pub evidence_draft: String,
     records: Vec<MemoryRecord>,
     candidates: Vec<MemoryRecord>,
+    /// Accepted candidate whose ledger save is in flight; kept on disk until it lands.
+    accepting: Option<MemoryRecord>,
     selected: Option<Uuid>,
     generation: u64,
     needs_load: bool,
+    /// Latest unsent pending-file state per character; replaced, never appended.
+    outbox: HashMap<Uuid, Pending>,
+    pending_in_flight: bool,
     commands: SyncSender<Command>,
     events: Mutex<Receiver<Event>>,
     trace: Mutex<Option<FactsRecallTrace>>,
 }
 impl FactsMemoryState {
-    /// Files are root/<character UUID>/facts.jsonl. No sibling files are scanned.
+    /// Files are root/<character UUID>/facts.jsonl and, only with retention on,
+    /// candidates.jsonl beside it. No other sibling files are scanned.
     pub fn load(root: PathBuf) -> Self {
-        let (tx, rx) = mpsc::sync_channel(1);
-        let (etx, erx) = mpsc::sync_channel(1);
+        // One ledger command and one pending write may be outstanding at once.
+        let (tx, rx) = mpsc::sync_channel(2);
+        let (etx, erx) = mpsc::sync_channel(2);
         thread::spawn(move || {
             while let Ok(cmd) = rx.recv() {
-                let (generation, result) = match cmd {
-                    Command::Load(g, id) => (g, read(&root, id)),
-                    Command::Save(g, id, d) => (g, write(&root, id, &d).map(|()| d)),
-                    Command::Delete(g, id) => (g, delete(&root, id).map(|()| Document::default())),
+                let event = match cmd {
+                    Command::Load(generation, id) => {
+                        let result = read(&root, id);
+                        let pending = result.as_ref().ok().map(|_| read_pending(&root, id));
+                        Event::Ledger {
+                            generation,
+                            result,
+                            pending,
+                        }
+                    }
+                    Command::Save(generation, id, d) => Event::Ledger {
+                        generation,
+                        result: write(&root, id, &d).map(|()| d),
+                        pending: None,
+                    },
+                    Command::Delete(generation, id) => {
+                        let result = delete(&root, id).map(|()| Document::default());
+                        let pending = result.as_ref().ok().map(|_| Ok(None));
+                        Event::Ledger {
+                            generation,
+                            result,
+                            pending,
+                        }
+                    }
+                    Command::WritePending(id, p) => Event::Pending {
+                        id,
+                        result: match &p {
+                            Some(c) => write_pending(&root, id, c),
+                            None => delete_pending(&root, id),
+                        },
+                    },
                 };
-                if etx.send(Event { generation, result }).is_err() {
-                    break;
-                }
+                // Keep draining queued writes even after the state is dropped.
+                let _ = etx.send(event);
             }
         });
         Self {
             enabled: false,
             candidates_enabled: false,
+            retain_pending: false,
             loaded: false,
             busy: false,
             error: None,
+            pending_error: None,
             draft: String::new(),
             evidence_draft: String::new(),
             records: vec![],
             candidates: vec![],
+            accepting: None,
             selected: None,
             generation: 0,
             needs_load: false,
+            outbox: HashMap::new(),
+            pending_in_flight: false,
             commands: tx,
             events: Mutex::new(erx),
             trace: Mutex::new(None),
@@ -124,8 +201,13 @@ impl FactsMemoryState {
     pub fn records(&self) -> &[MemoryRecord] {
         &self.records
     }
+    /// Pending candidates; `expires_at` is the pending expiry, cleared on acceptance.
     pub fn candidates(&self) -> &[MemoryRecord] {
         &self.candidates
+    }
+    /// True while a pending-file write or removal is queued or in flight.
+    pub fn pending_saving(&self) -> bool {
+        self.pending_in_flight || !self.outbox.is_empty()
     }
     pub fn select_character(&mut self, id: Option<Uuid>) {
         if self.selected == id {
@@ -134,40 +216,50 @@ impl FactsMemoryState {
         self.generation = self.generation.wrapping_add(1);
         self.selected = id;
         self.records.clear();
+        // Queued pending writes for the previous character stay in the outbox.
         self.candidates.clear();
+        self.accepting = None;
         self.draft.clear();
         self.evidence_draft.clear();
         self.clear_trace();
         self.enabled = false;
         self.candidates_enabled = false;
+        self.retain_pending = false;
+        self.pending_error = None;
         self.loaded = false;
         self.error = None;
         self.needs_load = id.is_some();
         self.poll();
     }
     pub fn poll(&mut self) {
-        let event = self.events.lock().ok().and_then(|rx| rx.try_recv().ok());
-        if let Some(e) = event {
-            self.busy = false;
-            if e.generation == self.generation {
-                match e.result {
-                    Ok(d) => {
-                        self.enabled = d.settings.enabled;
-                        self.candidates_enabled = d.settings.candidates_enabled;
-                        self.records = d.records;
-                        self.loaded = true;
-                        self.error = None;
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                        self.loaded = false;
+        loop {
+            let event = self.events.lock().ok().and_then(|rx| rx.try_recv().ok());
+            match event {
+                Some(Event::Ledger {
+                    generation,
+                    result,
+                    pending,
+                }) => self.ledger_event(generation, result, pending),
+                Some(Event::Pending { id, result }) => {
+                    self.pending_in_flight = false;
+                    if let Err(e) = result
+                        && self.selected == Some(id)
+                    {
+                        self.pending_error = Some(e);
                     }
                 }
+                None => break,
             }
         }
+        if self.loaded && self.prune_expired() {
+            self.queue_pending();
+        }
+        self.flush_pending();
+        // The worker is FIFO: a load queued after this character's pending write reads it back.
         if !self.busy
             && self.needs_load
             && let Some(id) = self.selected
+            && !self.outbox.contains_key(&id)
         {
             match self.commands.try_send(Command::Load(self.generation, id)) {
                 Ok(()) => {
@@ -177,6 +269,149 @@ impl FactsMemoryState {
                 Err(e) => self.error = Some(e.to_string()),
             }
         }
+    }
+    fn ledger_event(
+        &mut self,
+        generation: u64,
+        result: Result<Document, String>,
+        pending: Option<Result<Pending, String>>,
+    ) {
+        self.busy = false;
+        let accepting = self.accepting.take();
+        if generation != self.generation {
+            // Stale: the previous character's pending file still holds any accepted
+            // candidate, and the next load drops it once the ledger contains its id.
+            return;
+        }
+        match result {
+            Ok(d) => {
+                self.enabled = d.settings.enabled;
+                self.candidates_enabled = d.settings.candidates_enabled;
+                self.records = d.records;
+                self.loaded = true;
+                self.error = None;
+                if accepting.is_some() {
+                    self.queue_pending();
+                }
+                if let Some(pending) = pending {
+                    self.restore_pending(pending);
+                }
+            }
+            Err(e) => {
+                if let Some(r) = accepting {
+                    // The ledger never received it, so it stays pending.
+                    self.candidates.push(r);
+                } else {
+                    self.loaded = false;
+                }
+                self.error = Some(e);
+            }
+        }
+    }
+    /// Unsent local state beats the disk copy, which may predate it.
+    fn restore_pending(&mut self, disk: Result<Pending, String>) {
+        let Some(id) = self.selected else { return };
+        let pending = match self.outbox.get(&id) {
+            Some(queued) => Ok(queued.clone()),
+            None => disk,
+        };
+        match pending {
+            Ok(None) => {
+                self.retain_pending = false;
+                self.pending_error = None;
+            }
+            Ok(Some(list)) => {
+                self.retain_pending = true;
+                self.pending_error = None;
+                let before = list.len();
+                let superseded: HashSet<_> =
+                    self.records.iter().filter_map(|r| r.supersedes).collect();
+                let mut kept: Vec<MemoryRecord> = Vec::new();
+                for c in list {
+                    let duplicate = self.records.iter().any(|r| {
+                        r.id == c.id
+                            || (!superseded.contains(&r.id)
+                                && normalized(&r.text) == normalized(&c.text))
+                    }) || kept
+                        .iter()
+                        .any(|k| normalized(&k.text) == normalized(&c.text));
+                    if !duplicate && kept.len() < MAX_CANDIDATES {
+                        kept.push(c);
+                    }
+                }
+                let changed = kept.len() != before;
+                self.candidates = kept;
+                if self.prune_expired() || changed {
+                    self.queue_pending();
+                }
+            }
+            Err(e) => {
+                // Fail closed: leave the file untouched until the user removes it.
+                self.retain_pending = false;
+                self.pending_error = Some(e);
+            }
+        }
+    }
+    fn prune_expired(&mut self) -> bool {
+        let now = now();
+        let before = self.candidates.len();
+        self.candidates
+            .retain(|c| c.expires_at.is_none_or(|t| t > now));
+        self.candidates.len() != before
+    }
+    /// Snapshot includes a candidate whose acceptance is still being saved.
+    fn queue_pending(&mut self) {
+        let Some(id) = self.selected else { return };
+        if !self.retain_pending || self.pending_error.is_some() {
+            return;
+        }
+        let snapshot = self
+            .candidates
+            .iter()
+            .chain(self.accepting.as_ref())
+            .take(MAX_CANDIDATES)
+            .cloned()
+            .collect();
+        self.outbox.insert(id, Some(snapshot));
+    }
+    fn flush_pending(&mut self) {
+        if self.pending_in_flight {
+            return;
+        }
+        let Some(id) = self.outbox.keys().next().copied() else {
+            return;
+        };
+        let Some(p) = self.outbox.remove(&id) else {
+            return;
+        };
+        match self.commands.try_send(Command::WritePending(id, p)) {
+            Ok(()) => self.pending_in_flight = true,
+            Err(TrySendError::Full(Command::WritePending(id, p))) => {
+                self.outbox.entry(id).or_insert(p);
+            }
+            Err(e) => self.pending_error = Some(e.to_string()),
+        }
+    }
+    /// Opt in or out of retaining pending candidates across restarts. Opting out
+    /// deletes candidates.jsonl; current suggestions stay until restart.
+    pub fn set_retain_pending(&mut self, value: bool) -> Result<(), String> {
+        let id = self.selected.ok_or("Select a character first")?;
+        if !self.loaded {
+            return Err("Wait for memory loading".into());
+        }
+        if value {
+            if let Some(e) = &self.pending_error {
+                return Err(format!("Remove the unreadable pending file first: {e}"));
+            }
+            self.retain_pending = true;
+            self.queue_pending();
+        } else {
+            self.retain_pending = false;
+            self.pending_error = None;
+            self.outbox.insert(id, None);
+        }
+        self.poll();
+        Ok(())
     }
     fn document(&self) -> Document {
         Document {
@@ -250,14 +485,15 @@ impl FactsMemoryState {
         d.records.push(r);
         self.submit(d)
     }
-    /// Called only for user-authored turns. Candidates stay transient until explicitly accepted.
+    /// Called only for user-authored turns. Candidates stay out of recall until explicitly
+    /// accepted; with retention on, the verbatim quote and turn id are also written to disk.
     pub fn observe_user_turn(&mut self, id: Uuid, turn_id: Uuid, text: &str) {
         if self.selected != Some(id)
             || !self.loaded
             || !self.enabled
             || !self.candidates_enabled
             || text.len() > 4000
-            || self.candidates.len() >= 16
+            || self.candidates.len() + usize::from(self.accepting.is_some()) >= MAX_CANDIDATES
         {
             return;
         }
@@ -275,35 +511,45 @@ impl FactsMemoryState {
             .records
             .iter()
             .chain(self.candidates.iter())
+            .chain(self.accepting.as_ref())
             .any(|r| normalized(&r.text) == normalized(&value))
         {
             return;
         }
+        let created_at = now();
         self.candidates.push(MemoryRecord {
             id: Uuid::new_v4(),
             kind,
             text: value.clone(),
             turn_id: Some(turn_id),
-            source: "user turn candidate (explicitly accepted before persistence)".into(),
+            source: "user turn candidate (review required before recall)".into(),
             evidence: value,
-            created_at: now(),
-            expires_at: None,
+            created_at,
+            expires_at: Some(created_at.saturating_add(CANDIDATE_TTL_SECS)),
             supersedes: None,
         });
+        self.queue_pending();
     }
     pub fn accept_candidate(&mut self, id: Uuid) -> Result<(), String> {
-        let r = self
+        let mut r = self
             .candidates
             .iter()
             .find(|r| r.id == id)
             .cloned()
             .ok_or("Candidate no longer exists")?;
+        let pending = r.clone();
+        r.expires_at = None;
         self.insert(r)?;
         self.candidates.retain(|r| r.id != id);
+        self.accepting = Some(pending);
         Ok(())
     }
     pub fn dismiss_candidate(&mut self, id: Uuid) {
+        let before = self.candidates.len();
         self.candidates.retain(|r| r.id != id);
+        if self.candidates.len() != before {
+            self.queue_pending();
+        }
     }
     /// Corrections create a new record with an explicit link; prior evidence remains inspectable.
     pub fn correct_record(
@@ -360,13 +606,20 @@ impl FactsMemoryState {
         }
         self.submit(d)
     }
+    /// Deletes facts.jsonl and candidates.jsonl for the selected character.
     pub fn delete_character_data(&mut self) -> Result<(), String> {
         self.ready()?;
+        let id = self.selected.unwrap();
         self.commands
-            .try_send(Command::Delete(self.generation, self.selected.unwrap()))
+            .try_send(Command::Delete(self.generation, id))
             .map_err(|e| e.to_string())?;
+        // Earlier sent writes run first on the serialized worker; unsent ones are moot.
+        self.outbox.remove(&id);
         self.busy = true;
         self.candidates.clear();
+        self.accepting = None;
+        self.retain_pending = false;
+        self.pending_error = None;
         self.clear_trace();
         Ok(())
     }
@@ -390,6 +643,30 @@ impl FactsMemoryState {
     /// Latest evidence recall for the selected character. Local and in-memory only.
     pub fn latest_trace(&self) -> Option<FactsRecallTrace> {
         self.trace.lock().ok().and_then(|t| t.clone())
+    }
+}
+impl Drop for FactsMemoryState {
+    /// Hands unsent pending writes to the worker, which keeps running after drop.
+    /// Bounded so shutdown never hangs on a stuck worker.
+    fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut queued: Vec<_> = self.outbox.drain().collect();
+        while let Some((id, p)) = queued.pop() {
+            match self.commands.try_send(Command::WritePending(id, p)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(Command::WritePending(id, p)))
+                    if Instant::now() < deadline =>
+                {
+                    queued.push((id, p));
+                    // Free the worker if it is blocked reporting a result.
+                    if let Ok(rx) = self.events.lock() {
+                        while rx.try_recv().is_ok() {}
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(_) => break,
+            }
+        }
     }
 }
 const MAX_INSERTED: usize = 6;
@@ -612,19 +889,27 @@ fn directory(root: &Path, id: Uuid) -> Result<PathBuf, String> {
     check(&dir)?;
     Ok(dir)
 }
-fn read(root: &Path, id: Uuid) -> Result<Document, String> {
+/// Existing real character directory, or `None` when absent. Never creates anything.
+fn existing_dir(root: &Path, id: Uuid) -> Result<Option<PathBuf>, String> {
     let dir = root.join(id.to_string());
     for path in [root, dir.as_path()] {
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Document::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.to_string()),
         };
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err("Memory directory must be a real directory".into());
         }
     }
-    let path = dir.join("facts.jsonl");
+    Ok(Some(dir))
+}
+/// Bounded read of a regular, non-symlink file; `None` when absent.
+fn read_bounded(path: &Path, max: u64) -> Result<Option<String>, String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut opts = OpenOptions::new();
     opts.read(true);
     #[cfg(unix)]
@@ -634,20 +919,31 @@ fn read(root: &Path, id: Uuid) -> Result<Document, String> {
     }
     let f = match opts.open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Document::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
     let m = f.metadata().map_err(|e| e.to_string())?;
-    if !m.is_file() || m.len() > MAX_BYTES {
-        return Err("facts.jsonl must be a regular file below 1 MiB".into());
+    if !m.is_file() || m.len() > max {
+        return Err(format!(
+            "{name} must be a regular file of at most {max} bytes"
+        ));
     }
     let mut data = String::new();
-    f.take(MAX_BYTES + 1)
+    f.take(max + 1)
         .read_to_string(&mut data)
         .map_err(|e| e.to_string())?;
-    if data.len() as u64 > MAX_BYTES {
-        return Err("facts.jsonl exceeds 1 MiB".into());
+    if data.len() as u64 > max {
+        return Err(format!("{name} exceeds {max} bytes"));
     }
+    Ok(Some(data))
+}
+fn read(root: &Path, id: Uuid) -> Result<Document, String> {
+    let Some(dir) = existing_dir(root, id)? else {
+        return Ok(Document::default());
+    };
+    let Some(data) = read_bounded(&dir.join(FACTS_FILE), MAX_BYTES)? else {
+        return Ok(Document::default());
+    };
     let mut d = Document::default();
     let mut settings = false;
     for (i, line) in data.lines().enumerate() {
@@ -670,6 +966,84 @@ fn read(root: &Path, id: Uuid) -> Result<Document, String> {
     validate(&d)?;
     Ok(d)
 }
+/// Expired candidates are valid on disk; the state prunes them after loading.
+fn validate_pending(candidates: &[MemoryRecord]) -> Result<(), String> {
+    if candidates.len() > MAX_CANDIDATES {
+        return Err(format!("At most {MAX_CANDIDATES} pending candidates"));
+    }
+    let mut ids = HashSet::new();
+    let mut values = HashSet::new();
+    for c in candidates {
+        if !ids.insert(c.id) || !values.insert(normalized(&c.text)) {
+            return Err("Duplicate pending candidate".into());
+        }
+        if c.turn_id.is_none() || c.expires_at.is_none() || c.supersedes.is_some() {
+            return Err("Pending candidates need a turn id and explicit expiry".into());
+        }
+        if c.text.trim().is_empty()
+            || c.text.chars().count() > 1000
+            || c.evidence.trim().is_empty()
+            || c.evidence.chars().count() > 1000
+            || c.source.trim().is_empty()
+            || c.source.len() > 256
+        {
+            return Err("Invalid pending candidate text, evidence or source".into());
+        }
+    }
+    Ok(())
+}
+fn read_pending(root: &Path, id: Uuid) -> Result<Pending, String> {
+    let Some(dir) = existing_dir(root, id)? else {
+        return Ok(None);
+    };
+    let Some(data) = read_bounded(&dir.join(PENDING_FILE), MAX_PENDING_BYTES)? else {
+        return Ok(None);
+    };
+    let mut lines = data.lines();
+    match lines.next().map(serde_json::from_str::<PendingLine>) {
+        Some(Ok(PendingLine::Pending(PendingHeader { version: 1 }))) => {}
+        _ => return Err("candidates.jsonl must start with a version 1 header".into()),
+    }
+    let mut candidates = Vec::new();
+    for (i, line) in lines.enumerate() {
+        if i >= MAX_CANDIDATES {
+            return Err(format!("At most {MAX_CANDIDATES} pending candidates"));
+        }
+        match serde_json::from_str::<PendingLine>(line)
+            .map_err(|e| format!("Invalid pending line {}: {e}", i + 2))?
+        {
+            PendingLine::Candidate(c) => candidates.push(c),
+            PendingLine::Pending(_) => return Err("Duplicate pending header".into()),
+        }
+    }
+    validate_pending(&candidates)?;
+    Ok(Some(candidates))
+}
+/// Temp file, fsync, rename, then directory fsync.
+fn atomic_write(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
+    let tmp = dir.join(format!(".{name}-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(data)
+            .and_then(|()| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())?;
+        fs::File::open(dir)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
+}
 fn write(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     validate(d)?;
     let dir = directory(root, id)?;
@@ -683,38 +1057,44 @@ fn write(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     if data.len() as u64 > MAX_BYTES {
         return Err("Ledger exceeds 1 MiB".into());
     }
-    let tmp = dir.join(format!(".facts-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(&data)
-            .and_then(|()| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        fs::rename(&tmp, dir.join("facts.jsonl")).map_err(|e| e.to_string())?;
-        fs::File::open(&dir)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(tmp);
-    }
-    result
+    atomic_write(&dir, FACTS_FILE, &data)
 }
-fn delete(root: &Path, id: Uuid) -> Result<(), String> {
+fn write_pending(root: &Path, id: Uuid, candidates: &[MemoryRecord]) -> Result<(), String> {
+    validate_pending(candidates)?;
     let dir = directory(root, id)?;
-    match fs::remove_file(dir.join("facts.jsonl")) {
+    let mut data = serde_json::to_vec(&PendingLine::Pending(PendingHeader { version: 1 }))
+        .map_err(|e| e.to_string())?;
+    data.push(b'\n');
+    for c in candidates {
+        serde_json::to_writer(&mut data, &PendingLine::Candidate(c.clone()))
+            .map_err(|e| e.to_string())?;
+        data.push(b'\n');
+    }
+    if data.len() as u64 > MAX_PENDING_BYTES {
+        return Err("candidates.jsonl exceeds its size bound".into());
+    }
+    atomic_write(&dir, PENDING_FILE, &data)
+}
+fn remove(dir: &Path, name: &str) -> Result<(), String> {
+    match fs::remove_file(dir.join(name)) {
         Ok(()) => fs::File::open(dir)
             .and_then(|f| f.sync_all())
             .map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+/// Opting out never creates directories; it only removes an existing pending file.
+fn delete_pending(root: &Path, id: Uuid) -> Result<(), String> {
+    match existing_dir(root, id)? {
+        Some(dir) => remove(&dir, PENDING_FILE),
+        None => Ok(()),
+    }
+}
+fn delete(root: &Path, id: Uuid) -> Result<(), String> {
+    let dir = directory(root, id)?;
+    remove(&dir, PENDING_FILE)?;
+    remove(&dir, FACTS_FILE)
 }
 
 #[cfg(test)]
@@ -1039,6 +1419,322 @@ mod tests {
         assert!(read(&root, id).is_err());
         fs::write(dir.join("facts.jsonl"), vec![b' '; MAX_BYTES as usize + 1]).unwrap();
         assert!(read(&root, id).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Settles the ledger worker and every queued pending write.
+    fn settle(s: &mut FactsMemoryState) {
+        for _ in 0..2000 {
+            s.poll();
+            if !s.busy && !s.pending_saving() {
+                return;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("worker timed out");
+    }
+    fn temp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("facts-{tag}-{}", Uuid::new_v4()))
+    }
+    fn pending_path(root: &Path, id: Uuid) -> PathBuf {
+        root.join(id.to_string()).join(PENDING_FILE)
+    }
+    /// Loaded, opted-in state for `id` with candidate suggestions on.
+    fn suggesting(root: &Path, id: Uuid, retain: bool) -> FactsMemoryState {
+        let mut s = FactsMemoryState::load(root.to_path_buf());
+        s.select_character(Some(id));
+        settle(&mut s);
+        if !s.enabled {
+            s.set_enabled(true).unwrap();
+            settle(&mut s);
+        }
+        if !s.candidates_enabled {
+            s.set_candidates_enabled(true).unwrap();
+            settle(&mut s);
+        }
+        if retain && !s.retain_pending {
+            s.set_retain_pending(true).unwrap();
+            settle(&mut s);
+        }
+        s
+    }
+    fn reopen(root: &Path, id: Uuid) -> FactsMemoryState {
+        let mut s = FactsMemoryState::load(root.to_path_buf());
+        s.select_character(Some(id));
+        settle(&mut s);
+        s
+    }
+    #[test]
+    fn retention_is_off_by_default_and_facts_format_is_unchanged() {
+        let root = temp_root("default");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, false);
+        assert!(!s.retain_pending);
+        s.observe_user_turn(id, Uuid::new_v4(), "I like tea");
+        settle(&mut s);
+        assert_eq!(s.candidates().len(), 1);
+        assert!(!pending_path(&root, id).exists());
+        let facts = fs::read_to_string(root.join(id.to_string()).join(FACTS_FILE)).unwrap();
+        assert_eq!(
+            facts,
+            "{\"entry\":\"Settings\",\"value\":{\"enabled\":true,\"candidates_enabled\":true}}\n"
+        );
+        drop(s);
+        let s = reopen(&root, id);
+        assert!(
+            s.candidates().is_empty(),
+            "old behavior: transient candidates"
+        );
+        assert!(!s.retain_pending);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn legacy_ledger_loads_without_pending_file() {
+        let root = temp_root("legacy");
+        let id = Uuid::new_v4();
+        let dir = directory(&root, id).unwrap();
+        let legacy = format!(
+            "{}\n{}\n",
+            r#"{"entry":"Settings","value":{"enabled":true,"candidates_enabled":false}}"#,
+            r#"{"entry":"Record","value":{"id":"00000000-0000-0000-0000-000000000064","kind":"Fact","text":"tea legacy","turn_id":null,"source":"old","evidence":"tea legacy","created_at":1,"expires_at":null,"supersedes":null}}"#
+        );
+        fs::write(dir.join(FACTS_FILE), &legacy).unwrap();
+        let s = reopen(&root, id);
+        assert!(s.loaded && s.enabled && !s.retain_pending);
+        assert!(s.context("tea").is_some());
+        assert!(s.pending_error.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn retained_candidates_survive_restart_but_never_enter_recall() {
+        let root = temp_root("restart");
+        let id = Uuid::new_v4();
+        let (t1, t2) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut s = suggesting(&root, id, true);
+        assert!(pending_path(&root, id).exists());
+        s.observe_user_turn(id, t1, "  I like green tea\twith honey ");
+        s.observe_user_turn(id, t2, "Remember that the tea kettle is blue");
+        settle(&mut s);
+        assert!(s.context("tea").is_none());
+        drop(s);
+        let mut s = reopen(&root, id);
+        assert!(s.retain_pending);
+        let c = s.candidates().to_vec();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].evidence, "I like green tea\twith honey");
+        assert_eq!(c[0].turn_id, Some(t1));
+        assert_eq!(c[1].turn_id, Some(t2));
+        assert!(
+            c.iter()
+                .all(|c| c.expires_at == Some(c.created_at + CANDIDATE_TTL_SECS))
+        );
+        assert!(s.context("tea").is_none());
+        assert!(context_from_disk(&root, id, "tea").unwrap().is_none());
+        s.accept_candidate(c[0].id).unwrap();
+        s.dismiss_candidate(c[1].id);
+        settle(&mut s);
+        assert_eq!(s.records()[0].id, c[0].id);
+        assert_eq!(s.records()[0].expires_at, None);
+        assert!(s.context("honey").is_some());
+        drop(s);
+        let s = reopen(&root, id);
+        assert!(s.candidates().is_empty());
+        assert_eq!(s.records().len(), 1);
+        assert_eq!(
+            fs::read_to_string(pending_path(&root, id))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn candidate_cap_and_accepted_leftovers_are_bounded() {
+        let root = temp_root("cap");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        for i in 0..20 {
+            s.observe_user_turn(id, Uuid::new_v4(), &format!("I like item {i}"));
+        }
+        settle(&mut s);
+        assert_eq!(s.candidates().len(), MAX_CANDIDATES);
+        let on_disk = read_pending(&root, id).unwrap().unwrap();
+        assert_eq!(on_disk.len(), MAX_CANDIDATES);
+        // Simulate a crash after the ledger save but before the pending rewrite.
+        let accepted = on_disk[0].clone();
+        s.accept_candidate(accepted.id).unwrap();
+        settle(&mut s);
+        write_pending(&root, id, &on_disk).unwrap();
+        drop(s);
+        let s = reopen(&root, id);
+        assert_eq!(s.candidates().len(), MAX_CANDIDATES - 1);
+        assert!(s.candidates().iter().all(|c| c.id != accepted.id));
+        assert_eq!(
+            read_pending(&root, id).unwrap().unwrap().len(),
+            MAX_CANDIDATES - 1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn expired_candidates_are_pruned_on_load() {
+        let root = temp_root("expiry");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        s.observe_user_turn(id, Uuid::new_v4(), "I like fresh mint");
+        s.observe_user_turn(id, Uuid::new_v4(), "I like stale bread");
+        settle(&mut s);
+        drop(s);
+        let mut on_disk = read_pending(&root, id).unwrap().unwrap();
+        on_disk[1].expires_at = Some(1);
+        write_pending(&root, id, &on_disk).unwrap();
+        let s = reopen(&root, id);
+        assert_eq!(s.candidates().len(), 1);
+        assert_eq!(s.candidates()[0].text, "I like fresh mint");
+        assert_eq!(read_pending(&root, id).unwrap().unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn malformed_or_oversized_pending_files_fail_closed() {
+        let root = temp_root("bad-pending");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        s.observe_user_turn(id, Uuid::new_v4(), "I like tea");
+        settle(&mut s);
+        drop(s);
+        let path = pending_path(&root, id);
+        let valid = fs::read_to_string(&path).unwrap();
+        let header = valid.lines().next().unwrap().to_string();
+        let candidate = valid.lines().nth(1).unwrap().to_string();
+        let too_many = std::iter::once(header.clone())
+            .chain((0..=MAX_CANDIDATES).map(|i| {
+                candidate
+                    .replace("I like tea", &format!("I like tea {i}"))
+                    .replacen(&s_id(&candidate), &Uuid::new_v4().to_string(), 1)
+            }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cases = [
+            "not json\n".to_string(),
+            candidate.clone(),
+            format!("{header}\n{header}\n"),
+            format!(
+                "{header}\n{}\n",
+                candidate.replace("\"expires_at\":", "\"expires_at\":null,\"x\":")
+            ),
+            format!("{header}\n{candidate}\n{candidate}\n"),
+            too_many,
+            " ".repeat(MAX_PENDING_BYTES as usize + 1),
+        ];
+        for bad in cases {
+            fs::write(&path, &bad).unwrap();
+            let mut s = reopen(&root, id);
+            assert!(s.loaded, "ledger still loads");
+            assert!(s.pending_error.is_some(), "{bad:.80}");
+            assert!(!s.retain_pending && s.candidates().is_empty());
+            assert!(s.set_retain_pending(true).is_err());
+            settle(&mut s);
+            assert_eq!(fs::read_to_string(&path).unwrap(), bad, "left untouched");
+        }
+        let mut s = reopen(&root, id);
+        s.set_retain_pending(false).unwrap();
+        settle(&mut s);
+        assert!(s.pending_error.is_none());
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    fn s_id(line: &str) -> String {
+        let start = line.find("\"id\":\"").unwrap() + 6;
+        line[start..start + 36].to_string()
+    }
+    #[test]
+    fn opt_out_and_ledger_deletion_remove_the_pending_file() {
+        let root = temp_root("delete");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        s.observe_user_turn(id, Uuid::new_v4(), "I like tea");
+        settle(&mut s);
+        let path = pending_path(&root, id);
+        assert!(path.exists());
+        s.set_retain_pending(false).unwrap();
+        settle(&mut s);
+        assert!(!path.exists());
+        assert_eq!(
+            s.candidates().len(),
+            1,
+            "current suggestions stay until restart"
+        );
+        s.observe_user_turn(id, Uuid::new_v4(), "I like cake");
+        settle(&mut s);
+        assert!(!path.exists());
+        s.set_retain_pending(true).unwrap();
+        settle(&mut s);
+        assert_eq!(read_pending(&root, id).unwrap().unwrap().len(), 2);
+        s.delete_character_data().unwrap();
+        settle(&mut s);
+        assert!(!path.exists());
+        assert!(!root.join(id.to_string()).join(FACTS_FILE).exists());
+        assert!(!s.retain_pending && s.candidates().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn mutations_during_saves_and_stale_events_lose_nothing() {
+        let root = temp_root("stale");
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        drop(suggesting(&root, b, true));
+        let mut s = suggesting(&root, a, true);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like apples");
+        s.observe_user_turn(a, Uuid::new_v4(), "I like pears");
+        s.poll();
+        let apples = s.candidates()[0].id;
+        // Accept while the pending write is in flight, then keep mutating mid-save.
+        s.accept_candidate(apples).unwrap();
+        assert!(s.busy);
+        s.observe_user_turn(a, Uuid::new_v4(), "I like plums");
+        s.poll();
+        // Switch away before anything settles; a's queued state must still land.
+        s.select_character(Some(b));
+        s.observe_user_turn(a, Uuid::new_v4(), "I like ignored");
+        s.select_character(Some(a));
+        settle(&mut s);
+        assert!(s.records().iter().any(|r| r.id == apples));
+        let mut texts: Vec<_> = s.candidates().iter().map(|c| c.text.clone()).collect();
+        texts.sort();
+        assert_eq!(texts, ["I like pears", "I like plums"]);
+        s.select_character(Some(b));
+        settle(&mut s);
+        assert!(s.candidates().is_empty() && s.retain_pending);
+        s.observe_user_turn(b, Uuid::new_v4(), "I like bananas");
+        drop(s);
+        let a_disk = reopen(&root, a);
+        assert_eq!(a_disk.candidates().len(), 2);
+        assert_eq!(a_disk.records().len(), 1);
+        let b_disk = reopen(&root, b);
+        assert_eq!(b_disk.candidates()[0].text, "I like bananas");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn failed_acceptance_keeps_the_candidate_pending() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let root = temp_root("accept-fail");
+        let id = Uuid::new_v4();
+        let mut s = suggesting(&root, id, true);
+        s.observe_user_turn(id, Uuid::new_v4(), "I like tea");
+        settle(&mut s);
+        let dir = root.join(id.to_string());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let c = s.candidates()[0].id;
+        s.accept_candidate(c).unwrap();
+        settle(&mut s);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(s.error.is_some());
+        assert!(s.records().is_empty());
+        assert_eq!(s.candidates()[0].id, c);
+        assert!(s.context("tea").is_none());
+        assert_eq!(read_pending(&root, id).unwrap().unwrap()[0].id, c);
         fs::remove_dir_all(root).unwrap();
     }
 }

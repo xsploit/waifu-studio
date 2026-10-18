@@ -84,6 +84,11 @@ fn recall_inspector(ui: &mut egui::Ui, state: &MemoryState) {
                 ui.weak("No local note recall yet for this character in this session.");
                 return;
             };
+            ui.weak(match trace.mode {
+                waifu_studio::memory::RecallMode::Lexical => "Lexical recall · focused chat",
+                waifu_studio::memory::RecallMode::PinsAlongsideSemantic =>
+                    "Pins only · semantic retrieval supplied the other notes",
+            });
             ui.weak(format!(
                 "{} query terms · {} bytes inserted · {} over budget · {} over 6-note limit · {} unmatched",
                 trace.query_terms,

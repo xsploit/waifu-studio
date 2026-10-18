@@ -2,8 +2,24 @@
 //! Call on a worker; no render/audio thread network work and no chat/tool execution.
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{io::Read, time::Duration};
+use std::{io::Read, sync::OnceLock, time::Duration};
 use uuid::Uuid;
+
+fn decision_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(5))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| "Cannot create recipient selection client".into())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -106,12 +122,7 @@ pub fn choose(
     if key.is_empty() && !local {
         return Err("Set a Vercel decision key or its environment variable".into());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "Cannot create recipient selection client")?;
+    let client = decision_client()?;
     let body = json!({
         "state": json!({"message":message}).to_string(),
         "questions": {"recipient": {"type":"choice", "instructions":

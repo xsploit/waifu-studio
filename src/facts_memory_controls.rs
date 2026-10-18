@@ -1,5 +1,7 @@
 use bevy_egui::egui;
-use waifu_studio::facts_memory::{FactsMemoryState, FactsRecallOutcome, RecordKind};
+use waifu_studio::facts_memory::{
+    CANDIDATE_TTL_SECS, FactsMemoryState, FactsRecallOutcome, MAX_CANDIDATES, RecordKind,
+};
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
     ui.label("Evidence ledger: facts, preferences, questions and reflections are local to this character. Candidate extraction uses only user turns and always requires acceptance.");
@@ -33,6 +35,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         {
             state.error = Some(e);
         }
+        pending_retention(ui, state);
         ui.add(
             egui::TextEdit::multiline(&mut state.draft)
                 .hint_text("Record text (up to 1000 characters)"),
@@ -70,6 +73,10 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                     candidate.kind, candidate.text
                 ));
                 ui.label(format!("Quoted evidence: {}", candidate.evidence));
+                ui.weak(format!(
+                    "Turn: {:?} · pending expiry: {:?} · not used in chat until accepted",
+                    candidate.turn_id, candidate.expires_at
+                ));
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(!state.busy, egui::Button::new("Accept candidate"))
@@ -175,6 +182,46 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         }
     });
     recall_inspector(ui, state);
+}
+
+/// Separate opt-in for keeping pending candidates in candidates.jsonl across restarts.
+fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
+    let mut retain = state.retain_pending;
+    if ui
+        .checkbox(
+            &mut retain,
+            "Keep pending candidates across restarts (opt in)",
+        )
+        .changed()
+        && let Err(e) = state.set_retain_pending(retain)
+    {
+        state.error = Some(e);
+    }
+    ui.weak(format!(
+        "Stores only each pending candidate's quoted user turn (up to 1000 characters), turn ID \
+         and expiry ({} days) in candidates.jsonl beside this character's ledger — never full \
+         transcripts. At most {} candidates. Pending candidates never reach chat until accepted. \
+         Turning this off deletes that file; current suggestions remain until restart.",
+        CANDIDATE_TTL_SECS / 86_400,
+        MAX_CANDIDATES
+    ));
+    if state.pending_saving() {
+        ui.weak("Saving pending candidates…");
+    }
+    if let Some(e) = state.pending_error.clone() {
+        ui.colored_label(
+            egui::Color32::RED,
+            format!("Pending candidate file unavailable; nothing is written to it: {e}"),
+        );
+        if ui
+            .button("Remove pending candidate file")
+            .on_hover_text("Deletes candidates.jsonl only; the accepted ledger is untouched.")
+            .clicked()
+            && let Err(e) = state.set_retain_pending(false)
+        {
+            state.error = Some(e);
+        }
+    }
 }
 
 /// Read-only view of the latest evidence recall; collapsed by default.

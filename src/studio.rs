@@ -774,11 +774,11 @@ impl Studio {
         });
         // Semantic retrieval excludes pinned notes. Use only pins alongside it,
         // so the same unpinned note cannot also appear via lexical retrieval.
-        let notes = memory.context(if semantic_notes.is_some() {
-            ""
+        let notes = if semantic_notes.is_some() {
+            memory.context_pins_only()
         } else {
-            &self.composer
-        });
+            memory.context(&self.composer)
+        };
         let mut persona = format!(
             "{}\n\n{}",
             character.persona,
