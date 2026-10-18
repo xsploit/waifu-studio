@@ -2,8 +2,8 @@
 //! --phase llm|speech|pipeline --models ID,ID --speech-models ID,ID
 //! --modes buffered,http,sse,ws,ws-timestamps --repeat 3 --run --output FILE.json
 //! --app-path drives spawn_chat ProviderEvents polled every --frame-ms (default 16)
-//! like the Bevy app; pipeline HTTP/buffered use its shared sentence/prefetch queue
-//! with simulated real-time consumption. The default direct path reads per ms
+//! like the Bevy app; pipeline HTTP/buffered use its shared prefetch queue and
+//! SSE uses its sequential sentence queue, with simulated real-time consumption. The default direct path reads per ms
 //! and retains the older full-reply HTTP baseline. No render/audio device is modelled.
 //! All requests retain the configured proxy; results contain no keys or chat history.
 use bevy::audio::Decodable;

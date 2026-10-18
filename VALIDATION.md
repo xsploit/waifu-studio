@@ -309,3 +309,10 @@ The `--app-path` pipeline benchmark now uses the same SSE scheduler and simulate
 Checks, sequential single-job builds announced in chat: `cargo test --lib reply_speech::` 4/4, `cargo test --bin waifu-studio studio::tests::` 19/19, `cargo test --example bench_pipeline` 2/2, and strict all-target Clippy clean. Loopback tests verify an SSE sentence is requested before reply completion, decoded PCM arrives, network completion alone cannot advance while playback is active, Stop drops the remaining tail, split task metadata is hidden, stale events cannot finish a current request, and the benchmark consumes both chunks fully at a simulated real-time rate. No paid calls, speakers or GPU render. The complete all-target suite has not been rerun for this slice.
 
 Independent Muse review saved verbatim to `reviews/muse-independent-review.md`: 503 all-target tests passed on its explicitly documented moving tree before this SSE patch. The stale README count is corrected; the two low hypotheses are dispositioned in `reviews/README.md` without claiming runtime reproductions or making speculative code changes.
+
+
+## 2026-10-18 — live current-pipeline comparison
+
+After advance notification in chat, ran the production benchmark at `44fe22d` with `--phase pipeline --app-path --frame-ms 16 --models deepseek/deepseek-v4.1-flash --speech-models drama-3,s2.1-pro --modes ws,http,sse --repeat 3 --provider-only baseten --reasoning none --latency low --chunk-length 160 --min-chunk 20 --condition true --max-tokens 1024`. Single-job compilation completed, followed by 18 sequential bounded provider requests through the configured proxy. All rows succeeded and workers closed. Results are saved in `benchmarks/pipeline-sentence-sse-low.json`; medians and limitations are in `benchmarks/RESULTS.md`. No microphone/speaker/GPU render or saved-setting changes.
+
+Opus 5.5 implementation and Fable 5.1 review dispatch became available again, but both workers failed before doing work with 429 account rate-limit/cooling-down errors. Neither produced edits or a fresh review. Material-only expressions remain pending; no model work is attributed to these rejected tasks.

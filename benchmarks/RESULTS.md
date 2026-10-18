@@ -308,3 +308,25 @@ The JSON format is version 2 and labels each row's `speech_path`, `simulated_rea
 Focused Studio replies now use `SseReplySpeech`: the same 40–300-character sentence grouping and task-block filter, with one SSE request at a time. The next request waits for both network completion and playback drain because a new Fish SSE request invalidates the previous audio generation. No SSE prefetch or gap-free playback is claimed. Word timings remain local to each request.
 
 The pipeline harness now uses this shared SSE scheduler for `--app-path` pipeline rows, labels them `shared-studio-sse-reply`, and simulates real-time PCM consumption. Fixed-text and direct historical paths are unchanged. Existing saved JSON rows retain their original implementation and timings: **no new live latency result is claimed for sentence-streamed SSE**. A loopback test exercises two sentence requests, first audio before LLM finish, ordered full audio consumption, and simulated playback duration without opening a speaker device.
+
+
+## 2026-10-18 — current sentence-SSE / HTTP / WebSocket comparison
+
+Raw result: [pipeline-sentence-sse-low.json](pipeline-sentence-sse-low.json), run against `44fe22d`. Eighteen short pipeline requests, three interleaved repeats per combination, DeepSeek V4.1 Flash, requested Baseten-only routing, reasoning none, Fish Low latency, 16 ms app-path polling. All 18 succeeded and all 18 chat workers closed. No speaker, microphone or GPU renderer opened. Actual gateway served-provider attribution is not exposed by the app event API.
+
+| Fish model | Delivery | Success | Median first text ms | Median first decoded audio ms | Median observed first-text-to-audio ms |
+|---|---|---:|---:|---:|---:|
+| drama-3 | WebSocket | 3/3 | 354 | 1496 | 1223 |
+| drama-3 | HTTP | 3/3 | 290 | 981 | 708 |
+| drama-3 | sentence SSE | 3/3 | 804 | 1656 | 836 |
+| s2.1-pro | WebSocket | 3/3 | 322 | 1479 | 1141 |
+| s2.1-pro | HTTP | 3/3 | 563 | 1270 | 740 |
+| s2.1-pro | sentence SSE | 3/3 | 547 | 1400 | 853 |
+
+The final column is the median of each row's audio time minus its first-text time; it is not the difference between the displayed medians or a pure transport measurement. It includes sentence-boundary waiting, connection/synthesis/decoding and frame observation.
+
+HTTP had the lowest first-audio median for each Fish model in this batch. Three samples with varying text and LLM latency do not establish a universal ranking or a controlled before/after speedup. The 500–700 ms target remains unmet. This measures first decoded audio, not physical speaker onset or perceived lip sync.
+
+Three of six SSE replies generated two requests. Their simulated boundary gaps were **723, 739 and 788 ms**. One of six HTTP replies generated two requests; its simulated boundary gap was **16 ms**. This limited evidence confirms the expected cost of sequential SSE requests and a functioning HTTP-prefetch path, not general gap-free playback. Most remaining rows had only one chunk, and WebSocket uses one continuous decoded stream. HTTP/SSE consume PCM at simulated real time; WebSocket drains quickly, so total `decoded_done_ms` must not be used to rank playback completion across modes.
+
+WebSocket remains the saved/default delivery; this experiment did not rewrite settings. HTTP Low latency with sentence prefetch is the strongest measured candidate here for a user trial, subject to actual playback-quality acceptance. No additional live runs are implied by this receipt.
