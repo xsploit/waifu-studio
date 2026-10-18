@@ -14,7 +14,7 @@ use std::{
     net::{IpAddr, Shutdown, TcpStream, ToSocketAddrs},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -30,6 +30,14 @@ const MAX_MESSAGE: usize = 2 * 1024 * 1024;
 const MAX_AUDIO: usize = 32 * 1024 * 1024;
 const MAX_WIRE: usize = 64 * 1024 * 1024;
 const MAX_WORDS: usize = 12_000;
+/// A cancelled worker cannot be interrupted inside DNS or a blocking TCP
+/// connect, so one extra slot lets the next generation start while it unwinds.
+/// Further requests wait in `pending`; threads and sockets stay bounded.
+const MAX_WORKERS: usize = 2;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
+/// Each non-final resolved address gets at most this long, so one blackholed
+/// address (often IPv6) cannot consume the whole connect deadline.
+const ADDRESS_TIMEOUT: Duration = Duration::from_millis(1500);
 type Mailbox = Arc<Mutex<VecDeque<(u64, LiveEvent)>>>;
 type SocketControl = Arc<Mutex<Option<(u64, TcpStream)>>>;
 
@@ -168,7 +176,7 @@ pub struct FishWsState {
     pub last_stats: Option<LiveStats>,
     generation: Arc<AtomicU64>,
     audio_generation: Arc<AtomicU64>,
-    busy: Arc<AtomicBool>,
+    workers: Arc<AtomicUsize>,
     mailbox: Mailbox,
     socket: SocketControl,
     input: Option<Arc<Mutex<TextQueue>>>,
@@ -186,7 +194,7 @@ impl Default for FishWsState {
             last_stats: None,
             generation: Arc::new(AtomicU64::new(0)),
             audio_generation: Arc::new(AtomicU64::new(0)),
-            busy: Arc::new(AtomicBool::new(false)),
+            workers: Arc::new(AtomicUsize::new(0)),
             mailbox: Arc::new(Mutex::new(VecDeque::new())),
             socket: Arc::new(Mutex::new(None)),
             input: None,
@@ -296,13 +304,20 @@ impl FishWsState {
         self.status = "Cancelled".into();
     }
     pub fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.busy.load(Ordering::Acquire)
+        self.pending.is_some() || self.workers.load(Ordering::Acquire) > 0
     }
     pub fn active_id(&self) -> Option<u64> {
         self.id
     }
     fn start_pending(&mut self) {
-        if self.pending.is_none() || self.busy.swap(true, Ordering::AcqRel) {
+        if self.pending.is_none()
+            || self
+                .workers
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < MAX_WORKERS).then_some(active + 1)
+                })
+                .is_err()
+        {
             return;
         }
         let request = self.pending.take().unwrap();
@@ -310,14 +325,14 @@ impl FishWsState {
         let id = request.id;
         let active = self.generation.clone();
         let audio = self.audio_generation.clone();
-        let busy = self.busy.clone();
+        let workers = self.workers.clone();
         let mailbox = self.mailbox.clone();
         let control = self.socket.clone();
         let spawned = std::thread::Builder::new()
             .name("fish-live-websocket".into())
             .spawn(move || {
                 struct Permit {
-                    busy: Arc<AtomicBool>,
+                    workers: Arc<AtomicUsize>,
                     control: SocketControl,
                     expected: u64,
                 }
@@ -330,11 +345,11 @@ impl FishWsState {
                         {
                             socket.take();
                         }
-                        self.busy.store(false, Ordering::Release);
+                        self.workers.fetch_sub(1, Ordering::AcqRel);
                     }
                 }
                 let _permit = Permit {
-                    busy,
+                    workers,
                     control: control.clone(),
                     expected,
                 };
@@ -363,7 +378,7 @@ impl FishWsState {
                 publish(&mailbox, &active, expected, event);
             });
         if spawned.is_err() {
-            self.busy.store(false, Ordering::Release);
+            self.workers.fetch_sub(1, Ordering::AcqRel);
             publish(
                 &self.mailbox,
                 &self.generation,
@@ -710,20 +725,25 @@ fn connect_tcp(
     expected: u64,
     budget: &StreamBudget,
 ) -> Result<TcpStream, String> {
-    let connect_deadline = Instant::now() + Duration::from_secs(10);
-    let addresses = (host, port)
+    let connect_deadline = Instant::now() + CONNECT_TIMEOUT;
+    let addresses: Vec<_> = (host, port)
         .to_socket_addrs()
-        .map_err(|_| "Could not resolve Fish WebSocket connection host")?;
-    for address in addresses.take(8) {
+        .map_err(|_| "Could not resolve Fish WebSocket connection host")?
+        .take(8)
+        .collect();
+    for (index, address) in addresses.iter().enumerate() {
         check(active, expected, budget)?;
-        let timeout = connect_deadline
+        let mut timeout = connect_deadline
             .saturating_duration_since(Instant::now())
             .min(budget.remaining());
+        if index + 1 < addresses.len() {
+            timeout = timeout.min(ADDRESS_TIMEOUT);
+        }
         if timeout.is_zero() {
             return Err("Fish WebSocket connection timed out".into());
         }
         if let Ok(socket) =
-            TcpStream::connect_timeout(&address, timeout.max(Duration::from_millis(1)))
+            TcpStream::connect_timeout(address, timeout.max(Duration::from_millis(1)))
         {
             return Ok(socket);
         }
@@ -2290,6 +2310,174 @@ mod tests {
         }
         assert!(failed);
         assert!(state.active_id().is_none());
+        task.join().unwrap();
+    }
+    /// Listener whose accept queue is full: the kernel drops further SYNs, so a
+    /// client connect stalls exactly like one to a blackholed address.
+    #[cfg(target_os = "linux")]
+    fn saturated_listener() -> (TcpListener, Vec<TcpStream>) {
+        use std::os::fd::FromRawFd;
+        // SAFETY: plain socket syscalls on a fresh descriptor whose ownership
+        // moves into the returned listener.
+        let listener = unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            assert!(fd >= 0);
+            let mut address: libc::sockaddr_in = std::mem::zeroed();
+            address.sin_family = libc::AF_INET as libc::sa_family_t;
+            address.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+            let listener = TcpListener::from_raw_fd(fd);
+            assert_eq!(
+                libc::bind(
+                    fd,
+                    (&raw const address).cast(),
+                    size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                ),
+                0
+            );
+            assert_eq!(libc::listen(fd, 0), 0);
+            listener
+        };
+        let address = listener.local_addr().unwrap();
+        let mut held = Vec::new();
+        while let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+            held.push(stream);
+            assert!(held.len() < 16, "listener backlog never filled");
+        }
+        (listener, held)
+    }
+    fn serve_once(listener: TcpListener) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut ws = tungstenite::accept(socket(listener)).unwrap();
+            while field(&receive(&mut ws), "event").and_then(Value::as_str) != Some("stop") {}
+            send(&mut ws, audio(&wav(2, true), 0, 0.0, None));
+            send(
+                &mut ws,
+                map([
+                    ("event", Value::from("finish")),
+                    ("reason", Value::from("stop")),
+                ]),
+            );
+        })
+    }
+    /// Polls until `id` finishes, returning the most workers seen at once.
+    fn finish_within(state: &mut FishWsState, id: u64, limit: Duration) -> usize {
+        let deadline = Instant::now() + limit;
+        let mut peak = 0;
+        loop {
+            peak = peak.max(state.workers.load(Ordering::Acquire));
+            for event in state.poll() {
+                match event {
+                    LiveEvent::Finished { id: done, .. } if done == id => return peak,
+                    LiveEvent::Failed { message, .. } => panic!("{message}"),
+                    _ => {}
+                }
+            }
+            assert!(Instant::now() < deadline, "generation {id} did not finish");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn workers_drain(state: &FishWsState, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while state.is_busy() {
+            assert!(Instant::now() < deadline, "cancelled workers did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(state.socket.lock().unwrap().is_none());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancel_during_stalled_tcp_connect_does_not_block_next_generation() {
+        let (stalled, _held) = saturated_listener();
+        let mut state = FishWsState::default();
+        open(&mut state, 1, &config(endpoint(&stalled)));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(state.workers.load(Ordering::Acquire), 1);
+        state.cancel();
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = config(endpoint(&live));
+        let server = serve_once(live);
+        let started = Instant::now();
+        open(&mut state, 2, &config);
+        state.push_text("Hello").unwrap();
+        state.finish().unwrap();
+        let peak = finish_within(&mut state, 2, Duration::from_secs(3));
+        // The stale connect still holds its slot for most of CONNECT_TIMEOUT;
+        // the next turn must not wait for it.
+        assert!(
+            started.elapsed() < CONNECT_TIMEOUT / 2,
+            "next generation waited {:?}",
+            started.elapsed()
+        );
+        assert_eq!(peak, 2);
+        server.join().unwrap();
+        workers_drain(&state, CONNECT_TIMEOUT + Duration::from_secs(1));
+        assert!(state.poll().is_empty());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stalled_cancelled_workers_stay_bounded_and_admission_resumes() {
+        let (stalled, _held) = saturated_listener();
+        let stalled = config(endpoint(&stalled));
+        let mut state = FishWsState::default();
+        // Let each worker get past its first cancellation check into connect.
+        open(&mut state, 1, &stalled);
+        std::thread::sleep(Duration::from_millis(100));
+        state.cancel();
+        open(&mut state, 2, &stalled);
+        std::thread::sleep(Duration::from_millis(100));
+        state.cancel();
+        assert_eq!(state.workers.load(Ordering::Acquire), MAX_WORKERS);
+        let live = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = config(endpoint(&live));
+        let server = serve_once(live);
+        open(&mut state, 3, &config);
+        assert!(state.pending.is_some(), "a third worker must not spawn");
+        state.push_text("Hello").unwrap();
+        state.finish().unwrap();
+        let peak = finish_within(&mut state, 3, CONNECT_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(peak, MAX_WORKERS);
+        server.join().unwrap();
+        workers_drain(&state, CONNECT_TIMEOUT + Duration::from_secs(1));
+    }
+    #[test]
+    fn cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let direct = TcpListener::bind("127.0.0.1:0").unwrap();
+        direct.set_nonblocking(true).unwrap();
+        let (requested, seen_request) = mpsc::channel();
+        let (closed, seen_close) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            let mut socket = socket(proxy);
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            requested.send(()).unwrap();
+            // Never answer CONNECT; wait for the client to drop the tunnel.
+            assert!(matches!(socket.read(&mut byte), Ok(0) | Err(_)));
+            closed.send(()).unwrap();
+        });
+        let mut state = FishWsState::default();
+        let target = config(endpoint(&direct));
+        state
+            .open_with_env(1, &target, Some("test-key".into()), |name| {
+                (name == "http_proxy").then(|| proxy_url.clone())
+            })
+            .unwrap();
+        seen_request.recv_timeout(Duration::from_secs(2)).unwrap();
+        let started = Instant::now();
+        state.cancel();
+        seen_close.recv_timeout(Duration::from_secs(1)).unwrap();
+        workers_drain(&state, Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(state.poll().is_empty());
+        assert_eq!(
+            direct.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
         task.join().unwrap();
     }
 }
