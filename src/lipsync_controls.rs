@@ -6,10 +6,28 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisemeState) -> bool {
     state.poll_dialog();
     ui.heading("Native wLipSync / uLipSync vowels");
     ui.label("A calibrated MFCC profile classifies A I U E O on a background worker. Without a compatible profile, speech uses the existing RMS mouth envelope.");
-    ui.checkbox(
-        &mut state.config.enabled,
-        "Enable calibrated vowel lip sync",
-    );
+    egui::ComboBox::from_id_salt("lip-sync-method")
+        .selected_text(if state.config.enabled {
+            "Calibrated vowels (profile required)"
+        } else {
+            "Audio envelope (no profile required)"
+        })
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut state.config.enabled,
+                false,
+                "Audio envelope (no profile required)",
+            );
+            ui.selectable_value(
+                &mut state.config.enabled,
+                true,
+                "Calibrated vowels (profile required)",
+            );
+        });
+    if state.config.enabled && state.vowel_coverage().is_none() {
+        ui.weak("No calibration loaded: this method falls back to the audio envelope when Audio lip sync is enabled above. Load a matching profile to use vowels.");
+    }
     ui.horizontal(|ui| {
         ui.text_edit_singleline(&mut state.profile_draft);
         if ui
@@ -29,6 +47,17 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisemeState) -> bool {
         }
     });
     ui.small("Import a uLipSync JSON calibration or wLipSync WLIP .bin file. Profiles should match the synthesized voice. No calibration is bundled.");
+    if ui.button("Reset analysis tuning").clicked() {
+        let defaults = waifu_studio::viseme_audio::VisemeConfig::default();
+        state.config.min_volume = defaults.min_volume;
+        state.config.max_volume = defaults.max_volume;
+        state.config.smoothness = defaults.smoothness;
+        state.config.block_size = defaults.block_size;
+        state.config.use_phoneme_blend = defaults.use_phoneme_blend;
+        state.config.vowel_gains = defaults.vowel_gains;
+        state.config.average_channels = defaults.average_channels;
+    }
+    ui.small("Reset keeps your selected method and calibration file. Mouth strength and the master lip-sync switch are in Face controls above.");
     ui.add(egui::Slider::new(&mut state.config.min_volume, -5.0..=0.0).text("Minimum log10 RMS"));
     ui.add(egui::Slider::new(&mut state.config.max_volume, -4.0..=0.5).text("Maximum log10 RMS"));
     ui.add(egui::Slider::new(&mut state.config.smoothness, 0.0..=0.3).text("Smoothing (seconds)"));

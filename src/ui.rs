@@ -1240,11 +1240,13 @@ fn filter_motions<'a>(
     entries: &'a [motion_library::MotionEntry],
     group: Option<&str>,
     query: &str,
+    category: Option<motion_library::MotionCategory>,
 ) -> Vec<&'a motion_library::MotionEntry> {
     let query = query.trim().to_lowercase();
     entries
         .iter()
         .filter(|entry| group.is_none_or(|group| entry.group == group))
+        .filter(|entry| category.is_none_or(|category| entry.category() == category))
         .filter(|entry| query.is_empty() || entry.label.to_lowercase().contains(&query))
         .collect()
 }
@@ -1257,6 +1259,11 @@ fn motion_picker(
 ) -> Option<std::path::PathBuf> {
     let group_id = egui::Id::new("motion_library_group");
     let query_id = egui::Id::new("motion_library_query");
+    let category_id = egui::Id::new("motion_library_category");
+    let mut category = ui.ctx().data(|d| {
+        d.get_temp::<Option<motion_library::MotionCategory>>(category_id)
+            .flatten()
+    });
     let mut group = ui
         .ctx()
         .data(|d| d.get_temp::<Option<String>>(group_id))
@@ -1291,12 +1298,22 @@ fn motion_picker(
                         ui.selectable_value(&mut group, Some((*name).to_owned()), *name);
                     }
                 });
+            egui::ComboBox::from_id_salt("motion_category")
+                .selected_text(category.map_or("All categories", |c| c.name()))
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut category, None, "All categories");
+                    for value in motion_library::MotionCategory::ALL {
+                        ui.selectable_value(&mut category, Some(value), value.name());
+                    }
+                });
+            ui.small("Categories come from filenames; unknown motions remain available.");
             ui.add(
                 egui::TextEdit::singleline(&mut query)
                     .desired_width(f32::INFINITY)
                     .hint_text("Search motions…"),
             );
-            let visible = filter_motions(entries, group.as_deref(), &query);
+            let visible = filter_motions(entries, group.as_deref(), &query, category);
             ui.small(format!("{} motions", visible.len()));
             egui::ScrollArea::vertical()
                 .id_salt("motion_library_rows")
@@ -1326,6 +1343,7 @@ fn motion_picker(
     ui.ctx().data_mut(|d| {
         d.insert_temp(group_id, group);
         d.insert_temp(query_id, query);
+        d.insert_temp(category_id, category);
     });
     picked
 }
@@ -3113,8 +3131,21 @@ mod composer_tests {
             entry("sachi-vrma", "rightwave1", "VRMA"),
             entry("silly-bvh", "joy3", "BVH"),
         ];
-        assert_eq!(filter_motions(&entries, Some("silly-bvh"), "").len(), 1);
-        assert_eq!(filter_motions(&entries, None, "WAVE").len(), 2);
+        assert_eq!(
+            filter_motions(&entries, Some("silly-bvh"), "", None).len(),
+            1
+        );
+        assert_eq!(filter_motions(&entries, None, "WAVE", None).len(), 2);
+        assert_eq!(
+            filter_motions(
+                &entries,
+                None,
+                "",
+                Some(motion_library::MotionCategory::Greeting)
+            )
+            .len(),
+            2
+        );
         let ctx = egui::Context::default();
         style(&ctx);
         let mut picked = None;

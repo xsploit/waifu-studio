@@ -36,11 +36,25 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FacialState) -> bool {
     ui.add(egui::Slider::new(&mut state.config.mouth_gain, 0.0..=10.0).text("Mouth sensitivity"));
     egui::ComboBox::from_id_salt("mouth_expression")
         .selected_text(&state.config.mouth_expression)
+        .width(ui.available_width())
         .show_ui(ui, |ui| {
             for name in &state.available {
                 ui.selectable_value(&mut state.config.mouth_expression, name.clone(), name);
             }
         });
+    if !state.config.lip_sync {
+        ui.weak("Mouth movement is disabled here, including calibrated vowels.");
+    } else if state.config.mouth_gain <= 0.0 {
+        ui.weak("Mouth sensitivity is zero: audio-envelope mouth movement is disabled.");
+    } else if !state.available.contains(&state.config.mouth_expression) {
+        ui.weak("The selected mouth expression is unavailable on this avatar. Choose one from the dropdown for audio-envelope lip sync.");
+    }
+    if ui.button("Restore mouth defaults").clicked() {
+        let defaults = waifu_studio::expressions::FacialConfig::default();
+        state.config.lip_sync = defaults.lip_sync;
+        state.config.mouth_gain = defaults.mouth_gain;
+        state.config.mouth_expression = defaults.mouth_expression;
+    }
     ui.collapsing("Manual expression weights", |ui| {
         for name in &state.available {
             let mut weight = state.config.weights.get(name).copied().unwrap_or_default();

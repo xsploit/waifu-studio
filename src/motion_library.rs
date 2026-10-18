@@ -3,6 +3,9 @@
 //! is UNLICENSED, so its folder is only used when it already exists on this
 //! machine (the user's own checkout). `WAIFU_MOTION_LIBRARY` adds more folders
 //! (`:`-separated).
+// The category/catalog API below is not wired into the UI or runtime yet;
+// drop this allow once a caller uses it.
+#![allow(dead_code)]
 use std::path::{Path, PathBuf};
 
 const WEBWAIFU4_ANIMATIONS: &str = "/home/subsect/Documents/Codex/2026-10-11/files-pasted-by-the-user-review-2/work/WebWaifu4/public/assets/animations";
@@ -93,6 +96,271 @@ pub fn scan(roots: &[PathBuf]) -> Vec<MotionEntry> {
     entries
 }
 
+/// Coarse purpose of a motion, inferred only from clear filename words.
+/// `Unknown` means the name gave no reliable signal; nothing is guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MotionCategory {
+    Idle,
+    Greeting,
+    Talking,
+    Thinking,
+    Celebration,
+    Dance,
+    Locomotion,
+    Unknown,
+}
+
+impl MotionCategory {
+    pub const ALL: [MotionCategory; 8] = [
+        Self::Idle,
+        Self::Greeting,
+        Self::Talking,
+        Self::Thinking,
+        Self::Celebration,
+        Self::Dance,
+        Self::Locomotion,
+        Self::Unknown,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Greeting => "greeting",
+            Self::Talking => "talking",
+            Self::Thinking => "thinking",
+            Self::Celebration => "celebration",
+            Self::Dance => "dance",
+            Self::Locomotion => "locomotion",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Whole-word signals, checked in this order so the first match wins
+/// (`sit_idle` is idle, `sitwave` is a greeting, `action_walk` is locomotion).
+const CATEGORY_WORDS: &[(MotionCategory, &[&str])] = &[
+    (MotionCategory::Dance, &["dance", "dancing"]),
+    (
+        MotionCategory::Locomotion,
+        &[
+            "walk", "walking", "run", "running", "jog", "jump", "crawl", "crawling",
+        ],
+    ),
+    (
+        MotionCategory::Greeting,
+        &[
+            "wave",
+            "waving",
+            "rightwave",
+            "leftwave",
+            "sitwave",
+            "greet",
+            "greeting",
+            "hello",
+            "bow",
+        ],
+    ),
+    (
+        MotionCategory::Celebration,
+        &[
+            "celebrate",
+            "celebration",
+            "cheer",
+            "joy",
+            "happy",
+            "excitement",
+            "excited",
+            "victory",
+            "clap",
+        ],
+    ),
+    (
+        MotionCategory::Thinking,
+        &[
+            "think",
+            "thinking",
+            "ponder",
+            "curiosity",
+            "confusion",
+            "realization",
+        ],
+    ),
+    (
+        MotionCategory::Talking,
+        &["talk", "talking", "speak", "speaking", "explain"],
+    ),
+    (MotionCategory::Idle, &["idle", "neutral", "breathing"]),
+];
+
+/// Category from a file name alone; digits separate words and are ignored.
+pub fn category_of(path: &Path) -> MotionCategory {
+    let stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let stem = stem.strip_prefix("cc0animation").unwrap_or(&stem);
+    let words: Vec<&str> = stem
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
+    CATEGORY_WORDS
+        .iter()
+        .find(|(_, signals)| words.iter().any(|word| signals.contains(word)))
+        .map_or(MotionCategory::Unknown, |(category, _)| *category)
+}
+
+impl MotionEntry {
+    pub fn category(&self) -> MotionCategory {
+        category_of(&self.path)
+    }
+}
+
+/// Most options ever offered to a chooser in one catalog.
+pub const MAX_OFFERED: usize = 16;
+/// Answer that declines every offered motion.
+pub const NONE_CHOICE: &str = "none";
+const MAX_LABEL_CHARS: usize = 48;
+const MAX_ANSWER_BYTES: usize = 64;
+
+fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes.iter().chain(&[0xff]) {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// FNV-1a over every scanned path and format; changes whenever the scan does.
+fn revision_of(entries: &[MotionEntry]) -> u64 {
+    entries.iter().fold(0xcbf2_9ce4_8422_2325, |hash, entry| {
+        let hash = fnv(hash, entry.path.as_os_str().as_encoded_bytes());
+        fnv(hash, entry.format.as_bytes())
+    })
+}
+
+/// One option as a chooser sees it: an opaque ID, a short label and a category.
+/// Paths never leave the catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedMotion {
+    pub id: String,
+    pub label: String,
+    pub category: MotionCategory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChoiceError {
+    /// The scan changed since the catalog was offered, or the ID is from another catalog.
+    Stale,
+    /// The answer is neither `none` nor an offered ID.
+    NotOffered,
+}
+
+/// Bounded set of scanned motions offered for one decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MotionCatalog {
+    revision: u64,
+    offered: Vec<(OfferedMotion, PathBuf)>,
+}
+
+impl MotionCatalog {
+    /// Offers at most `limit` (capped at [`MAX_OFFERED`]) entries whose category is
+    /// in `allowed`, taking them round-robin across `allowed` in its order so one
+    /// category cannot crowd out the rest. Within a category, scan order is kept.
+    pub fn offer(entries: &[MotionEntry], allowed: &[MotionCategory], limit: usize) -> Self {
+        let revision = revision_of(entries);
+        let limit = limit.min(MAX_OFFERED);
+        let mut allowed_once = Vec::new();
+        for category in allowed {
+            if !allowed_once.contains(category) {
+                allowed_once.push(*category);
+            }
+        }
+        let mut queues: Vec<_> = allowed_once
+            .iter()
+            .map(|category| {
+                entries
+                    .iter()
+                    .filter(move |entry| entry.category() == *category)
+                    .peekable()
+            })
+            .collect();
+        let mut picked = Vec::new();
+        while picked.len() < limit && queues.iter_mut().any(|queue| queue.peek().is_some()) {
+            for queue in &mut queues {
+                if picked.len() >= limit {
+                    break;
+                }
+                if let Some(entry) = queue.next() {
+                    picked.push(entry);
+                }
+            }
+        }
+        // IDs are salted with the offered set too, so an ID from a different
+        // offer over the same scan never aliases a slot in this one.
+        let key = picked.iter().fold(revision, |hash, entry| {
+            fnv(hash, entry.path.as_os_str().as_encoded_bytes())
+        });
+        let offered = picked
+            .into_iter()
+            .enumerate()
+            .map(|(slot, entry)| {
+                let motion = OfferedMotion {
+                    id: format!("m{key:016x}-{slot}"),
+                    label: entry.label.chars().take(MAX_LABEL_CHARS).collect(),
+                    category: entry.category(),
+                };
+                (motion, entry.path.clone())
+            })
+            .collect();
+        Self { revision, offered }
+    }
+
+    pub fn options(&self) -> impl Iterator<Item = &OfferedMotion> {
+        self.offered.iter().map(|(motion, _)| motion)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.offered.is_empty()
+    }
+
+    /// Whether `entries` is still the scan this catalog was offered from.
+    pub fn is_current(&self, entries: &[MotionEntry]) -> bool {
+        self.revision == revision_of(entries)
+    }
+
+    /// Resolves a chooser's answer against the *current* scan. `Ok(None)` is an
+    /// explicit `none`; `Ok(Some)` is always an entry of `current`, never a
+    /// caller-supplied path.
+    pub fn resolve<'a>(
+        &self,
+        answer: &str,
+        current: &'a [MotionEntry],
+    ) -> Result<Option<&'a MotionEntry>, ChoiceError> {
+        let answer = answer.trim();
+        if answer.len() > MAX_ANSWER_BYTES {
+            return Err(ChoiceError::NotOffered);
+        }
+        if answer.eq_ignore_ascii_case(NONE_CHOICE) {
+            return Ok(None);
+        }
+        if !self.is_current(current) {
+            return Err(ChoiceError::Stale);
+        }
+        let Some((_, path)) = self.offered.iter().find(|(motion, _)| motion.id == answer) else {
+            return if answer.starts_with('m') && answer.contains('-') {
+                Err(ChoiceError::Stale)
+            } else {
+                Err(ChoiceError::NotOffered)
+            };
+        };
+        current
+            .iter()
+            .find(|entry| &entry.path == path)
+            .map(Some)
+            .ok_or(ChoiceError::Stale)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +397,116 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn entry(group: &str, file: &str) -> MotionEntry {
+        let path = PathBuf::from(format!("/lib/{group}/{file}"));
+        MotionEntry {
+            group: group.into(),
+            label: label_of(&path),
+            format: format_of(&path).unwrap(),
+            path,
+        }
+    }
+
+    #[test]
+    fn categories_come_only_from_clear_filename_words() {
+        let cases = [
+            ("Idle2.fbx", MotionCategory::Idle),
+            ("sit_idle3.bvh", MotionCategory::Idle),
+            ("neutral4.bvh", MotionCategory::Idle),
+            ("Wave.fbx", MotionCategory::Greeting),
+            ("CC0animationrightwave1.vrma", MotionCategory::Greeting),
+            ("CC0animationsitwave01.vrma", MotionCategory::Greeting),
+            ("action_greeting1.bvh", MotionCategory::Greeting),
+            ("Thinking.fbx", MotionCategory::Thinking),
+            ("confusion2.bvh", MotionCategory::Thinking),
+            ("CC0animationhappy01.vrma", MotionCategory::Celebration),
+            ("joy3.bvh", MotionCategory::Celebration),
+            ("dance_2.bvh", MotionCategory::Dance),
+            ("action_walk.bvh", MotionCategory::Locomotion),
+            ("talking.fbx", MotionCategory::Talking),
+            ("CC0animationunwave.vrma", MotionCategory::Unknown),
+            ("CC0animationunknown3.vrma", MotionCategory::Unknown),
+            ("CC0animationother1.vrma", MotionCategory::Unknown),
+            ("CC0animationrotate6.vrma", MotionCategory::Unknown),
+            ("anger2.bvh", MotionCategory::Unknown),
+            ("idlewalkers.bvh", MotionCategory::Unknown),
+        ];
+        for (file, expected) in cases {
+            assert_eq!(category_of(Path::new(file)), expected, "{file}");
+        }
+    }
+
+    #[test]
+    fn catalog_offers_a_bounded_round_robin_without_paths() {
+        let entries: Vec<_> = [
+            "Idle.fbx",
+            "Idle2.fbx",
+            "Idle3.fbx",
+            "Wave.fbx",
+            "dance_1.bvh",
+        ]
+        .iter()
+        .map(|file| entry("lib", file))
+        .chain((0..40).map(|n| entry("bulk", &format!("idle{n}.bvh"))))
+        .collect();
+        let allowed = [
+            MotionCategory::Idle,
+            MotionCategory::Greeting,
+            MotionCategory::Idle,
+            MotionCategory::Talking,
+        ];
+        let catalog = MotionCatalog::offer(&entries, &allowed, 4);
+        let shown: Vec<_> = catalog
+            .options()
+            .map(|o| (o.label.as_str(), o.category))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                ("Idle", MotionCategory::Idle),
+                ("Wave", MotionCategory::Greeting),
+                ("Idle2", MotionCategory::Idle),
+                ("Idle3", MotionCategory::Idle),
+            ]
+        );
+        assert!(catalog.options().all(|o| !o.id.contains('/')));
+        assert_eq!(catalog, MotionCatalog::offer(&entries, &allowed, 4));
+        assert_eq!(
+            MotionCatalog::offer(&entries, &[MotionCategory::Idle], 1000)
+                .options()
+                .count(),
+            MAX_OFFERED
+        );
+        assert!(MotionCatalog::offer(&entries, &[], 8).is_empty());
+    }
+
+    #[test]
+    fn choices_resolve_only_offered_entries_of_the_current_scan() {
+        let entries = vec![entry("lib", "Idle.fbx"), entry("lib", "Wave.fbx")];
+        let catalog = MotionCatalog::offer(&entries, &[MotionCategory::Greeting], 4);
+        let id = catalog.options().next().unwrap().id.clone();
+        assert_eq!(
+            catalog.resolve(&format!(" {id} "), &entries),
+            Ok(Some(&entries[1]))
+        );
+        assert_eq!(catalog.resolve("NONE", &entries), Ok(None));
+        for bogus in ["/lib/lib/Idle.fbx", "Wave", "", &"m".repeat(200)] {
+            assert_eq!(
+                catalog.resolve(bogus, &entries),
+                Err(ChoiceError::NotOffered)
+            );
+        }
+        let idle_only = MotionCatalog::offer(&entries, &[MotionCategory::Idle], 4);
+        let idle_id = idle_only.options().next().unwrap().id.clone();
+        assert_eq!(catalog.resolve(&idle_id, &entries), Err(ChoiceError::Stale));
+
+        let mut rescanned = entries.clone();
+        rescanned.push(entry("lib", "joy.bvh"));
+        assert!(!catalog.is_current(&rescanned));
+        assert_eq!(catalog.resolve(&id, &rescanned), Err(ChoiceError::Stale));
+        assert_eq!(catalog.resolve("none", &rescanned), Ok(None));
     }
 
     #[test]
