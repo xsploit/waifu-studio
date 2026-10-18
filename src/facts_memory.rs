@@ -897,11 +897,22 @@ pub struct FactsRecallTrace {
 /// Read-only worker-side recall. Reads one validated, bounded character ledger;
 /// never spawns threads, extracts candidates, or writes data.
 pub fn context_from_disk(root: &Path, id: Uuid, query: &str) -> Result<Option<String>, String> {
+    context_from_disk_traced(root, id, query).map(|(context, _)| context)
+}
+/// Same worker-side selection, with bounded diagnostics for the exact context.
+/// Disabled ledgers have no trace. No raw query, file writes or extra workers.
+pub fn context_from_disk_traced(
+    root: &Path,
+    id: Uuid,
+    query: &str,
+) -> Result<(Option<String>, Option<FactsRecallTrace>), String> {
     let d = read(root, id)?;
     Ok(if d.settings.enabled {
-        recall_traced(id, &d.records, query).and_then(|(context, _)| context)
+        recall_traced(id, &d.records, query)
+            .map(|(context, trace)| (context, Some(trace)))
+            .unwrap_or_default()
     } else {
-        None
+        (None, None)
     })
 }
 /// `None` only when quoting fails; the trace is then discarded with the context.
@@ -1463,6 +1474,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("facts-read-only-{}", Uuid::new_v4()));
         let id = Uuid::new_v4();
         assert!(context_from_disk(&root, id, "tea").unwrap().is_none());
+        assert_eq!(
+            context_from_disk_traced(&root, id, "tea").unwrap(),
+            (None, None)
+        );
         assert!(
             !root.exists(),
             "read-only recall must not create directories"
@@ -1484,6 +1499,9 @@ mod tests {
             context_from_disk(&root, id, "tea").unwrap(),
             s.context("tea")
         );
+        let (context, trace) = context_from_disk_traced(&root, id, "tea").unwrap();
+        assert_eq!(context, s.context("tea"));
+        assert_eq!(trace, s.latest_trace());
         assert!(
             context_from_disk(&root, Uuid::new_v4(), "tea")
                 .unwrap()

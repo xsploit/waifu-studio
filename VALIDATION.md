@@ -245,3 +245,13 @@ The opt-in reply metadata schema now accepts fear and disgust alongside the exis
 Offline regressions cover parse/identity, every marker split for both emotions, saved-mood round-trips, custom-expression matches, missing-expression behavior and manual priority. A motion-state test checks both new labels use the user's scanned binding with no decision request. Live facial appearance remains unaccepted. Existing saved labels remain unchanged and the feature stays opt-in.
 
 Final checks: 400 library + 88 app + 6 integration + 1 benchmark = 495 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. No new external-model review or live GUI acceptance is claimed.
+
+## Scene memory recall inspection and request ordering
+
+Group chat now transports bounded note/evidence recall traces from the scene worker to a collapsed, per-recipient inspector. It retains at most four recipients from the latest successfully started submit, resets on the next submit, and keeps focused-chat inspectors independent. Diagnostics retain existing bounded IDs, scores, matched terms and selection/exclusion counts, never raw queries or record text; nothing is saved or sent to providers. The panel labels these as prepared context, not proof of request delivery or successful replies, since later validation/network errors can still occur. Cancel drops the event receiver, preventing late workers from publishing new traces; already observed traces remain inspectable.
+
+Scene prompts now keep persona and up to 38 previous history messages ahead of query-dependent notes/evidence, then append the latest user message. Recalled data remains in user-role messages and never enters saved history. This preserves the existing conversation prefix when recall changes, as focused chat already does; no provider cache-hit or latency improvement is claimed without live measurements.
+
+Offline coverage checks stable prefix/order/history bounds, user-role recall isolation, worker-side traced recall matching the existing prompt and inspector trace, disabled/missing ledgers creating no files, and the real scene worker's two isolated recipient traces against local fake streaming requests. GUI appearance remains unaccepted.
+
+Final checks: 401 library + 88 app + 6 integration + 1 benchmark = 496 passing tests; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. External-model review remains unavailable through the delegation causal-hop limit; no live provider cache measurement or GUI acceptance is claimed.

@@ -34,9 +34,19 @@ pub struct SceneLine {
     pub name: String,
     pub text: String,
 }
+/// Diagnostics for one prepared recipient request in the latest scene submit.
+/// Memory-only, at most four recipients; no raw query or record text retained.
+#[derive(Clone, Debug)]
+pub struct SceneRecall {
+    pub character: Uuid,
+    pub name: String,
+    pub notes: Option<crate::memory::RecallTrace>,
+    pub facts: Option<crate::facts_memory::FactsRecallTrace>,
+}
 #[derive(Debug)]
 enum Event {
     Routed(Result<Option<Uuid>, String>),
+    Recall(Box<SceneRecall>),
     Progress(String, String),
     Line(SceneLine),
     Speech(Uuid, VoiceConfig, String),
@@ -56,6 +66,7 @@ pub struct SceneChat {
     pub status: String,
     pub partial: String,
     pub cancellation_revision: u64,
+    recalls: Vec<SceneRecall>,
     routing_snapshot: Option<RoutingSnapshot>,
     root: PathBuf,
     cancellation: Option<Arc<AtomicBool>>,
@@ -166,6 +177,7 @@ impl SceneChat {
             status: "Choose recipients for a scene message".into(),
             partial: String::new(),
             cancellation_revision: 0,
+            recalls: Vec::new(),
             routing_snapshot: None,
             root,
             cancellation: None,
@@ -173,6 +185,9 @@ impl SceneChat {
             active_recipients: vec![],
             speech: VecDeque::new(),
         }
+    }
+    pub fn recalls(&self) -> &[SceneRecall] {
+        &self.recalls
     }
     pub fn is_busy(&self) -> bool {
         self.cancellation.is_some()
@@ -330,6 +345,7 @@ impl SceneChat {
         self.cancellation = Some(cancel);
         self.events = Some(Mutex::new(rx));
         self.active_recipients = ids;
+        self.recalls.clear();
         self.transcript.push_back(SceneLine {
             character: None,
             name: "You".into(),
@@ -360,6 +376,12 @@ impl SceneChat {
             .unwrap_or_default();
         for event in events {
             match event {
+                Event::Recall(trace) => {
+                    if self.active_recipients.contains(&trace.character) && self.recalls.len() < 4 {
+                        self.recalls.retain(|r| r.character != trace.character);
+                        self.recalls.push(*trace);
+                    }
+                }
                 Event::Routed(result) => {
                     self.cancellation = None;
                     self.events = None;
@@ -441,6 +463,8 @@ fn request_context(
         role: "system".into(),
         content: persona.into(),
     }];
+    // Keep query-dependent recall after the stable conversation prefix.
+    context.extend(history.iter().rev().take(38).rev().cloned());
     if let Some(content) = notes {
         context.push(Turn {
             role: "user".into(),
@@ -453,7 +477,6 @@ fn request_context(
             content,
         });
     }
-    context.extend(history.iter().rev().take(38).rev().cloned());
     context.push(Turn {
         role: "user".into(),
         content: text.into(),
@@ -491,19 +514,24 @@ fn run(
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let evidence =
-            crate::facts_memory::context_from_disk(&root.join("facts-memory"), recipient.id, &text)
-                .map_err(|_| "Cannot load recipient evidence ledger; scene request stopped")?;
+        let (evidence, facts_trace) = crate::facts_memory::context_from_disk_traced(
+            &root.join("facts-memory"),
+            recipient.id,
+            &text,
+        )
+        .map_err(|_| "Cannot load recipient evidence ledger; scene request stopped")?;
         if cancel.load(Ordering::Acquire) {
             return Ok(());
         }
-        let context = request_context(
-            &recipient.persona,
-            &history,
-            &text,
-            memory.context(&text),
-            evidence,
-        );
+        let notes = memory.context(&text);
+        tx.send(Event::Recall(Box::new(SceneRecall {
+            character: recipient.id,
+            name: recipient.name.clone(),
+            notes: memory.latest_trace(),
+            facts: facts_trace,
+        })))
+        .map_err(|_| "Scene closed")?;
+        let context = request_context(&recipient.persona, &history, &text, notes, evidence);
         let (provider_tx, provider_rx) = mpsc::channel();
         let job = provider::spawn_chat(recipient.provider, context, provider_tx);
         // Reserve one final event for this and each later voiced recipient.
@@ -585,6 +613,42 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn query_dependent_recall_preserves_scene_history_prefix_and_stays_untrusted() {
+        let history: Vec<_> = (0..50)
+            .map(|i| Turn {
+                role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("history {i}"),
+            })
+            .collect();
+        let first = request_context(
+            "persona",
+            &history,
+            "tea?",
+            Some("tea note".into()),
+            Some("tea fact".into()),
+        );
+        let second = request_context(
+            "persona",
+            &history,
+            "coffee?",
+            Some("coffee note".into()),
+            Some("coffee fact".into()),
+        );
+        assert_eq!(first.len(), 42);
+        assert_eq!(first[1].content, "history 12");
+        for (a, b) in first[..39].iter().zip(&second[..39]) {
+            assert_eq!(a.role, b.role);
+            assert_eq!(a.content, b.content);
+        }
+        assert_eq!(first[38].content, "history 49");
+        assert_eq!(first[39].content, "tea note");
+        assert_eq!(first[40].content, "tea fact");
+        assert_eq!(first[41].content, "tea?");
+        assert!(first[39..].iter().all(|t| t.role == "user"));
+        assert_eq!(history.len(), 50);
+    }
+
     #[test]
     fn full_scene_worker_streams_isolated_recipients_over_local_http() {
         use std::io::{Read, Write};
@@ -761,6 +825,14 @@ mod tests {
             saw_partial,
             "actual SSE deltas should reach partial UI state"
         );
+        assert_eq!(chat.recalls().len(), 2);
+        for (trace, expected) in chat.recalls().iter().zip([a, b]) {
+            assert_eq!(trace.character, expected);
+            assert_eq!(trace.notes.as_ref().unwrap().character, expected);
+            assert_eq!(trace.facts.as_ref().unwrap().character, expected);
+            assert!(trace.notes.as_ref().unwrap().bytes_inserted > 0);
+            assert!(trace.facts.as_ref().unwrap().bytes_inserted > 0);
+        }
         let requests = server.join().unwrap();
         let alice = requests[0].to_string();
         let bob = requests[1].to_string();
@@ -876,7 +948,9 @@ mod tests {
         );
         assert!(!context.iter().any(|t| t.content.contains("Alice")));
         assert_eq!(context[0].content, "Bob persona");
-        assert_eq!(context[1].content, "Bob note");
+        assert_eq!(context[1].content, "Bob-only history");
+        assert_eq!(context[2].content, "Bob note");
+        assert_eq!(context[3].content, "Bob evidence");
         assert_eq!(context.last().unwrap().content, "shared question");
         assert_eq!(
             store.history(b).unwrap().len(),

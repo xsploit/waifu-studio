@@ -61,6 +61,42 @@ pub fn ui(
     if !chat.partial.is_empty() {
         ui.label(&chat.partial);
     }
+    egui::CollapsingHeader::new("Latest scene recall")
+        .id_salt("scene_recall")
+        .show(ui, |ui| {
+            ui.small("Memory prepared for the latest scene requests. This does not confirm provider delivery or a successful reply. Traces stay in this session; focused-chat inspectors are separate.");
+            if chat.recalls().is_empty() {
+                ui.weak("No scene recall prepared yet.");
+            }
+            for recall in chat.recalls() {
+                ui.push_id(recall.character, |ui| {
+                    egui::CollapsingHeader::new(&recall.name).show(ui, |ui| {
+                        ui.strong("Local notes");
+                        if let Some(trace) = &recall.notes {
+                            ui.small(format!("{} terms · {} bytes · {} unmatched · {} over budget · {} over limit",
+                                trace.query_terms, trace.bytes_inserted, trace.unmatched, trace.over_budget, trace.over_limit));
+                            for hit in &trace.hits {
+                                ui.label(format!("{} · score {} · {} · {:?}",
+                                    &hit.note.to_string()[..8], hit.score,
+                                    if hit.pinned { "pinned".into() } else { hit.matched_terms.join(", ") },
+                                    hit.outcome)).on_hover_text(hit.note.to_string());
+                            }
+                        } else { ui.weak("Notes disabled or unavailable."); }
+                        ui.strong("Evidence ledger");
+                        if let Some(trace) = &recall.facts {
+                            ui.small(format!("{} terms · {} bytes · {} unmatched · {} corrected · {} expired · {} over budget · {} over limit",
+                                trace.query_terms, trace.bytes_inserted, trace.unmatched, trace.superseded,
+                                trace.expired, trace.over_budget, trace.over_limit));
+                            for hit in &trace.hits {
+                                ui.label(format!("{} · {:?} · score {} · {} · {:?}",
+                                    &hit.record.to_string()[..8], hit.kind, hit.score,
+                                    hit.matched_terms.join(", "), hit.outcome)).on_hover_text(hit.record.to_string());
+                            }
+                        } else { ui.weak("Evidence recall disabled or unavailable."); }
+                    });
+                });
+            }
+        });
     egui::ScrollArea::vertical()
         .id_salt("scene_transcript")
         .max_height(260.0)
