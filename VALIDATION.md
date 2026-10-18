@@ -194,3 +194,14 @@ Studio, scene speech and `bench_pipeline` now share one sentence splitter; Studi
 A new 24-row authenticated Low-latency run compared Drama3 and S2.1 Pro across WS/HTTP/SSE/buffered, with three repeats, real chat-worker events, 16 ms polling and the configured proxy. 24/24 succeeded and all chat workers closed. S2.1 Pro HTTP had a 1336 ms median first decoded audio in this sample; the target remains unmet. See benchmarks/RESULTS.md for the complete table, mode-dependent draining scopes and short-reply limitations. These are decoder observations, not physical speaker or interactive desktop acceptance.
 
 Final shared-scheduler checks: 384 library + 83 app + 6 integration + 1 benchmark test = 474 passing tests; all-target clippy with warnings denied and package formatting pass. Builds used one job to limit local resource use.
+
+
+## Microphone anti-aliasing and endpoint hysteresis
+
+Nearest-neighbor conversion was replaced with a causal polyphase windowed-sinc filter. The filter preserves state and partial stereo frames across callbacks, bypasses conversion at native 16 kHz, and allocates its bounded coefficient/history buffers before recording. Supported microphone rates are 4–384 kHz. Synthetic tests retain 1 kHz and 6 kHz signals, reject 8.5 kHz and 12 kHz input energy at 44.1/48/96/192/384 kHz, and check 8 kHz upsampling image rejection. Split callback output is byte-identical to whole-buffer conversion.
+
+Energy endpointing requires 30 ms of sustained onset, then holds speech at 70% of the onset level. Silero requires two consecutive 512-sample frames (64 ms) and uses a lower hold probability that preserves the UI's full threshold range. A 10 ms click no longer arms endpointing; tests retain quiet speech and still stop on configured trailing silence. All audio is retained during onset confirmation. Silence presets and the 30-second cap are unchanged.
+
+These are offline signal/state-machine checks, not microphone-device acceptance or measured ASR accuracy gains. The causal FIR adds approximately 1.3–16 ms of group delay depending on input rate, with native 16 kHz bypassed; energy endpoint decisions also use 10 ms windows. Physical capture, noise tuning and full conversational round-trip acceptance remain open. No recording, upload or paid call was made for this slice.
+
+Final checks: 390 library + 83 app + 6 integration + 1 benchmark = 480 passing tests; all-target warnings-denied clippy, package formatting and diff whitespace checks pass. Builds used one job. A requested Fable review could not start because the orchestrator rejected dispatch at its automated causal-hop limit; no new Fable review is claimed.

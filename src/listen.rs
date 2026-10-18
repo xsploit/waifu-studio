@@ -1,6 +1,7 @@
 //! Explicit microphone recording with OpenAI-compatible, Fish and Vercel transcription.
 //! VAD uses local energy or optional Silero ONNX inference. Audio is
-//! downmixed and nearest-neighbor resampled to 16 kHz (no anti-alias filter).
+//! downmixed and band-limited to 16 kHz with a streaming polyphase FIR resampler.
+mod resample;
 use base64::Engine;
 use cpal::{
     Sample,
@@ -281,13 +282,15 @@ impl Drop for ListeningState {
 }
 struct Recording {
     samples: Vec<i16>,
-    phase: u64,
-    source_rate: u32,
+    resampler: resample::Resampler,
+    channel_sum: f32,
+    channel_fill: usize,
     channels: usize,
     threshold: f32,
     silence_limit: usize,
     silence: usize,
     speech: bool,
+    onset: usize,
     done: bool,
     neural: bool,
     energy: f64,
@@ -297,13 +300,19 @@ impl Recording {
     fn new(rate: u32, channels: usize, c: &ListenConfig) -> Self {
         Self {
             samples: Vec::with_capacity(MAX_SAMPLES),
-            phase: 0,
-            source_rate: rate,
+            resampler: resample::Resampler::new(rate),
+            channel_sum: 0.0,
+            channel_fill: 0,
             channels,
-            threshold: c.vad_threshold,
+            threshold: if c.vad_threshold.is_finite() {
+                c.vad_threshold.clamp(0.0001, 1.0)
+            } else {
+                0.015
+            },
             silence_limit: RATE * c.trailing_silence_ms.clamp(200, 5000) as usize / 1000,
             silence: 0,
             speech: false,
+            onset: 0,
             done: false,
             neural: false,
             energy: 0.,
@@ -314,33 +323,35 @@ impl Recording {
     where
         f32: cpal::FromSample<T>,
     {
-        for frame in data.chunks_exact(self.channels) {
+        for sample in data {
             if self.done {
                 break;
             }
-            self.phase += RATE as u64;
-            if self.phase < self.source_rate as u64 {
+            self.channel_sum += f32::from_sample(*sample);
+            self.channel_fill += 1;
+            if self.channel_fill != self.channels {
                 continue;
             }
-            let value =
-                frame.iter().map(|x| f32::from_sample(*x)).sum::<f32>() / self.channels as f32;
+            let value = self.channel_sum / self.channels as f32;
+            self.channel_sum = 0.0;
+            self.channel_fill = 0;
             let value = if value.is_finite() {
-                value.clamp(-1., 1.)
+                value.clamp(-1.0, 1.0)
             } else {
-                0.
+                0.0
             };
-            while self.phase >= self.source_rate as u64 && !self.done {
-                self.phase -= self.source_rate as u64;
+            let (output, count) = self.resampler.push(value);
+            for &value in &output[..count] {
+                if self.done {
+                    break;
+                }
                 self.samples.push((value * i16::MAX as f32) as i16);
                 self.energy += (value as f64).powi(2);
                 self.window += 1;
                 if self.window == 160 {
-                    let loud = (self.energy / 160.).sqrt() >= self.threshold as f64;
-                    if !self.neural && loud {
-                        self.speech = true;
-                        self.silence = 0;
-                    } else if !self.neural && self.speech {
-                        self.silence += 160;
+                    if !self.neural {
+                        let rms = (self.energy / 160.).sqrt() as f32;
+                        self.activity(rms >= self.threshold, rms >= self.threshold * 0.7, 160, 480);
                     }
                     self.energy = 0.;
                     self.window = 0;
@@ -350,6 +361,35 @@ impl Recording {
             }
         }
     }
+    /// Require sustained onset before arming automatic endpointing. Once armed,
+    /// a lower hold threshold avoids chattering on quiet syllables.
+    fn activity(&mut self, onset: bool, hold: bool, frames: usize, minimum: usize) {
+        if !self.speech {
+            self.onset = if onset {
+                self.onset.saturating_add(frames)
+            } else {
+                0
+            };
+            if self.onset >= minimum {
+                self.speech = true;
+                self.silence = 0;
+            }
+        } else if hold {
+            self.silence = 0;
+        } else {
+            self.silence = self.silence.saturating_add(frames);
+        }
+    }
+}
+fn neural_thresholds(value: f32) -> (f32, f32) {
+    let onset = if value.is_finite() {
+        value.clamp(0.01, 1.0)
+    } else {
+        0.5
+    };
+    // Preserve the full UI range; the hold level must stay below even a very
+    // low explicit onset threshold, and silence (probability zero) never holds.
+    (onset, (onset - 0.15).max(onset * 0.5))
 }
 fn capture(
     c: &ListenConfig,
@@ -400,7 +440,7 @@ fn capture(
         .map_err(|_| "Cannot read microphone format")?;
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
-    if config.channels == 0 || config.sample_rate == 0 {
+    if config.channels == 0 || !(4000..=384_000).contains(&config.sample_rate) {
         return Err("Invalid microphone format".into());
     }
     let data = Arc::new(Mutex::new(Recording::new(
@@ -463,12 +503,8 @@ fn capture(
             let mut d = data.lock().map_err(|_| "Microphone buffer failed")?;
             match result {
                 Ok(p) => {
-                    if p >= c.silero_threshold {
-                        d.speech = true;
-                        d.silence = 0;
-                    } else if d.speech {
-                        d.silence += 512;
-                    }
+                    let (onset, hold) = neural_thresholds(c.silero_threshold);
+                    d.activity(p >= onset, p >= hold, 512, 1024);
                     if d.speech && d.silence >= d.silence_limit {
                         d.done = true;
                     }
@@ -476,6 +512,7 @@ fn capture(
                 Err(error) => {
                     d.neural = false;
                     d.silence = 0;
+                    d.onset = 0;
                     silero = None;
                     silero_failed = true;
                     if let Ok(mut status) = vad_status.lock() {
@@ -747,8 +784,17 @@ mod tests {
         r.feed(&vec![0f32; 48000]);
         assert!(!r.done);
         r.feed(&vec![0.2f32; 4800]);
-        r.feed(&vec![0f32; 20000]);
-        assert!(r.speech && r.done);
+        // Include FIR settling plus the 10 ms energy-window quantization.
+        r.feed(&vec![0f32; 24000]);
+        assert!(
+            r.speech && r.done,
+            "speech={} done={} samples={} onset={} silence={}",
+            r.speech,
+            r.done,
+            r.samples.len(),
+            r.onset,
+            r.silence
+        );
         assert!(r.samples.len() < MAX_SAMPLES);
         let mut r = Recording::new(16000, 1, &c);
         r.feed(&vec![0f32; MAX_SAMPLES + 100]);
@@ -950,5 +996,133 @@ mod tests {
             "Transcription provider returned HTTP 401"
         );
         task.join().unwrap();
+    }
+    fn resampled_tone(rate: u32, frequency: f32) -> Vec<i16> {
+        let mut recording = Recording::new(rate, 1, &ListenConfig::default());
+        recording.neural = true;
+        let signal: Vec<f32> = (0..rate / 4)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * frequency * i as f32 / rate as f32).sin())
+            .collect();
+        recording.feed(&signal);
+        assert_eq!(recording.samples.len(), RATE / 4);
+        recording.samples
+    }
+    fn rms(samples: &[i16]) -> f64 {
+        (samples
+            .iter()
+            .map(|&v| (v as f64 / i16::MAX as f64).powi(2))
+            .sum::<f64>()
+            / samples.len() as f64)
+            .sqrt()
+    }
+    #[test]
+    fn resampler_retains_speech_band_and_rejects_out_of_band_aliasing() {
+        for rate in [44_100, 48_000, 96_000, 192_000, 384_000] {
+            for frequency in [1000.0, 6000.0] {
+                let pass = resampled_tone(rate, frequency);
+                assert!(
+                    (rms(&pass[200..]) - 0.35355).abs() < 0.005,
+                    "passband {frequency} Hz at {rate}"
+                );
+            }
+            for frequency in [8500.0, 12_000.0] {
+                let reject = resampled_tone(rate, frequency);
+                assert!(
+                    rms(&reject[200..]) < 0.002,
+                    "alias rejection {frequency} Hz at {rate}: {}",
+                    rms(&reject[200..])
+                );
+            }
+        }
+    }
+    #[test]
+    fn resampler_preserves_stereo_frames_and_filter_history_across_arbitrary_callbacks() {
+        let source: Vec<f32> = (0..8820)
+            .flat_map(|i| {
+                let sample = 0.3 * (i as f32 * 0.17).sin();
+                [sample, sample * 0.5]
+            })
+            .collect();
+        let mut whole = Recording::new(44_100, 2, &ListenConfig::default());
+        let mut split = Recording::new(44_100, 2, &ListenConfig::default());
+        whole.neural = true;
+        split.neural = true;
+        whole.feed(&source);
+        for chunk in source.chunks(137) {
+            split.feed(chunk);
+        }
+        assert_eq!(whole.samples.len(), 3200);
+        assert_eq!(split.samples, whole.samples);
+    }
+    #[test]
+    fn resampler_upsamples_without_images_and_native_rate_is_exact() {
+        let samples = resampled_tone(8000, 1000.0);
+        assert!((rms(&samples[300..]) - 0.35355).abs() < 0.005);
+        let samples = &samples[400..];
+        let amplitude = |frequency: f64| {
+            let (mut real, mut imag) = (0.0, 0.0);
+            for (i, &sample) in samples.iter().enumerate() {
+                let phase = 2.0 * std::f64::consts::PI * frequency * i as f64 / RATE as f64;
+                real += sample as f64 * phase.cos();
+                imag += sample as f64 * phase.sin();
+            }
+            (real.hypot(imag) * 2.0 / samples.len() as f64) / i16::MAX as f64
+        };
+        assert!(amplitude(1000.0) > 0.49);
+        assert!(amplitude(7000.0) < 0.002);
+        let mut recording = Recording::new(16_000, 1, &ListenConfig::default());
+        recording.neural = true;
+        recording.feed(&[0.25_f32, -0.5, 1.0, f32::NAN]);
+        assert_eq!(recording.samples, [8191, -16383, 32767, 0]);
+    }
+    #[test]
+    fn endpointing_ignores_short_clicks_and_holds_quiet_syllables() {
+        let config = ListenConfig {
+            trailing_silence_ms: 200,
+            vad_threshold: 0.02,
+            ..Default::default()
+        };
+        let mut recording = Recording::new(16_000, 1, &config);
+        recording.feed(&[0.8_f32; 160]);
+        recording.feed(&[0.0_f32; 4000]);
+        assert!(
+            !recording.speech && !recording.done,
+            "one click must not arm endpointing"
+        );
+        recording.feed(&[0.1_f32; 480]);
+        assert!(recording.speech);
+        recording.feed(&[0.016_f32; 4000]);
+        assert!(
+            !recording.done && recording.silence == 0,
+            "hold threshold retains quiet speech"
+        );
+        recording.feed(&[0.0_f32; 3200]);
+        assert!(
+            recording.done,
+            "configured trailing silence still ends recording"
+        );
+    }
+    #[test]
+    fn neural_endpointing_requires_sustained_onset_and_respects_hold_threshold() {
+        let mut recording = Recording::new(16_000, 1, &ListenConfig::default());
+        recording.activity(true, true, 512, 1024);
+        recording.activity(false, false, 512, 1024);
+        assert!(!recording.speech);
+        recording.activity(true, true, 512, 1024);
+        recording.activity(true, true, 512, 1024);
+        assert!(recording.speech);
+        recording.activity(false, true, 512, 1024);
+        assert_eq!(recording.silence, 0);
+        recording.activity(false, false, 512, 1024);
+        assert_eq!(recording.silence, 512);
+    }
+    #[test]
+    fn neural_hysteresis_preserves_low_threshold_settings_and_never_holds_silence() {
+        for value in [0.01, 0.05, 0.5, 0.99, 1.0] {
+            let (onset, hold) = neural_thresholds(value);
+            assert_eq!(onset, value);
+            assert!(hold > 0.0 && hold < onset);
+        }
+        assert_eq!(neural_thresholds(f32::NAN).0, 0.5);
     }
 }
