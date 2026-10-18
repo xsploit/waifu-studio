@@ -61,3 +61,5 @@ pub mod model_catalog;
 pub mod vercel_speech;
 
 pub mod reply_speech;
+
+mod recall_terms;

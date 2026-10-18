@@ -218,3 +218,14 @@ Offline tests cover rotation, duplicate/missing/locomotion rejection, cooldown s
 Reply affect is intentionally trailing metadata. Emotion-mapped motion therefore starts after completion, not necessarily at speech onset; waiting for that metadata before speech would conflict with the first-audio latency goal. No prose-based emotion guess or extra classifier was added.
 
 Final checks: 391 library + 87 app + 6 integration + 1 benchmark = 485 passing tests; warnings-denied all-target clippy, package formatting and diff whitespace checks pass. The strengthened avatar-reset regression also passes. Builds used one job. No new external-model review or live GUI acceptance is claimed for this slice.
+
+
+## Lexical recall quality
+
+Notes and facts now share a lexical term policy: distinct query terms, common English function-word filtering, punctuation/possessive/contraction normalization, short identifiers and numbers retained, and explicit negation preserved. Latin-script note matching uses whole tokens, so tea no longer selects steak. Common Chinese/Japanese/Korean-script queries retain substring matching for unspaced writing; this is not a multilingual segmenter or semantic inference.
+
+Query scanning is bounded to the first 16 KiB at UTF-8/word boundaries, then at most 64 distinct content terms. Oversized partial tokens are dropped, never turned into prefix matches. Pinned-note priority, facts recency ties, correction/expiry exclusion, six-record limits, existing prompt byte budgets and quoted untrusted-data formatting remain unchanged. The trace shows the terms actually used. This deliberately changes which evidence is selected for previously noisy/short-term queries; historical trace-format oracle tests remain unchanged for unaffected fixtures.
+
+Offline regressions cover tea/steak separation, common-word-only queries, VR/AI/NY and numeric terms, duplicate-query terms, contraction negation, preserved pinned notes, unspaced Japanese text, bounded long UTF-8 inputs and exact trace scores. No inference requests or storage migration are added. Dataset-level recall accuracy and interactive acceptance remain unmeasured.
+
+Final checks: 398 library + 87 app + 6 integration + 1 benchmark = 492 passing tests. After the final irregular-contraction cleanup, all 50 targeted memory/term tests pass; warnings-denied all-target Clippy, package formatting and diff whitespace checks pass. Builds used one job. Fable review dispatch was rejected by the orchestration causal-hop limit; no external-model review is claimed.

@@ -196,7 +196,7 @@ impl MemoryState {
         self.save(d)
     }
     /// This belongs in a user/data message, never in system instructions.
-    /// Also replaces the in-memory latest recall trace; the prompt bytes are unaffected.
+    /// Also replaces the in-memory latest recall trace; trace fields are never added to the prompt.
     pub fn context(&self, query: &str) -> Option<String> {
         self.context_with_mode(query, RecallMode::Lexical)
     }
@@ -221,22 +221,20 @@ impl MemoryState {
     }
     fn recall(&self, query: &str) -> Option<(Option<String>, RecallTrace)> {
         let character = self.selected?;
-        let words: Vec<String> = query
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .filter(|s| s.len() > 2)
-            .take(64)
-            .collect();
+        let words = crate::recall_terms::query_terms(query);
         let mut unmatched = 0;
         let mut ranked: Vec<_> = self
             .notes
             .iter()
             .filter_map(|n| {
-                let lower = n.text.to_lowercase();
-                let score = words.iter().filter(|w| lower.contains(w.as_str())).count();
+                let tokens = crate::recall_terms::content_terms(&n.text);
+                let score = words
+                    .iter()
+                    .filter(|w| crate::recall_terms::matches(&tokens, w))
+                    .count();
                 let keep = n.pinned || score > 0;
                 unmatched += usize::from(!keep);
-                keep.then_some((n, score, lower))
+                keep.then_some((n, score, tokens))
             })
             .collect();
         ranked.sort_by(|a, b| b.0.pinned.cmp(&a.0.pinned).then_with(|| b.1.cmp(&a.1)));
@@ -253,7 +251,7 @@ impl MemoryState {
             over_limit: ranked.len().saturating_sub(MAX_INSERTED),
             bytes_inserted: 0,
         };
-        for (index, (note, score, lower)) in ranked.into_iter().enumerate() {
+        for (index, (note, score, tokens)) in ranked.into_iter().enumerate() {
             let outcome = if index >= MAX_INSERTED {
                 RecallOutcome::OverLimit
             } else {
@@ -278,7 +276,7 @@ impl MemoryState {
                     pinned: note.pinned,
                     matched_terms: words
                         .iter()
-                        .filter(|w| lower.contains(w.as_str()))
+                        .filter(|w| crate::recall_terms::matches(&tokens, w))
                         .take(MAX_TRACE_TERMS)
                         .map(|w| w.chars().take(MAX_TERM_CHARS).collect())
                         .collect(),
@@ -650,5 +648,36 @@ mod tests {
         // None avoids a worker load, keeping this test free of disk I/O.
         s.select_character(None);
         assert_eq!(s.latest_trace(), None);
+    }
+    #[test]
+    fn lexical_recall_uses_content_words_exact_tokens_and_short_identifiers() {
+        let state = fixture(&[
+            ("Steak for dinner", false),
+            ("Green tea", false),
+            ("Pinned unrelated", true),
+            ("VR headset uses 2 displays", false),
+            ("猫が好き", false),
+        ]);
+        assert!(state.context("猫").unwrap().contains("猫が好き"));
+        let context = state.context("Tea?").unwrap();
+        assert!(context.contains("Green tea") && !context.contains("Steak"));
+        assert!(context.contains("Pinned unrelated"));
+        let context = state
+            .context("What is the VR setup with 2 displays?")
+            .unwrap();
+        assert!(
+            context.contains("VR headset")
+                && !context.contains("Steak")
+                && !context.contains("Green tea")
+        );
+        let context = state.context("the and your").unwrap();
+        assert!(context.contains("Pinned unrelated") && !context.contains("VR headset"));
+        state.context("tea tea tea headset displays");
+        let trace = state.latest_trace().unwrap();
+        assert_eq!(trace.query_terms, 3);
+        assert!(trace.hits[0].pinned);
+        assert_eq!(trace.hits[1].score, 2);
+        assert_eq!(trace.hits[1].matched_terms, ["headset", "displays"]);
+        assert_eq!(trace.hits[2].score, 1);
     }
 }

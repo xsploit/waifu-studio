@@ -813,7 +813,7 @@ impl FactsMemoryState {
         }
     }
     /// Append as a separate untrusted user/data message, never as system instructions.
-    /// Also replaces the in-memory latest recall trace; the prompt bytes are unaffected.
+    /// Also replaces the in-memory latest recall trace; trace fields are never added to the prompt.
     pub fn context(&self, query: &str) -> Option<String> {
         if !self.enabled || !self.loaded || self.busy {
             return None;
@@ -910,11 +910,8 @@ fn recall_traced(
     records: &[MemoryRecord],
     query: &str,
 ) -> Option<(Option<String>, FactsRecallTrace)> {
-    let words: HashSet<_> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() > 2)
-        .take(64)
-        .map(str::to_lowercase)
+    let words: HashSet<_> = crate::recall_terms::query_terms(query)
+        .into_iter()
         .collect();
     let superseded: HashSet<_> = records.iter().filter_map(|r| r.supersedes).collect();
     let mut trace = FactsRecallTrace {
@@ -942,12 +939,11 @@ fn recall_traced(
             }
         })
         .filter_map(|r| {
-            let tokens: HashSet<_> = r
-                .text
-                .split(|c: char| !c.is_alphanumeric())
-                .map(str::to_lowercase)
-                .collect();
-            let score = words.intersection(&tokens).count();
+            let tokens = crate::recall_terms::content_terms(&r.text);
+            let score = words
+                .iter()
+                .filter(|word| crate::recall_terms::matches(&tokens, word))
+                .count();
             trace.unmatched += usize::from(score == 0);
             (score > 0).then_some((score, r, tokens))
         })
@@ -986,7 +982,10 @@ fn recall_traced(
             }
         };
         if trace.hits.len() < MAX_TRACE_HITS {
-            let mut matched: Vec<_> = words.intersection(&tokens).collect();
+            let mut matched: Vec<_> = words
+                .iter()
+                .filter(|word| crate::recall_terms::matches(&tokens, word))
+                .collect();
             matched.sort();
             trace.hits.push(FactsRecallHit {
                 record: r.id,
@@ -2472,5 +2471,29 @@ mod tests {
         assert_eq!(reopen(&root, a).candidates().len(), 2);
         assert!(read(&root, b).unwrap().records.is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn evidence_recall_ignores_function_words_and_keeps_short_terms_and_negation() {
+        let state = fixture(vec![
+            record(1, "The weather in the garden", None, None),
+            record(2, "VR headset has 2 displays", None, None),
+            record(3, "I like honey", None, None),
+            record(4, "I do not like honey", None, None),
+        ]);
+        assert!(
+            state
+                .context("what is the weather?")
+                .unwrap()
+                .contains("garden")
+        );
+        assert!(state.context("the in your").is_none());
+        let context = state.context("VR 2").unwrap();
+        assert!(context.contains("VR headset") && !context.contains("garden"));
+        assert_eq!(state.latest_trace().unwrap().query_terms, 2);
+        let context = state.context("Don't use honey").unwrap();
+        assert!(context.find("not like honey").unwrap() < context.find("I like honey").unwrap());
+        let trace = state.latest_trace().unwrap();
+        assert_eq!(trace.hits[0].matched_terms, ["honey", "not"]);
+        assert_eq!(trace.hits[0].score, 2);
     }
 }
