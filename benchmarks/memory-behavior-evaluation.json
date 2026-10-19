@@ -1,0 +1,71 @@
+{
+  "evaluation": "synthetic production lexical evidence recall",
+  "passed": 8,
+  "results": [
+    {
+      "expected_record_count": 1,
+      "passed": true,
+      "query": "tea",
+      "retrieved_record_count": 1,
+      "scenario": "literal preference"
+    },
+    {
+      "expected_record_count": 1,
+      "passed": false,
+      "query": "What beverage do I enjoy?",
+      "retrieved_record_count": 0,
+      "scenario": "paraphrased preference"
+    },
+    {
+      "expected_record_count": 0,
+      "passed": true,
+      "query": "bicycle maintenance",
+      "retrieved_record_count": 0,
+      "scenario": "unrelated query"
+    },
+    {
+      "expected_record_count": 1,
+      "passed": true,
+      "query": "coffee",
+      "retrieved_record_count": 1,
+      "scenario": "corrected preference"
+    },
+    {
+      "expected_record_count": 0,
+      "passed": true,
+      "query": "tea",
+      "retrieved_record_count": 0,
+      "scenario": "superseded claim excluded"
+    },
+    {
+      "expected_record_count": 0,
+      "passed": true,
+      "query": "tea coffee",
+      "retrieved_record_count": 0,
+      "scenario": "forget does not resurrect old preference"
+    },
+    {
+      "expected_record_count": 1,
+      "passed": true,
+      "query": "peanuts",
+      "retrieved_record_count": 1,
+      "scenario": "literal restriction"
+    },
+    {
+      "expected_record_count": 0,
+      "passed": true,
+      "query": "peanuts",
+      "retrieved_record_count": 0,
+      "scenario": "expired record excluded"
+    },
+    {
+      "expected_record_count": 0,
+      "passed": true,
+      "query": "tea coffee peanuts",
+      "retrieved_record_count": 0,
+      "scenario": "other character isolation"
+    }
+  ],
+  "scope": "retrieval and ledger mutation only; no LLM understanding, episodic memory, embeddings or live acceptance",
+  "total": 9
+}

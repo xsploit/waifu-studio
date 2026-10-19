@@ -175,3 +175,10 @@ Retrieved, extracted and imported text all trace back to user or model output. A
 Start with a memory worker thread and the `memory`, `memory_fts` and `consent` tables. Add `/remember`, profile slots, FTS retrieval and the quoted `memory_context` block, plus an inspector with delete and wipe.
 
 This needs no embeddings, no extraction and no network. Measure that first, then add model2vec or extraction only if recall falls short.
+
+
+## Behavioral baseline — 2026-10-18
+
+`cargo run --example evaluate_memory` creates synthetic isolated data and exercises the production FactsMemoryState API without providers or credentials. Recorded result:8/9 scenarios met expectations; see `benchmarks/memory-behavior-evaluation.json`. Literal preference/restriction retrieval, unrelated-query exclusion, explicit correction, superseded-record exclusion, forgetting without resurrection, expiry and character isolation passed. The paraphrase failed: stored "I prefer green tea" was not retrieved for "What beverage do I enjoy?". This is a small deterministic fixture, not an accuracy estimate or comparison against Grillo. It evaluates retrieval/mutation only, not whether an LLM interprets a restriction or distinguishes current facts from past episodes.
+
+The measured next gap is semantic access to accepted evidence. The existing optional semantic feature indexes explicit notes, not this evidence ledger; its existence does not resolve this failure. Prefer evaluating such retrieval over adopting a new memory framework without a demonstrated benefit. Historical SQL/graph proposals above are not required by this result.
