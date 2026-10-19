@@ -471,3 +471,8 @@ Initial strict-Clippy application check exposed an egui borrow conflict; copying
 ### Synthetic memory behavior evaluation — 2026-10-18
 
 Added `examples/evaluate_memory.rs`, using production asynchronous ledger mutations and recall over random temporary synthetic data. Announced one-job low-priority `cargo run --example evaluate_memory` exited0 and reported8/9 expectation matches. Paraphrase recall failed as documented in MEMORY-OPTIONS.md and the committed benchmark JSON; it was not rewritten as a passing test. No live models, embeddings, user conversations, hardware or GUI were accessed. This is a diagnostic evaluation, not a new full-suite receipt or general memory-quality claim.
+
+
+### Reflection cancellation before send — 2026-10-18
+
+Reflection draft() now checks cancellation before endpoint/key work and again before send, and sets a60-second per-request deadline in addition to the client timeout. The request-wide deadline follows the reqwest blocking-body behavior already verified in the appraisal slice; no separate60-second drip test was run here, and DNS interruption is not promised. Cancellation after send still only discards results. New loopback regression proves a pre-cancelled call never connects. Existing cancellation test now waits for a connection before cancelling so it continues to test in-flight cleanup; character-switch test waits for the response before changing selection to prove queued results are dropped. Initial test-edit compile failure misplaced a mock-server join; restored proper joins before rerun. Final8 reflection tests passed. Strict all-target Clippy passed; no fresh full suite or live request.

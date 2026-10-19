@@ -257,6 +257,9 @@ pub fn draft(
     sources: &[ReflectionSource],
     cancel: &AtomicBool,
 ) -> Result<Option<(String, Vec<Uuid>)>, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Reflection cancelled".into());
+    }
     if sources.is_empty() || sources.len() > MAX_SOURCES {
         return Err("Reflection needs between one and twelve accepted records".into());
     }
@@ -265,9 +268,15 @@ pub fn draft(
     if key.is_empty() && !local {
         return Err("Set a reflection key or its environment variable".into());
     }
-    let mut request = client()?.post(url).json(&request_body(config, sources));
+    let mut request = client()?
+        .post(url)
+        .timeout(Duration::from_secs(60))
+        .json(&request_body(config, sources));
     if !key.is_empty() {
         request = request.bearer_auth(&key);
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Reflection cancelled".into());
     }
     let response = request
         .send()
@@ -736,10 +745,10 @@ mod tests {
         s.reflection.config.endpoint = endpoint;
         s.reflection.config.key_env.clear();
         s.start_reflection().unwrap();
+        // Cancel after connection, so this tests in-flight result rejection.
+        let (stream, _) = listener.accept().unwrap();
         s.reflection.cancel();
         assert_eq!(s.reflection.status(), &ReflectionStatus::Cancelled);
-        // The server never answers in time; dropping the listener ends the request.
-        let (stream, _) = listener.accept().unwrap();
         drop(stream);
         drop(listener);
         settle(&mut s);
@@ -748,11 +757,34 @@ mod tests {
         let (endpoint, server) = serve(reply(r#"{"reflection":"","source_ids":[]}"#).to_string());
         s.reflection.config.endpoint = endpoint;
         s.start_reflection().unwrap();
+        server.join().unwrap();
         s.select_character(None);
         assert!(matches!(s.reflection.status(), ReflectionStatus::Stale(_)));
         settle(&mut s);
-        server.join().unwrap();
         assert!(matches!(s.reflection.status(), ReflectionStatus::Stale(_)));
+    }
+
+    #[test]
+    fn cancelled_before_start_never_contacts_the_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let config = ReflectionConfig {
+            endpoint: format!(
+                "http://{}/v1/chat/completions",
+                listener.local_addr().unwrap()
+            ),
+            key_env: String::new(),
+            ..Default::default()
+        };
+        let sources = select_sources(&[record(1, RecordKind::Fact, "Likes rain")], 10);
+        assert_eq!(
+            draft(&config, &sources, &AtomicBool::new(true)).unwrap_err(),
+            "Reflection cancelled"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]
