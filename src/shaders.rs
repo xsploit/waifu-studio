@@ -531,6 +531,11 @@ fn update_outlines(
             // Vendored outline synchronization runs in Update. Mirror parameters
             // here so a PostUpdate expression has no one-frame outline lag.
             if let (Some(materials), Some(toon)) = (materials.as_mut(), toons.get(&variants.0.toon))
+                && materials.get(&handle.0).is_some_and(|outline| {
+                    outline.color != toon.outline_color
+                        || outline.width != toon.outline_width
+                        || outline.mode != toon.outline_mode
+                })
                 && let Some(mut outline) = materials.get_mut(&handle.0)
             {
                 if outline.color != toon.outline_color {
@@ -558,6 +563,78 @@ fn update_outlines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_outlines_do_not_dirty_material_assets_each_frame() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .insert_resource(Assets::<OutlineMaterial>::default())
+            .add_plugins(ShaderPreviewPlugin);
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .add(MtoonMaterial::default());
+        let root = app.world_mut().spawn(ShaderPreview).id();
+        let mesh = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(source),
+            ))
+            .id();
+        app.update();
+        let toon = app.world().get::<Variants>(mesh).unwrap().0.toon.clone();
+        let outline = app
+            .world_mut()
+            .resource_mut::<Assets<OutlineMaterial>>()
+            .add(OutlineMaterial {
+                color: Color::WHITE,
+                width: 99.,
+                mode: VrmOutlineMode::World,
+            });
+        app.world_mut().spawn((
+            ChildOf(mesh),
+            Visibility::Inherited,
+            MeshMaterial3d(outline.clone()),
+        ));
+        app.update();
+        let tick = app
+            .world()
+            .get_resource_ref::<Assets<OutlineMaterial>>()
+            .unwrap()
+            .last_changed();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get_resource_ref::<Assets<OutlineMaterial>>()
+                .unwrap()
+                .last_changed(),
+            tick,
+            "an unchanged outline must not enqueue another material upload"
+        );
+        app.world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .get_mut(&toon)
+            .unwrap()
+            .outline_width = 0.123;
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<OutlineMaterial>>()
+                .get(&outline)
+                .unwrap()
+                .width,
+            0.123
+        );
+        assert_ne!(
+            app.world()
+                .get_resource_ref::<Assets<OutlineMaterial>>()
+                .unwrap()
+                .last_changed(),
+            tick
+        );
+    }
     #[test]
     fn vrm0_authored_rim_is_seeded_and_restored_without_touching_imported_assets() {
         use crate::material_expressions::{

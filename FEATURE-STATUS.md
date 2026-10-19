@@ -62,3 +62,8 @@ Facts memory now rejects conservative filler-only duplicates and prunes expired 
 ### Settings and reply timing — 2026-10-18
 
 Advanced settings now share rounded groups, aligned label/control rows and muted hints across Voice, Connections, Scene/avatar, Memory, Tools and Tasks. Switch labels remain clickable; editors, action rows and popup multiselects retain suitable widgets. Expanded Voice, Memory and Scene layouts were checked in isolated offscreen captures, including Voice at 900 px width. The composer + menu exposes a local latest-reply timing receipt to distinguish preparation, request/headers, first provider text, consumption, text layout and synchronous history saving. This is diagnostic instrumentation, not a measured live latency improvement. See VALIDATION.md for the 577-test receipt and its limits.
+
+
+### Runtime efficiency — 2026-10-19
+
+Release-mode launcher, GPU-only avatar texture pixels, clean unchanged outlines, unused plain-toon shadow suppression, hidden background/desktop-room asset release and GNU/Linux settled-load allocator reclamation are implemented. The selected plain-background profile measured 652 MiB resident RAM and 41.9% of one CPU core at approximately 60 update FPS in a short release sample; RAM remains above the user's 200 MiB reference. 588 offline tests and strict Clippy pass. See `reviews/runtime-efficiency.md` for methods, debug/release and focus differences, experimental settings, remaining VRAM cost and acceptance limits.

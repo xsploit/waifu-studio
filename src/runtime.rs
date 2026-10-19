@@ -57,6 +57,11 @@ pub fn primary_window() -> Window {
 
 impl Plugin for StudioRuntimePlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        app.add_systems(Last, reclaim_avatar_load_memory);
+        if std::env::var_os("WAIFU_RUNTIME_METRICS").is_some() {
+            app.add_systems(Last, log_runtime_metrics);
+        }
         app.insert_resource(WinitSettings {
             focused_mode: UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / 60.0)),
             unfocused_mode: UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / 15.0)),
@@ -84,6 +89,77 @@ impl Plugin for StudioRuntimePlugin {
             PostUpdate,
             (relax_arms, frame_avatar).after(bevy::transform::TransformSystems::Propagate),
         );
+    }
+}
+
+/// glibc can retain freed decoding/upload buffers in its thread arenas. Reclaim
+/// unused pages once after a settled avatar change, outside active speech.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn reclaim_avatar_load_memory(
+    avatar: Res<AvatarLoadState>,
+    studio: Res<Studio>,
+    playing: Query<(), With<crate::studio::SpokenAudio>>,
+    mut previous: Local<Option<Entity>>,
+    mut due: Local<Option<Instant>>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if *previous != avatar.active {
+        *previous = avatar.active;
+        *due = Some(Instant::now() + Duration::from_secs(3));
+    }
+    if due.is_none_or(|due| Instant::now() < due)
+        || studio.job.is_some()
+        || studio.voice_busy
+        || !playing.is_empty()
+        || RUNNING.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    *due = None;
+    if std::thread::Builder::new()
+        .name("studio-memory-reclaim".into())
+        .spawn(|| {
+            // SAFETY: glibc's thread-safe API only releases unused allocator
+            // pages; live allocations and their addresses are preserved.
+            unsafe { libc::malloc_trim(0) };
+            RUNNING.store(false, Ordering::Release);
+        })
+        .is_err()
+    {
+        RUNNING.store(false, Ordering::Release);
+    }
+}
+
+/// Opt-in, content-free measurements for comparing builds at the same actual
+/// frame rate and focus state. Disabled during ordinary launches.
+fn log_runtime_metrics(
+    windows: Query<&Window>,
+    images: Res<Assets<Image>>,
+    meshes: Res<Assets<Mesh>>,
+    mut sample: Local<Option<(Instant, u64)>>,
+) {
+    let now = Instant::now();
+    let Some((start, frames)) = sample.as_mut() else {
+        *sample = Some((now, 0));
+        return;
+    };
+    *frames += 1;
+    let elapsed = now.duration_since(*start).as_secs_f64();
+    if elapsed >= 10.0 {
+        let image_bytes: usize = images
+            .iter()
+            .filter_map(|(_, image)| image.data.as_ref().map(Vec::len))
+            .sum();
+        info!(
+            "Runtime metrics: fps={:.1} focused={} image_cpu_mib={:.1} images={} meshes={}",
+            *frames as f64 / elapsed,
+            windows.iter().any(|window| window.focused),
+            image_bytes as f64 / (1024.0 * 1024.0),
+            images.len(),
+            meshes.len(),
+        );
+        *sample = Some((now, 0));
     }
 }
 
@@ -250,7 +326,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: 10_000.0,
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_xyz(-2.0, 4.0, 5.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y),
@@ -562,6 +638,10 @@ fn stage_settings(
     pose.sitting = desktop.sitting && studio.mode == ViewMode::Desktop;
     environment.kind = studio.library.scene.environment;
     environment.suppressed = studio.mode == ViewMode::Desktop;
+    // MToon uses its own direct-light shading without sampling shadow maps.
+    // A plain/unlit backdrop cannot receive shadows either. Keep shadow passes
+    // only when a room or the lit avatar appearance can actually use them.
+    let shadows = environment.is_active() || studio.library.scene.shader == 1;
     for mut light in &mut lights {
         let room_factor = if environment.suppressed {
             1.0
@@ -576,6 +656,9 @@ fn stage_settings(
         let illuminance = 10_000.0 * desktop.light_intensity * room_factor;
         if light.illuminance != illuminance {
             light.illuminance = illuminance;
+        }
+        if light.shadow_maps_enabled != shadows {
+            light.shadow_maps_enabled = shadows;
         }
     }
     let settings = &studio.library.scene;
@@ -602,8 +685,15 @@ fn stage_settings(
     if clear.0 != clear_color {
         clear.0 = clear_color;
     }
-    if backdrop.path != settings.image {
-        backdrop.path = settings.image.clone();
+    // A photo hidden behind a 3D room or the transparent desktop should not
+    // retain its decoded pixels and GPU texture. The saved choice is untouched.
+    let image_path = if studio.mode == ViewMode::Studio && !environment.is_active() {
+        settings.image.as_ref()
+    } else {
+        None
+    };
+    if backdrop.path.as_ref() != image_path {
+        backdrop.path = image_path.cloned();
         backdrop.image = backdrop
             .path
             .as_ref()

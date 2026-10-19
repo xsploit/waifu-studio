@@ -47,7 +47,7 @@ impl EnvironmentKind {
 #[serde(default)]
 pub struct EnvironmentSettings {
     pub kind: EnvironmentKind,
-    /// Hides the spawned scene without despawning it (e.g. desktop overlay).
+    /// Temporarily unloads the scene without changing its saved selection.
     #[serde(skip)]
     pub suppressed: bool,
 }
@@ -92,23 +92,28 @@ fn sync_environment(
     mut state: ResMut<EnvironmentState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut roots: Query<&mut Visibility, With<EnvironmentRoot>>,
+    roots: Query<(), With<EnvironmentRoot>>,
     server: Option<Res<AssetServer>>,
     images: Option<Res<Assets<Image>>>,
 ) {
     let missing = state.root.is_some_and(|root| roots.get(root).is_err());
-    let wanted = settings.kind != EnvironmentKind::Disabled;
-    if state.kind != settings.kind || (wanted && state.root.is_none()) || missing {
+    let kind = if settings.suppressed {
+        EnvironmentKind::Disabled
+    } else {
+        settings.kind
+    };
+    let wanted = kind != EnvironmentKind::Disabled;
+    if state.kind != kind || (wanted && state.root.is_none()) || missing {
         if let Some(root) = state.root.take()
             && let Ok(mut entity) = commands.get_entity(root)
         {
             entity.despawn();
         }
-        state.kind = settings.kind;
+        state.kind = kind;
         let textures = crate::rooms::RoomTextures {
             wall_art: if images.is_some()
                 && matches!(
-                    settings.kind,
+                    kind,
                     EnvironmentKind::RoseBedroom
                         | EnvironmentKind::VioletStudio
                         | EnvironmentKind::CyanLounge
@@ -122,17 +127,13 @@ fn sync_environment(
                 None
             },
         };
-        if let Some(layout) =
-            build_layout_textured(settings.kind, &mut meshes, &mut materials, &textures)
-        {
+        if let Some(layout) = build_layout_textured(kind, &mut meshes, &mut materials, &textures) {
             let root = commands
                 .spawn((
-                    EnvironmentRoot {
-                        kind: settings.kind,
-                    },
-                    Name::new(format!("Environment: {}", settings.kind.label())),
+                    EnvironmentRoot { kind },
+                    Name::new(format!("Environment: {}", kind.label())),
                     Transform::default(),
-                    visibility_for(&settings),
+                    Visibility::Inherited,
                 ))
                 .with_children(|parent| {
                     for part in layout.parts {
@@ -143,7 +144,7 @@ fn sync_environment(
                             part.transform,
                         ));
                         if !matches!(
-                            settings.kind,
+                            kind,
                             EnvironmentKind::RoseBedroom
                                 | EnvironmentKind::VioletStudio
                                 | EnvironmentKind::CyanLounge
@@ -158,21 +159,6 @@ fn sync_environment(
                 .id();
             state.root = Some(root);
         }
-        return;
-    }
-    let desired = visibility_for(&settings);
-    for mut visibility in &mut roots {
-        if *visibility != desired {
-            *visibility = desired;
-        }
-    }
-}
-
-fn visibility_for(settings: &EnvironmentSettings) -> Visibility {
-    if settings.suppressed {
-        Visibility::Hidden
-    } else {
-        Visibility::Inherited
     }
 }
 
@@ -1028,27 +1014,45 @@ mod tests {
     }
 
     #[test]
-    fn suppression_hides_without_respawning() {
+    fn suppression_releases_room_assets_and_restores_the_selected_room() {
         let mut app = app();
         select(&mut app, EnvironmentKind::MoonlitGarden);
         let root = roots(&mut app)[0];
         app.world_mut()
             .resource_mut::<EnvironmentSettings>()
             .suppressed = true;
-        app.update();
-        assert_eq!(roots(&mut app), vec![root]);
+        for _ in 0..4 {
+            app.update();
+        }
+        assert!(roots(&mut app).is_empty());
+        assert!(app.world().get_entity(root).is_err());
+        assert_eq!(count::<With<Mesh3d>>(&mut app), 0);
+        assert_eq!(count::<With<PointLight>>(&mut app), 0);
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 0);
+        assert_eq!(app.world().resource::<Assets<StandardMaterial>>().len(), 0);
         assert_eq!(
-            app.world().get::<Visibility>(root),
-            Some(&Visibility::Hidden)
+            app.world().resource::<EnvironmentSettings>().kind,
+            EnvironmentKind::MoonlitGarden
         );
+        // Even a changed selection stays unloaded until returning to Studio.
+        select(&mut app, EnvironmentKind::CozyRoom);
+        assert!(roots(&mut app).is_empty());
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 0);
         app.world_mut()
             .resource_mut::<EnvironmentSettings>()
             .suppressed = false;
         app.update();
+        let restored = roots(&mut app)[0];
         assert_eq!(
-            app.world().get::<Visibility>(root),
+            app.world().get::<EnvironmentRoot>(restored).unwrap().kind,
+            EnvironmentKind::CozyRoom
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(restored),
             Some(&Visibility::Inherited)
         );
+        app.update();
+        assert_eq!(roots(&mut app), vec![restored]);
     }
 
     #[test]

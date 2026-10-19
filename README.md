@@ -112,7 +112,7 @@ cd waifu-studio
 ./run.sh
 ```
 
-The launcher builds from the pinned `Cargo.lock` using the vendored crates in `vendor/crates/`, so no extra clones or submodules are needed. **The first launch compiles the whole project and takes a while.** Later launches reuse the build.
+The launcher builds an optimized release executable from the pinned `Cargo.lock` using the vendored crates in `vendor/crates/`, with one build job by default. No extra clones or submodules are needed. **The first launch compiles the whole project and takes a while.** Later launches reuse the build. Plain `cargo run` uses an unoptimized development build and should not be used to assess runtime efficiency.
 
 Other launch options:
 

@@ -9,5 +9,5 @@ if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
     fi
 fi
 export WAIFU_STUDIO_BUNDLE="${WAIFU_STUDIO_BUNDLE:-$studio_dir/assets/characters/bundle.json}"
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
-exec cargo run --locked --manifest-path "$studio_dir/Cargo.toml" --bin waifu-studio -- "$@"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+exec cargo run --release --locked --manifest-path "$studio_dir/Cargo.toml" --bin waifu-studio -- "$@"

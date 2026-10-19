@@ -1,6 +1,8 @@
 use bevy::{
-    asset::{AssetPath, LoadState, RecursiveDependencyLoadState, UntypedAssetId},
-    gltf::Gltf,
+    asset::{
+        AssetPath, LoadState, RecursiveDependencyLoadState, RenderAssetUsages, UntypedAssetId,
+    },
+    gltf::{Gltf, GltfLoaderSettings},
     prelude::*,
     world_serialization::WorldInstanceReady,
 };
@@ -114,9 +116,19 @@ pub(crate) fn start_slot(
         path.path().extension().and_then(|e| e.to_str()),
         Some("glb" | "gltf")
     ) {
-        ModelHandle::Gltf(server.load(path.clone()))
+        ModelHandle::Gltf(
+            server
+                .load_builder()
+                .with_settings(avatar_texture_settings)
+                .load(path.clone()),
+        )
     } else {
-        ModelHandle::Vrm(server.load(path.clone()))
+        ModelHandle::Vrm(
+            server
+                .load_builder()
+                .with_settings(avatar_texture_settings)
+                .load(path.clone()),
+        )
     };
     let entity = commands
         .spawn((
@@ -136,6 +148,13 @@ pub(crate) fn start_slot(
     });
     state.requested_path = Some(path.to_string());
     state.status = LoadStatus::Loading;
+}
+
+/// Avatar textures are sampled on the GPU, never edited or read back on the CPU.
+/// Keep meshes in both worlds for picking, bounds and generated outlines, but
+/// release decoded texture pixels from main-world RAM after their GPU upload.
+fn avatar_texture_settings(settings: &mut GltfLoaderSettings) {
+    settings.load_materials = RenderAssetUsages::RENDER_WORLD;
 }
 
 fn scene_ready(event: On<WorldInstanceReady>, mut state: ResMut<AvatarLoadState>) {
@@ -247,12 +266,12 @@ mod tests {
     struct FailingLoader;
     impl AssetLoader for FailingLoader {
         type Asset = Vrm;
-        type Settings = ();
+        type Settings = GltfLoaderSettings;
         type Error = std::io::Error;
         async fn load(
             &self,
             _: &mut dyn Reader,
-            _: &(),
+            _: &GltfLoaderSettings,
             _: &mut LoadContext<'_>,
         ) -> Result<Vrm, Self::Error> {
             Err(std::io::Error::new(
