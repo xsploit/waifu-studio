@@ -410,3 +410,10 @@ Strict all-target Clippy, package formatting and diff whitespace also passed on 
 ### Appraisal total response deadline — 2026-10-18
 
 Confirmed Fable slow-body lead against installed reqwest 0.12.28: a blocking client timeout restarts on each body Read, while a request timeout also guards the async body total lifetime. Added the existing 1.5-second budget at request level. A loopback server drips ten bytes at 300 ms intervals. New regression passed with the fix; removing only the request timeout made it fail after the full 3.00-second body; restored fix and reran all four appraisal tests successfully. Strict all-target Clippy also passed. No full-suite rerun, GUI, live request or DNS interruption claim. Opus expression-gaze work remained separate and unfinished during these checks.
+
+
+### Recipient and motion total deadlines — 2026-10-18
+
+Applied the same confirmed reqwest fix to recipient and motion evaluation requests: their existing ten-second timeout now also covers the complete response body rather than only successive blocking reads. No retry, routing, model selection or cancellation semantics changed. The appraisal slow-drip regression above establishes the dependency behavior; these two adapters were not each subjected to a ten-second drip fixture.
+
+Announced one-job low-priority `cargo test --all-targets decision`: 3 library + 19 application tests passed. This was a moving-tree check including intermediate Opus expression-gaze source (an unused-helper warning appeared); it does not validate the unfinished gaze feature and is not a fresh strict-Clippy receipt. No live requests, rendering or GUI interaction.

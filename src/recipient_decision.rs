@@ -131,6 +131,8 @@ pub fn choose(
     });
     let mut request = client
         .post(url)
+        // Request-level timeout also bounds the complete response body.
+        .timeout(Duration::from_secs(10))
         .header("ai-gateway-protocol-version", "0.0.1")
         .header("ai-evaluation-model-specification-version", "4")
         .header("ai-model-id", &config.model)
