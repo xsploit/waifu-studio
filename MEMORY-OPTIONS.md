@@ -7,7 +7,7 @@ Every claim about a package's license, version or behaviour cites its primary so
 ## What exists today (verified in this tree)
 
 - History is stored per character in JSON with a rolling window of at most 200 turns / 2 MiB; requests include the last 40 turns.
-- Manual per-character notes live in JSON, with pinned notes and bounded lexical retrieval (`src/memory.rs`).
+- Manual per-character notes live in JSON, with pinned notes and bounded lexical retrieval (`src/memory.rs`). Explicit undirected note links can be edited locally; an off-default one-hop recall option adds at most two linked notes after directly matched inserted seeds, inside the same six-note/4,000-byte budget. The inspector records each linked note’s seed ID. Links neither infer facts nor recurse; semantic retrieval remains unchanged.
 - Optional semantic retrieval embeds those same manual notes through a local or explicitly enabled remote endpoint. It does not embed whole conversations or extract facts automatically (`src/semantic_memory.rs`).
 - Explicit draft lookups are consumed once at send time as untrusted context, separate from saved human messages. Changed drafts, notes, settings and characters invalidate retrieval.
 - Chat and embedding work run on bounded background workers.
@@ -54,7 +54,7 @@ The caveat is that `_delete_memory` records a `DELETE` history row that **stores
 
 ## Recommendation
 
-Use a Rust-native SQLite store built on `rusqlite` with `bundled` and FTS5, plus a SAG-style entity join. Embeddings (model2vec-rs or the gateway) and LLM extraction are optional and run in the background. There is no server, no Python and no graph database. The JSON rolling history stays as the raw transcript.
+The original proposal below recommends a Rust-native SQLite store built on `rusqlite` with `bundled` and FTS5, plus a SAG-style entity join. Current implementation keeps bounded per-character JSON/JSONL stores; no measured storage bottleneck justifies a migration yet. Explicit local note associations now provide a small, inspectable one-hop mechanism without a graph server. The larger schema remains a future option. Embeddings (model2vec-rs or the gateway) and LLM extraction are optional and run in the background. There is no server, no Python and no graph database. The JSON rolling history stays as the raw transcript.
 
 ### Schema (one `memory.sqlite` per data root)
 

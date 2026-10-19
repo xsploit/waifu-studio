@@ -672,9 +672,17 @@ mod tests {
             settle(&mut memory);
             memory.set_enabled(true).unwrap();
             settle(&mut memory);
-            memory.add_note(note.into()).unwrap();
+            memory.add_note(format!("reply {note}")).unwrap();
             settle(&mut memory);
             memory.set_pinned(memory.notes()[0].id, true).unwrap();
+            settle(&mut memory);
+            let seed = memory.notes()[0].id;
+            memory.add_note(format!("LINKED_{note}")).unwrap();
+            settle(&mut memory);
+            let linked = memory.notes()[1].id;
+            memory.set_link(seed, linked, true).unwrap();
+            settle(&mut memory);
+            memory.set_linked_recall(true).unwrap();
             settle(&mut memory);
         }
         drop(memory);
@@ -831,6 +839,9 @@ mod tests {
             assert_eq!(trace.notes.as_ref().unwrap().character, expected);
             assert_eq!(trace.facts.as_ref().unwrap().character, expected);
             assert!(trace.notes.as_ref().unwrap().bytes_inserted > 0);
+            let notes = trace.notes.as_ref().unwrap();
+            assert!(notes.hits.iter().any(|hit| hit.linked_via.is_some()
+                && hit.outcome == crate::memory::RecallOutcome::Inserted));
             assert!(trace.facts.as_ref().unwrap().bytes_inserted > 0);
         }
         let requests = server.join().unwrap();
@@ -840,6 +851,10 @@ mod tests {
         assert!(!alice.contains("PRIVATE_BOB_NOTE"));
         assert!(bob.contains("PRIVATE_BOB_NOTE"));
         assert!(!bob.contains("PRIVATE_ALICE_NOTE"));
+        assert!(alice.contains("LINKED_PRIVATE_ALICE_NOTE"));
+        assert!(!alice.contains("LINKED_PRIVATE_BOB_NOTE"));
+        assert!(bob.contains("LINKED_PRIVATE_BOB_NOTE"));
+        assert!(!bob.contains("LINKED_PRIVATE_ALICE_NOTE"));
         assert!(alice.contains("PRIVATE_ALICE_EVIDENCE"));
         assert!(!alice.contains("PRIVATE_BOB_EVIDENCE"));
         assert!(bob.contains("PRIVATE_BOB_EVIDENCE"));

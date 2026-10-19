@@ -32,8 +32,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
                 Err(e) => state.error = Some(e),
             }
         }
+        let mut linked_recall = state.linked_recall();
+        if ui.add_enabled(!state.busy, egui::Checkbox::new(&mut linked_recall, "Recall explicitly linked notes (one hop)")).changed()
+            && let Err(error) = state.set_linked_recall(linked_recall) { state.error = Some(error); }
+        ui.small("Links are authored by you. When enabled, up to two linked notes follow directly matched notes within the existing recall limits. Lexical recall only; semantic lookup is unchanged. No automatic fact inference.");
+        let links: std::collections::BTreeSet<_> = state.links().iter().map(|link| (link.a, link.b)).collect();
         let notes = state.notes().to_vec();
-        for note in notes {
+        for note in &notes {
             ui.push_id(note.id, |ui| {
                 ui.group(|ui| {
                     let draft_id = ui.id().with("note-edit");
@@ -66,6 +71,17 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
                         {
                             state.error = Some(e);
                         }
+                    });
+                    egui::CollapsingHeader::new("Related notes").id_salt("note-links").show(ui, |ui| {
+                        for other in notes.iter().filter(|other| other.id != note.id) {
+                            let key = if note.id < other.id { (note.id, other.id) } else { (other.id, note.id) };
+                            let mut linked = links.contains(&key);
+                            let label: String = other.text.chars().take(64).collect();
+                            if ui.add_enabled(!state.busy, egui::Checkbox::new(&mut linked, label))
+                                .on_hover_text(&other.text).changed()
+                                && let Err(error) = state.set_link(note.id, other.id, linked) { state.error = Some(error); }
+                        }
+                        if notes.len() < 2 { ui.weak("Add another note to create a link."); }
                     });
                 });
             });
@@ -102,11 +118,13 @@ fn recall_inspector(ui: &mut egui::Ui, state: &MemoryState) {
             }
             for hit in &trace.hits {
                 let outcome = match hit.outcome {
-                    RecallOutcome::Inserted => "sent",
+                    RecallOutcome::Inserted => "included",
                     RecallOutcome::OverBudget => "over budget",
                     RecallOutcome::OverLimit => "over limit",
                 };
-                let reason = if hit.pinned {
+                let reason = if let Some(via) = hit.linked_via {
+                    format!("linked via {}", &via.to_string()[..8])
+                } else if hit.pinned {
                     "pinned".to_string()
                 } else {
                     format!("matched: {}", hit.matched_terms.join(", "))

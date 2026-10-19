@@ -78,7 +78,7 @@ pub fn ui(
                             for hit in &trace.hits {
                                 ui.label(format!("{} · score {} · {} · {:?}",
                                     &hit.note.to_string()[..8], hit.score,
-                                    if hit.pinned { "pinned".into() } else { hit.matched_terms.join(", ") },
+                                    if let Some(via) = hit.linked_via { format!("linked via {}", &via.to_string()[..8]) } else if hit.pinned { "pinned".into() } else { hit.matched_terms.join(", ") },
                                     hit.outcome)).on_hover_text(hit.note.to_string());
                             }
                         } else { ui.weak("Notes disabled or unavailable."); }

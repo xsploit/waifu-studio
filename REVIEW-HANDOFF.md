@@ -1,6 +1,6 @@
 # Waifu Studio: review and test handoff
 
-Updated 2026-10-18. Latest published source baseline when updated: `95d163c` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
+Updated 2026-10-18. Latest published source baseline when updated: `0e6cdf8` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
 
 ## Prompt for the reviewing model
 
@@ -55,7 +55,7 @@ Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark
 | Motion/import | FBX/BVH/VRMA rest poses, rotated/scaled armature parents, stop/restoration/crossfade, local emotion playlists, cooldown, stale avatar/character and manual override. | Smooth runtime playback, source fidelity and arbitrary real rigs. Two rendered poses do not prove these. |
 | Appearance and gaze | Cel looks, RGB correction disable, bloom ordering, preview vs primary camera selection, gaze restoration, alpha, material ownership and clothing visibility. Material-only expression colors and shared UV0 transforms restore across weight/root changes; inspect shader uniform layout and preserve matcap view-space sampling. | Interactive camera/shader behavior and representative avatars. |
 | Fictional weekly routine | Off-default persisted scene config, duplicate/invalid anchor rejection, current/next activity at exact boundaries and week rollover; system-local clock and per-character switching. | Live panel editing and timezone/DST clock changes; no autonomous scheduler or user-presence inference claim. |
-| Memory and scene | Character isolation, prepared recall traces, budgets, pinned notes, whole-token scoring, correction/expiry chains, conservative near-duplicates, failed writes and character switching. | Real UI recovery and persistence failures. Verify traces describe prepared context rather than provider delivery. |
+| Memory and scene | Character isolation, prepared recall traces, budgets, pinned notes, whole-token scoring, correction/expiry chains, conservative near-duplicates, failed writes and character switching. Explicit note links are undirected, character-local and opt-in for one-hop lexical recall; verify linked candidates come only from inserted directly matched seeds, obey existing caps and report provenance. | Real UI recovery and persistence failures. Verify traces describe prepared context rather than provider delivery. |
 
 Use isolated fixture data rather than the user's actual conversations or settings. Do not enable paid requests through accidental GUI interaction.
 
