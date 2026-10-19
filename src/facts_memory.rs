@@ -7,6 +7,8 @@
 //! A failed pending write is remembered per character with the snapshot that failed, so
 //! reselecting a character never trusts an older disk copy over it. Writes then stop for
 //! that character until the user retries or opts out; nothing retries automatically.
+#[path = "automatic_reflection.rs"]
+pub mod automatic;
 #[path = "memory_reflection.rs"]
 pub mod reflection;
 use bevy::prelude::Resource;
@@ -135,6 +137,7 @@ pub struct FactsMemoryState {
     failed: HashMap<Uuid, (String, Pending)>,
     /// Manual reflection drafts; results only ever become pending candidates.
     pub reflection: reflection::ReflectionWorker,
+    pub automatic: automatic::AutomaticReflectionState,
     commands: SyncSender<Command>,
     events: Mutex<Receiver<Event>>,
     trace: Mutex<Option<FactsRecallTrace>>,
@@ -204,6 +207,7 @@ impl FactsMemoryState {
             in_flight: None,
             failed: HashMap::new(),
             reflection: reflection::ReflectionWorker::default(),
+            automatic: Default::default(),
             commands: tx,
             events: Mutex::new(erx),
             trace: Mutex::new(None),

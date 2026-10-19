@@ -1,7 +1,7 @@
-//! Manual, opt-in reflection drafts over one character's accepted evidence records.
+//! Opt-in reflection drafts over one character's accepted evidence records.
 //!
 //! Only current, accepted, non-reflection ledger records are offered: never transcripts,
-//! pending candidates or earlier reflections. One request runs per explicit click, on one
+//! pending candidates or earlier reflections. Manual clicks or an opted-in change trigger run one
 //! background thread, with cancel and status. The model returns strict JSON citing offered
 //! record ids; any unoffered id rejects the whole draft. A valid draft only ever becomes a
 //! pending `RecordKind::Reflection` candidate that needs explicit review before recall.
@@ -354,8 +354,11 @@ impl FactsMemoryState {
         }
         select_sources(&self.records, now())
     }
-    /// Explicit user action only; nothing calls this on a schedule.
+    /// Manual request using the session reflection connection.
     pub fn start_reflection(&mut self) -> Result<(), String> {
+        self.start_reflection_with(self.reflection.config.clone())
+    }
+    pub(super) fn start_reflection_with(&mut self, config: ReflectionConfig) -> Result<(), String> {
         let character = self.selected.ok_or("Select a character first")?;
         if !self.loaded || self.busy {
             return Err("Wait for memory loading/saving".into());
@@ -367,7 +370,6 @@ impl FactsMemoryState {
         if sources.is_empty() {
             return Err("Accept at least one fact, preference or question first".into());
         }
-        let config = self.reflection.config.clone();
         config.url()?;
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(1);
@@ -417,6 +419,7 @@ impl FactsMemoryState {
         let Some(job) = self.reflection.job.take() else {
             return;
         };
+        self.automatic.finished();
         self.reflection.status = match outcome {
             Ok(None) => ReflectionStatus::NoReflection,
             Err(e) => ReflectionStatus::Failed(e),
@@ -633,6 +636,59 @@ mod tests {
             .unwrap();
         assert!(s.edit_reflection_candidate(id, " ").is_err());
         assert_eq!(s.candidates()[0].text, "Enjoys quiet tea routines.");
+    }
+
+    #[test]
+    fn automatic_draft_uses_saved_connection_and_remains_pending_or_is_cancelled() {
+        use super::super::automatic::AutomaticReflectionConfig;
+        for cancel in [false, true] {
+            let tea = record(1, RecordKind::Preference, "Likes green tea");
+            let source = tea.id;
+            let content =
+                json!({"reflection": "Enjoys tea breaks.", "source_ids": [source]}).to_string();
+            let (endpoint, server) = serve(reply(&content).to_string());
+            let (mut state, _root) = loaded_state(vec![tea]);
+            state.enabled = true;
+            let mut config = AutomaticReflectionConfig {
+                enabled: true,
+                new_records: 1,
+                connection: ReflectionConfig {
+                    endpoint,
+                    model: "automatic/test".into(),
+                    key_env: String::new(),
+                    session_key: String::new(),
+                },
+                ..Default::default()
+            };
+            state.automatic_reflection_frame(&config);
+            assert!(!state.reflection.running(), "no startup catch-up");
+            state
+                .records
+                .push(record(2, RecordKind::Fact, "Has a blue mug"));
+            state.automatic_reflection_frame(&config);
+            assert!(state.reflection.running());
+            let request = server.join().unwrap();
+            assert!(request.contains("automatic/test"));
+            if cancel {
+                config.enabled = false;
+                state.automatic_reflection_frame(&config);
+            }
+            settle(&mut state);
+            assert_eq!(
+                state.records.len(),
+                2,
+                "never automatically accepts a draft"
+            );
+            assert_eq!(state.candidates.len(), usize::from(!cancel));
+            assert!(state.context("breaks").is_none());
+            state.automatic_reflection_frame(&config);
+            assert!(
+                !state.reflection.running(),
+                "unchanged evidence never retries"
+            );
+            let encoded = serde_json::to_value(&config).unwrap();
+            assert!(encoded["connection"].get("session_key").is_none());
+        }
     }
 
     #[test]

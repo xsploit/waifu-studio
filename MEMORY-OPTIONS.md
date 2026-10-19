@@ -12,7 +12,8 @@ Every claim about a package's license, version or behaviour cites its primary so
 - Explicit draft lookups are consumed once at send time as untrusted context, separate from saved human messages. Changed drafts, notes, settings and characters invalidate retrieval.
 - Chat and embedding work run on bounded background workers.
 - A separate opt-in JSONL evidence ledger now stores per-character facts, preferences, questions and manual reflections, with quoted evidence/source/turn IDs, correction links, expiry, duplicate rejection and forgetting (`src/facts_memory.rs`). Bounded keyword recall attaches separate context in focused and scene requests. Optional deterministic candidates use only explicit user-turn phrases and require acceptance before saving.
-- SQLite/FTS, model-driven extraction, automatic promotion and reflection workers below remain recommendations. The implemented correction ledger is bounded JSONL, not the proposed SQL schema.
+- Manual cited reflection and optional off-default evidence-triggered drafting are implemented. Automatic drafting is per-character, app-open/selected-character only, starts with a baseline and waits for new accepted records, rate-limits attempts, pauses for pending reflections and never accepts its own result. Connection settings persist; session keys and scheduling checkpoints do not. No background catch-up after restart.
+- SQLite/FTS, general model-driven extraction and automatic promotion below remain recommendations. The implemented correction ledger is bounded JSONL, not the proposed SQL schema.
 
 ## Candidates
 

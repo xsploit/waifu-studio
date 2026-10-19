@@ -445,6 +445,41 @@ pub fn studio_ui(
                             }
                         }
                         crate::facts_memory_controls::ui(ui, &mut studio.facts);
+                        ui.separator();
+                        ui.heading("Automatic reflection drafts");
+                        ui.small("Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.");
+                        let before = studio.library.scene.automatic_reflection.clone();
+                        let reflection_connection = studio.facts.reflection.config.clone();
+                        let automatic = &mut studio.library.scene.automatic_reflection;
+                        ui.checkbox(
+                            &mut automatic.enabled,
+                            "Automatically send accepted records for reflection drafts",
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut automatic.new_records, 1..=12)
+                                .text("New accepted records per draft"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut automatic.cooldown_minutes, 10..=1440)
+                                .text("Minimum minutes between attempts"),
+                        );
+                        ui.label(format!(
+                            "Connection: {} · {}",
+                            automatic.connection.endpoint, automatic.connection.model
+                        ));
+                        if ui
+                            .button(
+                                "Use the reflection connection shown above for automatic drafts",
+                            )
+                            .clicked()
+                        {
+                            automatic.connection = reflection_connection;
+                        }
+                        ui.small("Pauses while a reflection awaits review. Connection and opt-in are saved per character; session keys are not saved. Changes or disabling cancel an in-flight automatic draft.");
+                        ui.weak(&studio.facts.automatic.status);
+                        if studio.library.scene.automatic_reflection != before {
+                            studio.save();
+                        }
                     });
                     ui.separator();
                     crate::semantic_memory_controls::ui(

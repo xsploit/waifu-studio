@@ -1116,6 +1116,8 @@ pub fn poll_studio(
     mut unloads: MessageWriter<UnloadAvatar>,
     mut animation: ResMut<waifu_studio::animation::AnimationState>,
 ) {
+    let reflection_config = studio.library.scene.automatic_reflection.clone();
+    studio.facts.automatic_reflection_frame(&reflection_config);
     studio.facts.poll();
     let prepared = studio.attachment_worker.lock().unwrap().poll();
     if let Some(result) = prepared {

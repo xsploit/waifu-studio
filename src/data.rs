@@ -102,6 +102,7 @@ impl Default for ReplyMotionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSettings {
+    pub automatic_reflection: crate::facts_memory::automatic::AutomaticReflectionConfig,
     pub routine: crate::routines::RoutineConfig,
     pub reply_motion: ReplyMotionConfig,
     pub gaze: crate::gaze::GazeConfig,
@@ -123,6 +124,7 @@ pub struct SceneSettings {
 impl Default for SceneSettings {
     fn default() -> Self {
         Self {
+            automatic_reflection: Default::default(),
             routine: Default::default(),
             reply_motion: Default::default(),
             gaze: Default::default(),
