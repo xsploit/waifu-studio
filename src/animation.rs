@@ -12,7 +12,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -598,6 +598,9 @@ pub struct AnimationState {
     autoplay_import: bool,
     transition_seconds: f32,
     transition_from: Option<ClipPlayback>,
+    import_one_shot: bool,
+    one_shot: bool,
+    one_shot_finished: bool,
 }
 impl Default for AnimationState {
     fn default() -> Self {
@@ -617,6 +620,9 @@ impl Default for AnimationState {
             autoplay_import: false,
             transition_seconds: 0.,
             transition_from: None,
+            import_one_shot: false,
+            one_shot: false,
+            one_shot_finished: false,
         }
     }
 }
@@ -688,8 +694,20 @@ impl AnimationState {
         self.pending = Some(Mutex::new(rx));
         self.loading = true;
         self.autoplay_import = true;
+        self.import_one_shot = false;
         self.error = None;
         Ok(())
+    }
+    /// Reply and emotion gestures play once, then crossfade to the bundled idle.
+    pub fn load_one_shot(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        self.load_path(path)?;
+        self.import_one_shot = true;
+        Ok(())
+    }
+    fn select_one_shot(&mut self, clip: Arc<BvhClip>, path: Option<PathBuf>) {
+        self.select_clip(clip, path);
+        self.looping = false;
+        self.one_shot = true;
     }
     pub fn play(&mut self) {
         if self.clip.is_some() {
@@ -724,6 +742,8 @@ impl AnimationState {
         self.speed = 1.0;
         self.weight = 1.0;
         self.looping = true;
+        self.one_shot = false;
+        self.one_shot_finished = false;
         self.play();
     }
     pub fn pause(&mut self) {
@@ -733,6 +753,8 @@ impl AnimationState {
         self.playing = false;
         self.stopped = true;
         self.autoplay_import = false;
+        self.one_shot = false;
+        self.one_shot_finished = false;
         self.position = 0.0;
         self.transition_from = None;
         self.transition_seconds = 0.;
@@ -761,6 +783,10 @@ fn poll_import(mut state: ResMut<AnimationState>) {
         .map(|rx| rx.try_recv());
     match result {
         Some(Ok(Ok((path, clip)))) => {
+            if state.import_one_shot && state.autoplay_import {
+                state.select_one_shot(Arc::new(clip), Some(path));
+                return;
+            }
             // Manual file imports preserve their immediate switch semantics.
             state.transition_seconds = 0.;
             state.transition_from = None;
@@ -771,6 +797,8 @@ fn poll_import(mut state: ResMut<AnimationState>) {
             state.pending = None;
             state.error = None;
             state.revision = state.revision.wrapping_add(1);
+            state.one_shot = false;
+            state.one_shot_finished = false;
             if state.autoplay_import {
                 state.play();
             } else {
@@ -995,6 +1023,24 @@ fn animate_humanoid(
         state.position = 0.0;
     }
     let Some(root) = avatar.active else { return };
+    if state.one_shot_finished && !state.loading {
+        static IDLE: LazyLock<Result<Arc<BvhClip>, String>> = LazyLock::new(|| {
+            parse_vrma(include_bytes!(
+                "../assets/animations/desktop/idle-maid.vrma"
+            ))
+            .map(Arc::new)
+        });
+        match &*IDLE {
+            Ok(clip) => state.select_clip(
+                clip.clone(),
+                Some("assets/animations/desktop/idle-maid.vrma".into()),
+            ),
+            Err(error) => {
+                state.stop();
+                state.error = Some(format!("Cannot return to idle: {error}"));
+            }
+        }
+    }
     // Build the active mapping lazily, using imported rests captured before idle
     // arm relaxation or any other procedural pose, including on inactive avatars.
     if cache.bones.is_empty() && state.is_posing() {
@@ -1107,13 +1153,14 @@ fn animate_humanoid(
         };
         state.position += time.delta_secs().min(0.25) * speed;
         if state.position >= clip.duration() {
-            if state.looping {
+            if state.looping && !state.one_shot {
                 state.position %= clip.duration();
             } else {
                 state.position = clip
                     .exact_duration
                     .unwrap_or((clip.frame_count - 1) as f32 * clip.frame_time);
                 state.pause();
+                state.one_shot_finished = state.one_shot;
             }
         }
     }
@@ -1220,6 +1267,102 @@ fn animate_humanoid(
 mod tests {
     use super::*;
     const SAMPLE: &str = "HIERARCHY ROOT hips { OFFSET 0 0 0 CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation JOINT leftUpperArm { OFFSET 1 1 0 CHANNELS 3 Zrotation Xrotation Yrotation End Site { OFFSET 1 0 0 } } } MOTION Frames: 2 Frame Time: 0.1 0 0 0 0 0 0 0 0 0 100 200 300 90 0 0 0 0 0";
+    #[test]
+    fn triggered_import_plays_once_and_crossfades_back_to_idle() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        app.world_mut().spawn((
+            HumanBoneName::Hips,
+            Transform::from_xyz(0., 1., 0.),
+            ChildOf(root),
+        ));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let clip = parse_bvh(&SAMPLE.replace("Frame Time: 0.1", "Frame Time: 0.5")).unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Ok(("emotion.bvh".into(), clip))).unwrap();
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.pending = Some(Mutex::new(rx));
+            state.loading = true;
+            state.autoplay_import = true;
+            state.import_one_shot = true;
+        }
+        app.update();
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            assert!(state.one_shot && state.playing && !state.looping && !state.loading);
+            assert_eq!(state.transition_seconds, 0.);
+            // Even an old/manual loop preference cannot make an emotion repeat.
+            state.looping = true;
+        }
+        for _ in 0..20 {
+            app.update();
+            if !app.world().resource::<AnimationState>().one_shot {
+                break;
+            }
+        }
+        let state = app.world().resource::<AnimationState>();
+        assert!(state.playing && state.looping && !state.one_shot);
+        assert_eq!(
+            state.path.as_deref(),
+            Some(Path::new("assets/animations/desktop/idle-maid.vrma"))
+        );
+        let transition = app
+            .world()
+            .resource::<PoseCache>()
+            .transition
+            .as_ref()
+            .unwrap();
+        assert!(transition.elapsed > 0. && transition.elapsed < transition.duration);
+        assert!(!transition.outgoing.as_ref().unwrap().playing);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(app.world().resource::<PoseCache>().transition.is_none());
+        assert!(app.world().resource::<AnimationState>().playing);
+
+        // Completing a gesture must not discard a newer import still in flight.
+        let (tx, rx) = mpsc::sync_channel(1);
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+            state.select_one_shot(clip, None);
+            state.one_shot_finished = true;
+            state.pending = Some(Mutex::new(rx));
+            state.loading = true;
+            state.import_one_shot = false;
+        }
+        app.update();
+        assert!(app.world().resource::<AnimationState>().pending.is_some());
+        tx.send(Ok(("manual.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        app.update();
+        let state = app.world().resource::<AnimationState>();
+        assert_eq!(state.path.as_deref(), Some(Path::new("manual.bvh")));
+        assert!(!state.one_shot && !state.one_shot_finished);
+    }
+
+    #[test]
+    fn stopping_or_manually_replacing_a_gesture_cancels_idle_handoff() {
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let mut state = AnimationState::default();
+        state.select_one_shot(clip.clone(), None);
+        state.pause();
+        assert!(state.one_shot && !state.one_shot_finished);
+        state.stop();
+        assert!(!state.one_shot && !state.one_shot_finished && !state.is_posing());
+        state.select_one_shot(clip.clone(), None);
+        state.select_clip(clip, None);
+        assert!(state.looping && state.playing && !state.one_shot);
+    }
     #[test]
     fn samples_declared_rotation_channels_separately_from_hips_translation() {
         let clip = parse_bvh(SAMPLE).unwrap();

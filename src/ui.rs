@@ -1520,7 +1520,7 @@ fn reply_motion_frame(
     if let Some(motion_decision::AutoAction::Play(path)) = action {
         if animation.loading {
             auto.note = Some("Skipped auto-play while a motion was loading".into());
-        } else if let Err(error) = animation.load_path(path) {
+        } else if let Err(error) = animation.load_one_shot(path) {
             auto.note = Some(error);
         }
     }
@@ -1841,7 +1841,7 @@ fn suggest_motion(
             }
         }
         Some(SuggestAction::Play(path)) => {
-            if let Err(error) = animation.load_path(path) {
+            if let Err(error) = animation.load_one_shot(path) {
                 studio.error = Some(error);
             }
         }
