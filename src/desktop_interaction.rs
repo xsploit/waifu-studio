@@ -285,7 +285,7 @@ impl DesktopInteraction {
         self.output(origin, Some(anchor))
     }
 
-    /// Resolve an explicit sit request against an exposed trusted surface below
+    /// Resolve an explicit sit request against an exposed trusted surface touching
     /// the projected hips. No remembered/persisted pose can create a seat.
     pub fn sit_on_surface_below(&mut self, frame: &InteractionFrame<'_>) -> InteractionOutput {
         self.reset();
@@ -293,36 +293,9 @@ impl DesktopInteraction {
             return self.output(frame.avatar_origin, None);
         }
         let hips = frame.avatar_origin + frame.hips_offset;
-        let selected = frame
-            .surfaces
-            .iter()
-            .filter(|surface| {
-                if !surface.rect.valid()
-                    || surface.excluded(frame.own_window_ids)
-                    || hips.x < surface.rect.origin.x
-                    || hips.x > surface.rect.origin.x + surface.rect.size.x
-                    || surface.seat_y() < hips.y
-                {
-                    return false;
-                }
-                if matches!(surface.id, SurfaceId::WorkArea(_)) {
-                    return true;
-                }
-                let edge = Vec2::new(hips.x, surface.seat_y());
-                !frame.surfaces.iter().any(|front| {
-                    matches!(front.id, SurfaceId::Window(_))
-                        && front.id != surface.id
-                        && front.z_order < surface.z_order
-                        && !front.excluded(frame.own_window_ids)
-                        && front.rect.valid()
-                        && front.rect.contains(edge)
-                })
-            })
-            .min_by(|a, b| {
-                a.seat_y()
-                    .total_cmp(&b.seat_y())
-                    .then(a.z_order.cmp(&b.z_order))
-            });
+        // A request can confirm contact, never search down the screen and
+        // teleport to an unrelated window or the taskbar.
+        let selected = choose_surface(frame, frame.avatar_origin, hips);
         if let Some(surface) = selected {
             self.state = InteractionState::Sitting;
             self.seat = Some(Seat {
@@ -880,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_sit_uses_nearest_exposed_surface_below_and_never_invents_one() {
+    fn explicit_sit_requires_edge_contact_and_never_searches_for_a_distant_seat() {
         let surfaces = [
             surface(
                 SurfaceId::Window(1),
@@ -910,6 +883,11 @@ mod tests {
         let mut frame = frame(&surfaces);
         frame.own_window_ids = &[99];
         let mut state = DesktopInteraction::default();
+        assert_eq!(
+            state.sit_on_surface_below(&frame).state,
+            InteractionState::Idle
+        );
+        frame.avatar_origin.y = 390. - frame.hips_offset.y - 10.;
         let seated = state.sit_on_surface_below(&frame);
         assert_eq!(seated.surface, Some(SurfaceId::Window(2)));
         // No surfaces below the current projected hips: no pose/anchor survives.

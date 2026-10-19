@@ -661,7 +661,7 @@ fn resolve_sit_request(
         let status = if output.state == InteractionState::Sitting {
             "Sitting on a detected surface."
         } else {
-            "No exposed window edge or monitor floor was detected below the companion."
+            "Drag the companion onto a window edge or taskbar, then release to sit."
         };
         (output, status)
     } else {
@@ -873,6 +873,7 @@ mod tests {
             own_window_ids: &[],
         };
         let mut interaction = DesktopInteraction::default();
+        frame.avatar_origin.y = 700. - frame.hips_offset.y - 10.;
         let (seated, status) = resolve_sit_request(&mut interaction, &frame, true);
         assert_eq!(seated.state, InteractionState::Sitting);
         assert_eq!(status, "Sitting on a detected surface.");

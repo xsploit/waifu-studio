@@ -166,6 +166,7 @@ struct DesktopControlsPass;
 #[derive(Resource, Default)]
 struct DesktopState {
     controls: Option<(Entity, Entity)>,
+    controls_dismissed: bool,
     original_window: Option<(
         bool,
         WindowLevel,
@@ -285,11 +286,17 @@ fn desktop_windows(
             .controls
             .is_some_and(|(controls, _)| controls == event.window)
     });
-    if let Some((controls, _)) = state.controls
+    if let Some((controls, camera)) = state.controls
         && (closing || !control_windows.contains(controls))
     {
-        studio.mode = ViewMode::Studio;
+        // Closing auxiliary controls dismisses only that window. Keep the
+        // companion interactive so its right-click menu remains recoverable.
+        state.controls = None;
+        state.controls_dismissed = true;
+        commands.entity(camera).try_despawn();
+        commands.entity(controls).try_despawn();
         studio.click_through = false;
+        cursor.hit_test = true;
     }
     if studio.mode == ViewMode::Desktop {
         if state.original_window.is_none() {
@@ -317,7 +324,7 @@ fn desktop_windows(
         if window.window_level != level {
             window.window_level = level;
         }
-        if state.controls.is_none() {
+        if state.controls.is_none() && !state.controls_dismissed {
             // Begin interactive. Passthrough can only be switched on once the
             // controls' own context is installed on a subsequent frame.
             cursor.hit_test = true;
@@ -358,8 +365,12 @@ fn desktop_windows(
             if cursor.hit_test != hit_test {
                 cursor.hit_test = hit_test;
             }
+        } else {
+            studio.click_through = false;
+            cursor.hit_test = true;
         }
     } else {
+        state.controls_dismissed = false;
         if !cursor.hit_test {
             cursor.hit_test = true;
         }
@@ -502,7 +513,7 @@ fn desktop_controls(
             studio.mode = ViewMode::Studio;
             studio.click_through = false;
         }
-        ui.small("Closing these controls also returns to the studio.");
+        ui.small("Close these controls to leave just the companion on your desktop.");
     });
 }
 
@@ -1171,7 +1182,7 @@ mod tests {
         );
     }
     #[test]
-    fn passthrough_waits_for_recovery_context_and_closing_controls_restores_studio() {
+    fn closing_controls_keeps_desktop_interactive_until_explicit_studio_return() {
         let directory =
             std::env::temp_dir().join(format!("studio-desktop-{}", uuid::Uuid::new_v4()));
         let (store, library) = waifu_studio::data::Store::open(directory.clone()).unwrap();
@@ -1214,8 +1225,21 @@ mod tests {
         app.world_mut()
             .write_message(WindowCloseRequested { window: controls });
         app.update();
-        assert_eq!(app.world().resource::<Studio>().mode, ViewMode::Studio);
+        assert_eq!(app.world().resource::<Studio>().mode, ViewMode::Desktop);
         assert!(app.world().get::<CursorOptions>(primary).unwrap().hit_test);
+        assert!(!app.world().resource::<Studio>().click_through);
+        app.update();
+        assert!(app.world().resource::<DesktopState>().controls.is_none());
+        assert_eq!(
+            app.world()
+                .get::<Window>(primary)
+                .unwrap()
+                .resolution
+                .size(),
+            Vec2::new(420., 640.)
+        );
+        app.world_mut().resource_mut::<Studio>().mode = ViewMode::Studio;
+        app.update();
         let window = app.world().get::<Window>(primary).unwrap();
         assert_eq!(window.decorations, original_decorations);
         assert_eq!(window.has_shadow, original_shadow);
