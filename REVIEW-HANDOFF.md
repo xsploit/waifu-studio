@@ -1,6 +1,6 @@
 # Waifu Studio: review and test handoff
 
-Updated 2026-10-18. Latest published source baseline when updated: `8381ae6` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
+Updated 2026-10-18. Latest published source baseline when updated: `0648600` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
 
 ## Prompt for the reviewing model
 
@@ -44,9 +44,11 @@ Independent Muse review observed **503 passing tests** (406 library, 90 applicat
 
 Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark tests and strict all-target Clippy. The hosted HTTP/Low trial preset passed all 16 voice tests, strict Clippy and package formatting. The next integrated run passed 522 tests (423 library, 91 application/controller/UI, 6 integration, 2 benchmark), including material expressions, local fictional routines and bounded SSE cancellation admission. These are dated receipts, not a fresh run by this document's reader.
 
-Latest integrated working-tree receipt: **538 tests passed** (437 library, 93 application, 6 integration, 2 benchmark), followed by clean strict all-target Clippy. This includes the optional incoming-message Jev appraisal and CLI environment/SSE terminal-state fixes described in the newest VALIDATION sections. These checks were performed before committing this slice; they are not a pristine-baseline or live-provider receipt.
+Latest integrated working-tree receipt: **552 tests passed** (451 library, 93 application, 6 integration, 2 benchmark), with clean strict all-target Clippy. Includes authored bone/expression gaze and the parent correction to Fable’s target-angle finding; the focused re-review hit Claude’s session limit. This includes the optional incoming-message Jev appraisal and CLI environment/SSE terminal-state fixes described in the newest VALIDATION sections. These checks were performed before committing this slice; they are not a pristine-baseline or live-provider receipt.
 
 Review priority: `appraisal.rs` plus focused/group integration. Check opt-in source exclusivity, bounded two-worker admission including cancelled requests, 1.5 s result lifetime, strict offered choices, stale turn/character/config rejection, and error redaction. Group jobs may wait briefly for appraisal after handing off speech; late focused appraisals do not replay completed body-motion decisions. No fresh independent Claude review has run for this slice.
+
+Recent expression-gaze work: review authored VRM1/VRM0 range maps, Hermite curve parsing, anatomical direction signs, one active eye-drive mode, root-tagged same-frame input and manual/overrideLookAt priority. Bone rigs now obey authored ranges, so movement can be smaller than the previous procedural overlay. Tests do not establish visual fidelity; world-space target offsets and companion gaze are not implemented.
 
 ## Priority test matrix
 

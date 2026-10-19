@@ -184,6 +184,376 @@ struct ExpressionHandler {
     expressions: Vec<ExpressionMeta>,
     binds: Vec<ParsedBind>,
     materials: ParsedMaterials,
+    look_at: Option<LookAtMeta>,
+}
+
+/// VRM look expression presets in the order used by [`LookAtMeta::expression_weights`].
+pub const LOOK_EXPRESSIONS: [&str; 4] = ["lookLeft", "lookRight", "lookUp", "lookDown"];
+fn is_look(name: &str) -> bool {
+    LOOK_EXPRESSIONS.contains(&name)
+}
+
+/// Authored eye drive. `Unsupported` means the model asked for a mode this
+/// runtime does not interpret, so nothing drives its eyes.
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LookAtKind {
+    #[default]
+    Bone,
+    Expression,
+    Unsupported,
+}
+
+/// One non-weighted Unity AnimationCurve key, as flattened by VRM 0.x
+/// (`[time, value, inTangent, outTangent]`).
+#[derive(Reflect, Clone, Copy, Debug, PartialEq)]
+pub struct CurveKey {
+    pub time: f32,
+    pub value: f32,
+    pub in_tangent: f32,
+    pub out_tangent: f32,
+}
+
+/// VRM 1 `rangeMap*` or VRM 0 `lookAt*` degree map. Input is the gaze angle
+/// in degrees; output is degrees for bone look-at and a weight for expressions.
+/// VRM 1 is linear (empty `curve`); VRM 0 evaluates its authored curve over
+/// the normalized input like UniVRM's `CurveMapper`.
+#[derive(Reflect, Clone, Debug, PartialEq)]
+pub struct LookRangeMap {
+    pub input_max_degrees: f32,
+    pub output_scale: f32,
+    pub curve: Vec<CurveKey>,
+}
+impl LookRangeMap {
+    fn linear(input_max_degrees: f32, output_scale: f32) -> Self {
+        Self {
+            input_max_degrees,
+            output_scale,
+            curve: Vec::new(),
+        }
+    }
+    pub fn map(&self, degrees: f32) -> f32 {
+        if !degrees.is_finite() || self.input_max_degrees <= 0. {
+            return 0.;
+        }
+        let t = (degrees.max(0.) / self.input_max_degrees).min(1.);
+        let shaped = if self.curve.is_empty() {
+            t
+        } else {
+            evaluate_curve(&self.curve, t)
+        };
+        let value = shaped * self.output_scale;
+        if value.is_finite() { value } else { 0. }
+    }
+}
+/// Unity cubic Hermite evaluation with clamped ends. Keys are validated
+/// strictly ascending and finite at parse time.
+fn evaluate_curve(keys: &[CurveKey], t: f32) -> f32 {
+    let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+        return t;
+    };
+    if t <= first.time {
+        return first.value;
+    }
+    if t >= last.time {
+        return last.value;
+    }
+    let Some(pair) = keys.windows(2).find(|pair| t < pair[1].time) else {
+        return last.value;
+    };
+    let (k0, k1) = (pair[0], pair[1]);
+    let dt = k1.time - k0.time;
+    let s = (t - k0.time) / dt;
+    let (s2, s3) = (s * s, s * s * s);
+    (2. * s3 - 3. * s2 + 1.) * k0.value
+        + (s3 - 2. * s2 + s) * dt * k0.out_tangent
+        + (-2. * s3 + 3. * s2) * k1.value
+        + (s3 - s2) * dt * k1.in_tangent
+}
+
+/// Authored VRM look-at metadata of one avatar.
+#[derive(Reflect, Clone, Debug, PartialEq)]
+pub struct LookAtMeta {
+    pub kind: LookAtKind,
+    pub vrm0: bool,
+    pub horizontal_inner: LookRangeMap,
+    pub horizontal_outer: LookRangeMap,
+    pub vertical_down: LookRangeMap,
+    pub vertical_up: LookRangeMap,
+    /// Defaults applied or authored data that was not interpreted.
+    pub issues: Vec<String>,
+}
+impl LookAtMeta {
+    /// `left_degrees > 0` looks toward the character's left; `up_degrees > 0`
+    /// looks up. Both eyes share the outer horizontal map, as in UniVRM's
+    /// BlendShape applier and three-vrm's expression applier.
+    pub fn expression_weights(&self, left_degrees: f32, up_degrees: f32) -> [f32; 4] {
+        if self.kind != LookAtKind::Expression {
+            return [0.; 4];
+        }
+        let side = |degrees: f32| unit(self.horizontal_outer.map(degrees));
+        [
+            if left_degrees > 0. {
+                side(left_degrees)
+            } else {
+                0.
+            },
+            if left_degrees < 0. {
+                side(-left_degrees)
+            } else {
+                0.
+            },
+            if up_degrees > 0. {
+                unit(self.vertical_up.map(up_degrees))
+            } else {
+                0.
+            },
+            if up_degrees < 0. {
+                unit(self.vertical_down.map(-up_degrees))
+            } else {
+                0.
+            },
+        ]
+    }
+    /// Bone look-at output (left, up) in degrees for one eye. Looking toward a
+    /// side turns that side's eye outward (outer map) and the other inward.
+    pub fn bone_eye_degrees(
+        &self,
+        left_eye: bool,
+        left_degrees: f32,
+        up_degrees: f32,
+    ) -> (f32, f32) {
+        if self.kind != LookAtKind::Bone || !left_degrees.is_finite() || !up_degrees.is_finite() {
+            return (0., 0.);
+        }
+        let (toward_left, toward_right) = if left_eye {
+            (&self.horizontal_outer, &self.horizontal_inner)
+        } else {
+            (&self.horizontal_inner, &self.horizontal_outer)
+        };
+        let yaw = if left_degrees >= 0. {
+            toward_left.map(left_degrees)
+        } else {
+            -toward_right.map(-left_degrees)
+        };
+        let pitch = if up_degrees >= 0. {
+            self.vertical_up.map(up_degrees)
+        } else {
+            -self.vertical_down.map(-up_degrees)
+        };
+        (yaw, pitch)
+    }
+
+    fn parse(vrm1: Option<&Value>, vrm0: Option<&Value>) -> Option<Self> {
+        if let Some(vrm1) = vrm1 {
+            return Self::parse_vrm1(vrm1.get("lookAt")?);
+        }
+        Self::parse_vrm0(vrm0?.get("firstPerson")?)
+    }
+    fn parse_vrm1(look: &Value) -> Option<Self> {
+        let mut issues = Vec::new();
+        let kind = match look.get("type").map(Value::as_str) {
+            None => {
+                issues.push("lookAt.type is missing; treated as bone".into());
+                LookAtKind::Bone
+            }
+            Some(Some("bone")) => LookAtKind::Bone,
+            Some(Some("expression")) => LookAtKind::Expression,
+            Some(other) => {
+                issues.push(format!("lookAt.type {other:?} is unsupported"));
+                LookAtKind::Unsupported
+            }
+        };
+        let default_output = if kind == LookAtKind::Expression {
+            1.
+        } else {
+            10.
+        };
+        let mut map = |key: &str| {
+            let Some(value) = look.get(key) else {
+                issues.push(format!("{key} is missing; using 90° → {default_output}"));
+                return LookRangeMap::linear(90., default_output);
+            };
+            let input = value.get("inputMaxValue").map(Value::as_f64);
+            let output = value.get("outputScale").map(Value::as_f64);
+            let input = match input {
+                None => 90.,
+                Some(Some(v)) if v.is_finite() && v > 0. && v <= 180. => v as f32,
+                Some(_) => {
+                    issues.push(format!("{key}.inputMaxValue is invalid; using 90°"));
+                    90.
+                }
+            };
+            let output = match output {
+                None => default_output,
+                Some(Some(v)) if v.is_finite() && v >= 0. => v as f32,
+                Some(_) => {
+                    issues.push(format!(
+                        "{key}.outputScale is invalid; using {default_output}"
+                    ));
+                    default_output
+                }
+            };
+            LookRangeMap::linear(input, output)
+        };
+        let horizontal_inner = map("rangeMapHorizontalInner");
+        let horizontal_outer = map("rangeMapHorizontalOuter");
+        let vertical_down = map("rangeMapVerticalDown");
+        let vertical_up = map("rangeMapVerticalUp");
+        Some(Self {
+            kind,
+            vrm0: false,
+            horizontal_inner,
+            horizontal_outer,
+            vertical_down,
+            vertical_up,
+            issues,
+        })
+    }
+    fn parse_vrm0(first_person: &Value) -> Option<Self> {
+        let mut issues = Vec::new();
+        let kind = match first_person.get("lookAtTypeName").map(Value::as_str) {
+            None => {
+                issues.push("lookAtTypeName is missing; treated as Bone".into());
+                LookAtKind::Bone
+            }
+            Some(Some("Bone")) => LookAtKind::Bone,
+            Some(Some("BlendShape")) => LookAtKind::Expression,
+            Some(other) => {
+                issues.push(format!("lookAtTypeName {other:?} is unsupported"));
+                LookAtKind::Unsupported
+            }
+        };
+        // UniVRM CurveMapper defaults: xRange 90; yRange 10° (bone) or 1 (BlendShape);
+        // curve keys (0,0,0,1) and (1,1,1,0).
+        let default_output = if kind == LookAtKind::Expression {
+            1.
+        } else {
+            10.
+        };
+        let default_curve = vec![
+            CurveKey {
+                time: 0.,
+                value: 0.,
+                in_tangent: 0.,
+                out_tangent: 1.,
+            },
+            CurveKey {
+                time: 1.,
+                value: 1.,
+                in_tangent: 1.,
+                out_tangent: 0.,
+            },
+        ];
+        let mut map = |key: &str| {
+            let Some(value) = first_person.get(key) else {
+                issues.push(format!("{key} is missing; using UniVRM defaults"));
+                return LookRangeMap {
+                    curve: default_curve.clone(),
+                    ..LookRangeMap::linear(90., default_output)
+                };
+            };
+            let mut range = |field: &str, fallback: f32, positive: bool| match value
+                .get(field)
+                .map(Value::as_f64)
+            {
+                None => fallback,
+                Some(Some(v)) if v.is_finite() && (if positive { v > 0. } else { v >= 0. }) => {
+                    v as f32
+                }
+                Some(_) => {
+                    issues.push(format!("{key}.{field} is invalid; using {fallback}"));
+                    fallback
+                }
+            };
+            let input = range("xRange", 90., true);
+            let output = range("yRange", default_output, false);
+            let curve = match value.get("curve") {
+                None => default_curve.clone(),
+                Some(curve) => parse_curve(curve).unwrap_or_else(|| {
+                    issues.push(format!("{key}.curve is malformed; using linear"));
+                    Vec::new()
+                }),
+            };
+            LookRangeMap {
+                input_max_degrees: input,
+                output_scale: output,
+                curve,
+            }
+        };
+        let horizontal_inner = map("lookAtHorizontalInner");
+        let horizontal_outer = map("lookAtHorizontalOuter");
+        let vertical_down = map("lookAtVerticalDown");
+        let vertical_up = map("lookAtVerticalUp");
+        Some(Self {
+            kind,
+            vrm0: true,
+            horizontal_inner,
+            horizontal_outer,
+            vertical_down,
+            vertical_up,
+            issues,
+        })
+    }
+}
+/// Accept non-empty, finite, strictly ascending 4-float keys. Weighted
+/// tangents and non-clamp wrap modes are not part of the VRM 0 encoding.
+fn parse_curve(value: &Value) -> Option<Vec<CurveKey>> {
+    let numbers = value
+        .as_array()?
+        .iter()
+        .map(|v| v.as_f64().map(|v| v as f32).filter(|v| v.is_finite()))
+        .collect::<Option<Vec<_>>>()?;
+    if numbers.is_empty() || numbers.len() % 4 != 0 || numbers.len() > 4 * 64 {
+        return None;
+    }
+    let keys: Vec<_> = numbers
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|k| CurveKey {
+            time: k[0],
+            value: k[1],
+            in_tangent: k[2],
+            out_tangent: k[3],
+        })
+        .collect();
+    keys.windows(2)
+        .all(|pair| pair[0].time < pair[1].time)
+        .then_some(keys)
+}
+
+/// Authored look-at metadata on the scene root, beside `ExpressionCatalog`.
+#[derive(Component, Reflect, Clone, Debug)]
+#[reflect(Component, Clone)]
+struct AuthoredLookAt(LookAtMeta);
+
+/// Gaze input for the selected avatar, in anatomical degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LookInput {
+    pub root: Entity,
+    pub left_degrees: f32,
+    pub up_degrees: f32,
+    /// Applied after authored mapping, so strength does not distort its curve.
+    pub strength: f32,
+}
+impl LookInput {
+    fn weights(self, meta: &LookAtMeta) -> [f32; 4] {
+        meta.expression_weights(self.left_degrees, self.up_degrees)
+            .map(|weight| weight * unit(self.strength))
+    }
+}
+/// Selected-avatar handoff. The face runtime publishes the active root's
+/// metadata every frame; gaze writes `input` before the face runtime runs and
+/// clears it whenever it does not want expression-driven eyes.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct LookAtLink {
+    pub root: Option<Entity>,
+    /// The catalog was found, or its bounded search ended without one.
+    pub resolved: bool,
+    pub meta: Option<LookAtMeta>,
+    /// Which of [`LOOK_EXPRESSIONS`] the active root defines.
+    pub expressions: [bool; 4],
+    pub input: Option<LookInput>,
 }
 
 fn canonical_preset(name: &str) -> &str {
@@ -252,6 +622,10 @@ impl ExpressionHandler {
                 result.push_expression(gltf, name, value, true);
             }
         }
+        result.look_at = LookAtMeta::parse(
+            gltf.extension_value("VRMC_vrm"),
+            gltf.extension_value("VRM"),
+        );
         result
     }
     fn push_expression(&mut self, gltf: &gltf::Gltf, name: &str, value: &Value, vrm0: bool) {
@@ -387,6 +761,11 @@ impl GltfExtensionHandler for ExpressionHandler {
             expressions: self.expressions.clone(),
             material_issues: self.materials.issues.iter().cloned().collect(),
         });
+        if let Some(look_at) = &self.look_at {
+            world
+                .entity_mut(root)
+                .insert(AuthoredLookAt(look_at.clone()));
+        }
     }
 }
 
@@ -402,8 +781,10 @@ impl Plugin for ExpressionsPlugin {
             .init_resource::<FacialRuntime>()
             .init_resource::<SpeechTarget>()
             .init_resource::<MaterialExpressionFrame>()
+            .init_resource::<LookAtLink>()
             .register_type::<ExpressionNode>()
             .register_type::<ExpressionCatalog>()
+            .register_type::<AuthoredLookAt>()
             .register_type::<MaterialExpressionBinds>()
             .configure_sets(
                 PostUpdate,
@@ -436,6 +817,7 @@ struct FacialRuntime {
     scene_weights: BTreeMap<String, f32>,
     bindings_ready: bool,
     binding_wait_frames: u8,
+    look_at: Option<LookAtMeta>,
 }
 fn scene_emotion_weights(
     cache: &mut FacialRuntime,
@@ -573,6 +955,19 @@ fn expression_weights(
     mouth: f32,
     vowels: Option<[f32; 5]>,
 ) -> Vec<f32> {
+    expression_weights_with_look(expressions, config, blink, mouth, vowels, None)
+}
+/// `look` holds automatic gaze weights in [`LOOK_EXPRESSIONS`] order. Like
+/// speech, an active manual weight owns its look channel, and other
+/// expressions' `overrideLookAt` still blocks or blends the result.
+fn expression_weights_with_look(
+    expressions: &[ExpressionMeta],
+    config: &FacialConfig,
+    blink: f32,
+    mouth: f32,
+    vowels: Option<[f32; 5]>,
+    look: Option<[f32; 4]>,
+) -> Vec<f32> {
     let has_blink = expressions.iter().any(|e| e.name == "blink");
     let mut values: Vec<f32> = expressions
         .iter()
@@ -600,6 +995,12 @@ fn expression_weights(
                 } else if e.name == config.mouth_expression {
                     w = w.max(unit(mouth));
                 }
+            }
+            if !manual
+                && let Some(look) = look
+                && let Some(index) = LOOK_EXPRESSIONS.iter().position(|name| *name == e.name)
+            {
+                w = w.max(unit(look[index]));
             }
             if e.binary {
                 if w >= 0.5 { 1.0 } else { 0.0 }
@@ -630,7 +1031,7 @@ fn expression_weights(
             factors[0]
         } else if is_mouth(&e.name) {
             factors[1]
-        } else if e.name.starts_with("look") {
+        } else if is_look(&e.name) {
             factors[2]
         } else {
             1.0
@@ -765,7 +1166,7 @@ fn bind_scene(
     cache: &mut FacialRuntime,
     root: Entity,
     parents: &Query<&ChildOf>,
-    catalogs: &Query<(Entity, &ExpressionCatalog)>,
+    catalogs: &Query<(Entity, &ExpressionCatalog, Option<&AuthoredLookAt>)>,
     nodes: &Query<(Entity, &ExpressionNode)>,
     morphs: &Query<&mut MorphWeights>,
     meshes: &Query<(Entity, &ChildOf, &mut MeshMorphWeights)>,
@@ -774,9 +1175,9 @@ fn bind_scene(
         return;
     }
     cache.binding_wait_frames += 1;
-    let Some((_, catalog)) = catalogs
+    let Some((_, catalog, _)) = catalogs
         .iter()
-        .find(|(entity, _)| under_root(*entity, root, parents))
+        .find(|(entity, _, _)| under_root(*entity, root, parents))
     else {
         return;
     };
@@ -820,12 +1221,13 @@ fn update_expressions(
     mut state: ResMut<FacialState>,
     mut runtime: ResMut<FacialRuntime>,
     parents: Query<&ChildOf>,
-    catalogs: Query<(Entity, &ExpressionCatalog)>,
+    catalogs: Query<(Entity, &ExpressionCatalog, Option<&AuthoredLookAt>)>,
     nodes: Query<(Entity, &ExpressionNode)>,
     mut morphs: Query<&mut MorphWeights>,
     mut meshes: Query<(Entity, &ChildOf, &mut MeshMorphWeights)>,
     members: Query<(Entity, &SceneMemberFacial, Option<&SceneMemberEmotion>)>,
-    speech: Option<Res<SpeechTarget>>,
+    // Grouped to stay within Bevy's 16-parameter system limit.
+    (speech, mut look_link): (Option<Res<SpeechTarget>>, Option<ResMut<LookAtLink>>),
     mut extras: Local<BTreeMap<Entity, FacialRuntime>>,
     mut material_frame: Option<ResMut<MaterialExpressionFrame>>,
 ) {
@@ -893,12 +1295,13 @@ fn update_expressions(
         && let Some(root) = avatar.active
     {
         runtime.binding_wait_frames += 1;
-        if let Some((_, catalog)) = catalogs
+        if let Some((_, catalog, look_at)) = catalogs
             .iter()
-            .find(|(entity, _)| under_root(*entity, root, &parents))
+            .find(|(entity, _, _)| under_root(*entity, root, &parents))
         {
             runtime.bindings_ready = true;
             runtime.expressions = catalog.expressions.clone();
+            runtime.look_at = look_at.map(|look_at| look_at.0.clone());
             state.available = runtime.expressions.iter().map(|e| e.name.clone()).collect();
             state.status = format!(
                 "{} VRM expression definitions (morph/material)",
@@ -955,7 +1358,23 @@ fn update_expressions(
     } else {
         0.0
     };
-    let values = expression_weights(
+    // Publish the selected root's look-at metadata for gaze; accept gaze input
+    // only for this exact root so a stale entity can never drive another face.
+    let look = look_link.as_deref_mut().and_then(|link| {
+        link.root = avatar.active;
+        link.resolved = avatar.active.is_some()
+            && (runtime.bindings_ready || runtime.binding_wait_frames >= MAX_BINDING_WAIT_FRAMES);
+        if link.meta != runtime.look_at {
+            link.meta = runtime.look_at.clone();
+        }
+        link.expressions =
+            LOOK_EXPRESSIONS.map(|name| runtime.expressions.iter().any(|e| e.name == name));
+        let input = link
+            .input
+            .filter(|input| Some(input.root) == avatar.active)?;
+        Some(input.weights(runtime.look_at.as_ref()?))
+    });
+    let values = expression_weights_with_look(
         &runtime.expressions,
         &state.config,
         blink,
@@ -965,6 +1384,7 @@ fn update_expressions(
             .filter(|_| focused_speaks)
             .and_then(|state| state.weights())
             .map(|weights| weights.map(|value| unit(value * gain))),
+        look,
     );
     let mut automatic = behavior
         .filter(|_| matches!(avatar.status, crate::loading::LoadStatus::Ready))
@@ -2339,6 +2759,327 @@ mod tests {
         );
         assert!((weights[0] - 0.9).abs() < 1e-6);
     }
+    fn look_gltf(extensions: Value) -> gltf::Gltf {
+        let json = serde_json::json!({"asset":{"version":"2.0"},"extensions":extensions});
+        gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+    #[test]
+    fn vrm1_look_at_type_and_range_maps_parse_with_explicit_defaults() {
+        let parsed = ExpressionHandler::parse(&look_gltf(serde_json::json!({"VRMC_vrm":{
+            "expressions":{},
+            "lookAt":{"type":"expression",
+                "rangeMapHorizontalInner":{"inputMaxValue":30,"outputScale":0.5},
+                "rangeMapHorizontalOuter":{"inputMaxValue":20,"outputScale":0.8},
+                "rangeMapVerticalDown":{"inputMaxValue":10,"outputScale":1},
+                "rangeMapVerticalUp":{"inputMaxValue":-4,"outputScale":1}}}})));
+        let meta = parsed.look_at.unwrap();
+        assert_eq!(meta.kind, LookAtKind::Expression);
+        assert!(!meta.vrm0);
+        assert_eq!(meta.horizontal_outer, LookRangeMap::linear(20., 0.8));
+        assert_eq!(meta.vertical_up, LookRangeMap::linear(90., 1.));
+        assert!(
+            meta.issues
+                .iter()
+                .any(|s| s.contains("rangeMapVerticalUp.inputMaxValue"))
+        );
+        // Linear, saturating: half range → half output, beyond → output scale.
+        assert!((meta.horizontal_outer.map(10.) - 0.4).abs() < 1e-6);
+        assert!((meta.horizontal_outer.map(80.) - 0.8).abs() < 1e-6);
+        assert_eq!(meta.horizontal_outer.map(-5.), 0.);
+        assert_eq!(meta.horizontal_outer.map(f32::NAN), 0.);
+
+        let bone =
+            LookAtMeta::parse(Some(&serde_json::json!({"lookAt":{"type":"bone"}})), None).unwrap();
+        assert_eq!(bone.kind, LookAtKind::Bone);
+        assert_eq!(bone.horizontal_inner, LookRangeMap::linear(90., 10.));
+        assert_eq!(bone.issues.len(), 4, "every defaulted map is reported");
+        let untyped = LookAtMeta::parse(Some(&serde_json::json!({"lookAt":{}})), None).unwrap();
+        assert_eq!(untyped.kind, LookAtKind::Bone);
+        assert!(untyped.issues[0].contains("type is missing"));
+        let future = LookAtMeta::parse(
+            Some(&serde_json::json!({"lookAt":{"type":"blendShapeV2"}})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(future.kind, LookAtKind::Unsupported);
+        assert_eq!(future.expression_weights(30., 30.), [0.; 4]);
+        assert_eq!(future.bone_eye_degrees(true, 30., 30.), (0., 0.));
+        // VRM 1 without lookAt is legacy, and never falls through to VRM 0 data.
+        assert!(
+            LookAtMeta::parse(
+                Some(&serde_json::json!({})),
+                Some(&serde_json::json!({"firstPerson":{"lookAtTypeName":"BlendShape"}}))
+            )
+            .is_none()
+        );
+        assert!(LookAtMeta::parse(None, None).is_none());
+    }
+    #[test]
+    fn vrm0_blend_shape_curves_use_univrm_hermite_mapping_and_report_malformed_data() {
+        let parsed = ExpressionHandler::parse(&look_gltf(serde_json::json!({"VRM":{
+            "blendShapeMaster":{"blendShapeGroups":[]},
+            "firstPerson":{"lookAtTypeName":"BlendShape",
+                "lookAtHorizontalOuter":{"curve":[0,0,0,1,1,1,1,0],"xRange":40,"yRange":1},
+                "lookAtHorizontalInner":{"curve":[0,0,0,1,0,1,1,0],"xRange":40,"yRange":1},
+                "lookAtVerticalDown":{"curve":[0,0,1,1,1,1,1,1],"xRange":20,"yRange":0.5},
+                "lookAtVerticalUp":{"xRange":0,"yRange":1}}}})));
+        let meta = parsed.look_at.unwrap();
+        assert!(meta.vrm0);
+        assert_eq!(meta.kind, LookAtKind::Expression);
+        // Unit outgoing/incoming tangents make the default curve linear:
+        // at s=0.5, h10 + h01 + h11 = 0.125 + 0.5 - 0.125.
+        assert!((meta.horizontal_outer.map(20.) - 0.5).abs() < 1e-6);
+        // A zero incoming tangent at the final key yields the distinct
+        // authored ease-out value, proving this is not just linear mapping.
+        let mut eased = meta.horizontal_outer.clone();
+        eased.curve[1].in_tangent = 0.;
+        assert!((eased.map(20.) - 0.625).abs() < 1e-6);
+        assert_eq!(meta.horizontal_outer.map(40.), 1.);
+        assert_eq!(meta.horizontal_outer.map(400.), 1.);
+        // Non-ascending key times are rejected to linear with a diagnostic.
+        assert!(meta.horizontal_inner.curve.is_empty());
+        assert!((meta.horizontal_inner.map(10.) - 0.25).abs() < 1e-6);
+        assert!(
+            meta.issues
+                .iter()
+                .any(|s| s.contains("lookAtHorizontalInner.curve"))
+        );
+        // Unit tangents everywhere reproduce the straight line.
+        assert!((meta.vertical_down.map(5.) - 0.125).abs() < 1e-6);
+        // xRange 0 is invalid and falls back to 90 with the default curve.
+        assert_eq!(meta.vertical_up.input_max_degrees, 90.);
+        assert!(
+            meta.issues
+                .iter()
+                .any(|s| s.contains("lookAtVerticalUp.xRange"))
+        );
+        assert_eq!(evaluate_curve(&meta.horizontal_outer.curve, -1.), 0.);
+        assert!(parse_curve(&serde_json::json!([0, 0, 0])).is_none());
+        assert!(parse_curve(&serde_json::json!([])).is_none());
+        assert!(parse_curve(&serde_json::json!([0, "x", 0, 0])).is_none());
+
+        let bone = LookAtMeta::parse(
+            None,
+            Some(&serde_json::json!({"firstPerson":{
+            "lookAtTypeName":"Bone"}})),
+        )
+        .unwrap();
+        assert_eq!(bone.kind, LookAtKind::Bone);
+        assert_eq!(bone.horizontal_outer.output_scale, 10.);
+        assert_eq!(bone.horizontal_outer.curve.len(), 2);
+        assert!(LookAtMeta::parse(None, Some(&serde_json::json!({}))).is_none());
+    }
+    #[test]
+    fn look_directions_map_to_presets_and_bone_eyes_use_inner_outer_per_eye() {
+        let meta = LookAtMeta {
+            kind: LookAtKind::Expression,
+            vrm0: false,
+            horizontal_inner: LookRangeMap::linear(10., 0.2),
+            horizontal_outer: LookRangeMap::linear(10., 1.),
+            vertical_down: LookRangeMap::linear(10., 0.5),
+            vertical_up: LookRangeMap::linear(20., 1.),
+            issues: vec![],
+        };
+        assert_eq!(meta.expression_weights(5., 10.), [0.5, 0., 0.5, 0.]);
+        assert_eq!(meta.expression_weights(-50., -4.), [0., 1., 0., 0.2]);
+        assert_eq!(meta.expression_weights(0., 0.), [0.; 4]);
+        assert_eq!(meta.expression_weights(f32::NAN, f32::INFINITY), [0.; 4]);
+        assert_eq!(
+            meta.bone_eye_degrees(true, 5., 0.),
+            (0., 0.),
+            "expression rigs never rotate bones"
+        );
+        let bone = LookAtMeta {
+            kind: LookAtKind::Bone,
+            horizontal_inner: LookRangeMap::linear(90., 8.),
+            horizontal_outer: LookRangeMap::linear(90., 12.),
+            vertical_down: LookRangeMap::linear(90., 10.),
+            vertical_up: LookRangeMap::linear(90., 6.),
+            ..meta
+        };
+        assert_eq!(bone.expression_weights(45., 45.), [0.; 4]);
+        // Looking left turns the left eye outward and the right eye inward.
+        assert_eq!(bone.bone_eye_degrees(true, 45., 45.), (6., 3.));
+        assert_eq!(bone.bone_eye_degrees(false, 45., -45.), (4., -5.));
+        assert_eq!(bone.bone_eye_degrees(true, -90., 0.), (-8., 0.));
+        assert_eq!(bone.bone_eye_degrees(false, -180., 0.), (-12., 0.));
+    }
+    #[test]
+    fn gaze_look_weights_yield_to_manual_weights_and_override_look_at() {
+        let names = [
+            "lookLeft",
+            "lookRight",
+            "lookUp",
+            "lookDown",
+            "surprised",
+            "lookingGlass",
+        ];
+        let mut expressions: Vec<_> = names
+            .into_iter()
+            .map(|name| ExpressionMeta {
+                name: name.into(),
+                ..default()
+            })
+            .collect();
+        expressions[4].look_override = 1;
+        expressions[5].look_override = 0;
+        let look = Some([0.6, 0., 0.3, 0.]);
+        let mut config = FacialConfig {
+            auto_blink: false,
+            ..default()
+        };
+        let weights = |config: &FacialConfig, expressions: &[ExpressionMeta]| {
+            expression_weights_with_look(expressions, config, 0., 0., None, look)
+        };
+        assert_eq!(weights(&config, &expressions), [0.6, 0., 0.3, 0., 0., 0.]);
+        // An active manual slider owns its channel; neutral legacy sliders do not.
+        config.weights.insert("lookLeft".into(), 0.2);
+        config.weights.insert("lookUp".into(), 0.0);
+        assert_eq!(weights(&config, &expressions), [0.2, 0., 0.3, 0., 0., 0.]);
+        // A custom look-alike name is not a look preset and is not blocked.
+        config.weights.insert("lookingGlass".into(), 0.7);
+        config.selected_expression = "surprised".into();
+        assert_eq!(weights(&config, &expressions), [0., 0., 0., 0., 1., 0.7]);
+        expressions[4].look_override = 2;
+        config.expression_weight = 0.25;
+        let blended = weights(&config, &expressions);
+        assert!((blended[0] - 0.15).abs() < 1e-6 && (blended[2] - 0.225).abs() < 1e-6);
+        assert_eq!(
+            expression_weights(&expressions, &FacialConfig::default(), 0., 0., None),
+            expression_weights_with_look(
+                &expressions,
+                &FacialConfig::default(),
+                0.,
+                0.,
+                None,
+                None
+            )
+        );
+    }
+    #[test]
+    fn gaze_input_drives_only_the_published_root_and_releases_in_the_same_frame() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(ExpressionsPlugin)
+            .init_resource::<AvatarLoadState>();
+        let meta = LookAtMeta::parse(
+            Some(&serde_json::json!({"lookAt":{"type":"expression",
+                "rangeMapHorizontalOuter":{"inputMaxValue":10,"outputScale":1},
+                "rangeMapHorizontalInner":{"inputMaxValue":10,"outputScale":1},
+                "rangeMapVerticalDown":{"inputMaxValue":10,"outputScale":1},
+                "rangeMapVerticalUp":{"inputMaxValue":10,"outputScale":1}}})),
+            None,
+        )
+        .unwrap();
+        let spawn = |app: &mut App| {
+            let root = app
+                .world_mut()
+                .spawn((
+                    ExpressionCatalog {
+                        material_issues: vec![],
+                        expressions: LOOK_EXPRESSIONS
+                            .into_iter()
+                            .map(|name| ExpressionMeta {
+                                name: name.into(),
+                                ..default()
+                            })
+                            .collect(),
+                    },
+                    AuthoredLookAt(meta.clone()),
+                ))
+                .id();
+            let node = app
+                .world_mut()
+                .spawn((
+                    ChildOf(root),
+                    ExpressionNode {
+                        binds: (0..4)
+                            .map(|i| NodeBind {
+                                expression: i,
+                                index: i,
+                                weight: 1.,
+                            })
+                            .collect(),
+                    },
+                    MorphWeights::new(vec![0., 0., 0., 0.2], None).unwrap(),
+                ))
+                .id();
+            (root, node)
+        };
+        let (first, first_node) = spawn(&mut app);
+        let (second, second_node) = spawn(&mut app);
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .auto_blink = false;
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(first);
+        app.update();
+        {
+            let link = app.world().resource::<LookAtLink>();
+            assert_eq!(link.root, Some(first));
+            assert!(link.resolved);
+            assert_eq!(link.meta.as_ref(), Some(&meta));
+            assert_eq!(link.expressions, [true; 4]);
+        }
+        let morphs = |app: &App, node| {
+            app.world()
+                .get::<MorphWeights>(node)
+                .unwrap()
+                .weights()
+                .to_vec()
+        };
+        let send = |app: &mut App, root, left, up| {
+            app.world_mut().resource_mut::<LookAtLink>().input = Some(LookInput {
+                root,
+                left_degrees: left,
+                up_degrees: up,
+                strength: 1.,
+            });
+        };
+        send(&mut app, first, -5., -20.);
+        app.update();
+        assert_eq!(morphs(&app, first_node), vec![0., 0.5, 0., 1.]);
+        // Input addressed to another root is stale and must not move this face.
+        send(&mut app, second, 10., 10.);
+        app.update();
+        assert_eq!(morphs(&app, first_node), vec![0., 0., 0., 0.2]);
+        // Manual priority holds with live gaze input.
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .weights
+            .insert("lookRight".into(), 0.1);
+        send(&mut app, first, -10., 0.);
+        app.update();
+        assert!((morphs(&app, first_node)[1] - 0.1).abs() < 1e-6);
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .weights
+            .clear();
+        send(&mut app, first, 10., 0.);
+        app.update();
+        assert_eq!(morphs(&app, first_node), vec![1., 0., 0., 0.2]);
+        // Clearing input (gaze disabled) restores the baseline the same frame.
+        app.world_mut().resource_mut::<LookAtLink>().input = None;
+        app.update();
+        assert_eq!(morphs(&app, first_node), vec![0., 0., 0., 0.2]);
+        // Switching roots restores the old face and republishes metadata.
+        send(&mut app, first, 10., 0.);
+        app.update();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(second);
+        app.update();
+        assert_eq!(morphs(&app, first_node), vec![0., 0., 0., 0.2]);
+        assert_eq!(morphs(&app, second_node), vec![0., 0., 0., 0.2]);
+        assert_eq!(app.world().resource::<LookAtLink>().root, Some(second));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = None;
+        app.update();
+        let link = app.world().resource::<LookAtLink>();
+        assert_eq!(
+            (link.root, link.resolved, link.meta.is_none()),
+            (None, false, true)
+        );
+    }
     #[test]
     fn envelope_is_shared_finite_and_silences() {
         let input = AudioEnvelope::default();
@@ -2474,5 +3215,28 @@ mod tests {
         );
         assert!(app.world().resource::<FacialRuntime>().nodes.is_empty());
         assert!(app.world().resource::<FacialState>().available.is_empty());
+    }
+    #[test]
+    fn look_input_strength_scales_after_authored_mapping_and_zero_releases() {
+        let meta = LookAtMeta::parse(
+            Some(&serde_json::json!({"lookAt": {
+                "type": "expression", "rangeMapHorizontalOuter": {
+                    "inputMaxValue": 90, "outputScale": 1
+                }
+            }})),
+            None,
+        )
+        .unwrap();
+        let mut input = LookInput {
+            root: Entity::PLACEHOLDER,
+            left_degrees: 60.,
+            up_degrees: 0.,
+            strength: 0.3,
+        };
+        assert!((input.weights(&meta)[0] - 0.2).abs() < 1e-6);
+        input.strength = 0.;
+        assert_eq!(input.weights(&meta), [0.; 4]);
+        input.strength = f32::NAN;
+        assert_eq!(input.weights(&meta), [0.; 4]);
     }
 }

@@ -1,0 +1,11 @@
+# Authored expression gaze implementation
+
+2026-10-18. Implemented by direct Claude Opus 5.5 worker `opus-gaze`, coordinated through Squad. Owned source: expressions.rs, gaze.rs, gaze_controls.rs. Worker ran no Cargo, GPU, GUI or live-provider checks. Parent verification is recorded separately in VALIDATION.md.
+
+VRM1 expression and VRM0 BlendShape look-at route directional weights through existing facial composition (including material bindings), preserving explicit manual look weights and overrideLookAt. Expression mode does not rotate eye bones. Bone mode maps each eye through authored inner/outer ranges. Models without authored metadata retain the legacy procedural bone path. Unknown modes or missing expression presets report an unavailable eye drive; head/neck overlays remain independent. Input is tagged by root and character and cleared per frame so disable/switch/removal releases it.
+
+VRM0 flattened Unity curve keys use clamped cubic Hermite interpolation; malformed keys produce a diagnostic and linear fallback. Unsupported weighted tangents/wrap modes cannot be represented by this encoding. World-space target offsets and companion-avatar gaze are not added. Authored output caps are respected; physical/visual acceptance remains open. Parent subsequently corrected the original map input from eye micro-rotation to a virtual angular focus, with strength applied after mapping, following Fable finding D1. See fable-expression-gaze-review.md.
+
+Parent checked [three-vrm expression applier](https://github.com/pixiv/three-vrm/blob/dev/packages/three-vrm-core/src/lookAt/VRMLookAtExpressionApplier.ts), retrieved 2026-10-18, lines72-87: both horizontal directions use the outer map. [Loader](https://github.com/pixiv/three-vrm/blob/dev/packages/three-vrm-core/src/lookAt/VRMLookAtLoaderPlugin.ts), lines234-250, uses VRM0 xRange/yRange directly. These source checks do not prove avatar appearance.
+
+Initial parent gaze run passed 14 tests. Initial full library run passed448/449: the new default-Hermite fixture incorrectly expected0.625 at half input despite unit tangents on both ends. Parent corrected its analytic expectation to0.5 and added a distinct zero-final-incoming-tangent case expecting0.625; production interpolation code did not change. Final test receipts belong in VALIDATION.md.
