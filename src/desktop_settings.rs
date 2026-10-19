@@ -3,6 +3,7 @@ use bevy::prelude::{IVec2, Resource, Vec2};
 use bevy_egui::egui;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use waifu_studio::settings_kit as kit;
 
 #[derive(Clone, Copy)]
 pub struct DesktopMoveRequest {
@@ -145,129 +146,176 @@ impl DesktopSettings {
         result
     }
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.label("Window & performance");
-        let mut changed = ui
-            .checkbox(&mut self.always_on_top, "Keep desktop companion on top")
+        let mut changed = false;
+        kit::group(ui, "Window & performance", |ui| {
+            changed |= kit::toggle_row(
+                ui,
+                "Keep desktop companion on top",
+                "",
+                &mut self.always_on_top,
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.focused_fps, 15..=144).text("Focused FPS"))
+            changed |= kit::slider_row(
+                ui,
+                "Focused FPS",
+                "",
+                egui::Slider::new(&mut self.focused_fps, 15..=144),
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.background_fps, 5..=60).text("Background FPS"))
+            changed |= kit::slider_row(
+                ui,
+                "Background FPS",
+                "",
+                egui::Slider::new(&mut self.background_fps, 5..=60),
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.overlay_fps, 5..=60).text("Desktop FPS"))
+            changed |= kit::slider_row(
+                ui,
+                "Desktop FPS",
+                "",
+                egui::Slider::new(&mut self.overlay_fps, 5..=60),
+            )
             .changed();
-        ui.small("Lower caps reduce CPU/GPU use. Display sync may limit higher caps.");
-        egui::ComboBox::from_label("Window size")
-            .selected_text("Choose window size…")
-            .width(240.0)
-            .show_ui(ui, |ui| {
-                for (w, h) in [(640, 720), (960, 720), (1280, 900)] {
-                    if ui.selectable_label(false, format!("{w} × {h}")).clicked() {
-                        self.resize_requested = Some((w, h));
-                    }
-                }
+            ui.small("Lower caps reduce CPU/GPU use. Display sync may limit higher caps.");
+            kit::row(ui, "Window size", "", |ui| {
+                egui::ComboBox::from_id_salt("Window size")
+                    .selected_text("Choose window size…")
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for (w, h) in [(640, 720), (960, 720), (1280, 900)] {
+                            if ui.selectable_label(false, format!("{w} × {h}")).clicked() {
+                                self.resize_requested = Some((w, h));
+                            }
+                        }
+                    });
             });
-        ui.label("Desktop sitting & placement");
-        let mut sitting = self.sit_requested.unwrap_or(self.sitting);
-        if ui
-            .checkbox(&mut sitting, "Sit on a detected surface")
-            .changed()
-        {
-            self.request_sitting(sitting);
-        }
-        if !self.sitting_status.is_empty() {
-            ui.small(&self.sitting_status);
-        }
-        changed |= ui
-            .checkbox(
+        });
+        kit::group(ui, "Desktop sitting & placement", |ui| {
+            let mut sitting = self.sit_requested.unwrap_or(self.sitting);
+            if kit::toggle_row(ui, "Sit on a detected surface", "", &mut sitting).changed() {
+                self.request_sitting(sitting);
+            }
+            if !self.sitting_status.is_empty() {
+                ui.small(&self.sitting_status);
+            }
+            changed |= kit::toggle_row(
+                ui,
+                "Idle / grabbed / seated animations",
+                "",
                 &mut self.automatic_motions,
-                "Homunculus idle / grabbed / seated animations",
             )
             .changed();
-        ui.small("Motion clips take priority. Drag the companion to line up with a window edge.");
-        use waifu_studio::desktop_perch::PerchMode;
-        let old_mode = self.perch.mode;
-        egui::ComboBox::from_label("Snap position")
-            .selected_text(format!("{:?}", self.perch.mode))
-            .show_ui(ui, |ui| {
-                for (mode, label) in [
-                    (PerchMode::Disabled, "Free placement"),
-                    (PerchMode::ScreenBottom, "Screen bottom"),
-                    (PerchMode::ScreenLeft, "Bottom left"),
-                    (PerchMode::ScreenRight, "Bottom right"),
-                    (PerchMode::ManualSurface, "Manual surface"),
-                ] {
-                    ui.selectable_value(&mut self.perch.mode, mode, label);
-                }
+            kit::note(
+                ui,
+                "Motion clips take priority. Drag the companion to line up with a window edge.",
+            );
+            use waifu_studio::desktop_perch::PerchMode;
+            let old_mode = self.perch.mode;
+            kit::row(ui, "Snap position", "", |ui| {
+                egui::ComboBox::from_id_salt("Snap position")
+                    .selected_text(format!("{:?}", self.perch.mode))
+                    .show_ui(ui, |ui| {
+                        for (mode, label) in [
+                            (PerchMode::Disabled, "Free placement"),
+                            (PerchMode::ScreenBottom, "Screen bottom"),
+                            (PerchMode::ScreenLeft, "Bottom left"),
+                            (PerchMode::ScreenRight, "Bottom right"),
+                            (PerchMode::ManualSurface, "Manual surface"),
+                        ] {
+                            ui.selectable_value(&mut self.perch.mode, mode, label);
+                        }
+                    });
             });
-        changed |= self.perch.mode != old_mode;
-        changed |= ui
-            .add(
-                egui::Slider::new(&mut self.perch.horizontal_fraction, 0.0..=1.0)
-                    .text("Seat horizontal position"),
+            changed |= self.perch.mode != old_mode;
+            changed |= kit::slider_row(
+                ui,
+                "Seat horizontal position",
+                "",
+                egui::Slider::new(&mut self.perch.horizontal_fraction, 0.0..=1.0),
             )
             .changed();
-        if self.perch.mode == PerchMode::ManualSurface {
-            changed |= ui
-                .add(
-                    egui::Slider::new(&mut self.perch.manual_surface.y_fraction, 0.0..=1.0)
-                        .text("Surface height from top"),
+            if self.perch.mode == PerchMode::ManualSurface {
+                changed |= kit::slider_row(
+                    ui,
+                    "Surface height from top",
+                    "",
+                    egui::Slider::new(&mut self.perch.manual_surface.y_fraction, 0.0..=1.0),
                 )
                 .changed();
-        }
-        if ui.button("Snap companion on current monitor").clicked() {
-            self.perch_requested = true;
-        }
-        if !self.placement_status.is_empty() {
-            ui.small(&self.placement_status);
-        }
-        let previous_detection = self.kwin_window_surfaces;
-        egui::ComboBox::from_label("Window & taskbar detection")
-            .selected_text(if self.kwin_window_surfaces {
-                "Automatic · KDE / Hyprland"
-            } else {
-                "Disabled"
-            })
-            .width(280.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut self.kwin_window_surfaces,
-                    true,
-                    "Automatic · KDE / Hyprland",
-                );
-                ui.selectable_value(&mut self.kwin_window_surfaces, false, "Disabled");
+            }
+            if ui.button("Snap companion on current monitor").clicked() {
+                self.perch_requested = true;
+            }
+            if !self.placement_status.is_empty() {
+                ui.small(&self.placement_status);
+            }
+            let previous_detection = self.kwin_window_surfaces;
+            kit::row(ui, "Window & taskbar detection", "", |ui| {
+                egui::ComboBox::from_id_salt("Window & taskbar detection")
+                    .selected_text(if self.kwin_window_surfaces {
+                        "Automatic · KDE / Hyprland"
+                    } else {
+                        "Disabled"
+                    })
+                    .width(280.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.kwin_window_surfaces,
+                            true,
+                            "Automatic · KDE / Hyprland",
+                        );
+                        ui.selectable_value(&mut self.kwin_window_surfaces, false, "Disabled");
+                    });
             });
-        changed |= previous_detection != self.kwin_window_surfaces;
-        ui.small("Uses temporary KWin scripting or the current Hyprland socket in Desktop mode. It tracks window geometry and moves only this companion; nothing is installed in desktop settings.");
-        if !self.surface_status.is_empty() {
-            ui.small(&self.surface_status);
-        }
-        ui.small(
-            "Other compositors may ignore screen snapping; manual dragging remains available.",
-        );
-        ui.label("Avatar placement & light");
-        changed |= ui
-            .add(egui::Slider::new(&mut self.avatar_zoom, 0.5..=2.0).text("Zoom"))
+            changed |= previous_detection != self.kwin_window_surfaces;
+            kit::note(
+                ui,
+                "Uses temporary KWin scripting or the current Hyprland socket in Desktop mode. It tracks window geometry and moves only this companion; nothing is installed in desktop settings.",
+            );
+            if !self.surface_status.is_empty() {
+                ui.small(&self.surface_status);
+            }
+            ui.small(
+                "Other compositors may ignore screen snapping; manual dragging remains available.",
+            );
+        });
+        kit::group(ui, "Avatar placement & light", |ui| {
+            changed |= kit::slider_row(
+                ui,
+                "Zoom",
+                "",
+                egui::Slider::new(&mut self.avatar_zoom, 0.5..=2.0),
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.avatar_x, -1.0..=1.0).text("Horizontal"))
+            changed |= kit::slider_row(
+                ui,
+                "Horizontal",
+                "",
+                egui::Slider::new(&mut self.avatar_x, -1.0..=1.0),
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.avatar_y, -1.0..=1.0).text("Vertical"))
+            changed |= kit::slider_row(
+                ui,
+                "Vertical",
+                "",
+                egui::Slider::new(&mut self.avatar_y, -1.0..=1.0),
+            )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut self.light_intensity, 0.2..=2.0).text("Key light"))
+            changed |= kit::slider_row(
+                ui,
+                "Key light",
+                "",
+                egui::Slider::new(&mut self.light_intensity, 0.2..=2.0),
+            )
             .changed();
-        if ui.button("Reset placement & light").clicked() {
-            self.avatar_zoom = 1.0;
-            self.avatar_x = 0.0;
-            self.avatar_y = 0.0;
-            self.light_intensity = 1.0;
-            changed = true;
-        }
+            if ui.button("Reset placement & light").clicked() {
+                self.avatar_zoom = 1.0;
+                self.avatar_x = 0.0;
+                self.avatar_y = 0.0;
+                self.light_intensity = 1.0;
+                changed = true;
+            }
+        });
         self.dirty |= changed;
         if ui
             .add_enabled(self.dirty, egui::Button::new("Save window settings"))

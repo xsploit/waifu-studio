@@ -58,6 +58,7 @@ pub mod rooms;
 pub mod visuals;
 
 pub mod model_catalog;
+pub mod settings_kit;
 
 pub mod vercel_speech;
 

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+use waifu_studio::settings_kit as kit;
 use waifu_studio::{
     agent_loop::{AgentLoop, LoopToken},
     agents::{AgentProvider, AgentState},
@@ -481,8 +482,11 @@ pub fn ui(
     agents: &mut AgentState,
     memory: &mut MemoryState,
 ) {
-    ui.heading("Experimental bounded task loop");
-    ui.label("Review then Start authorizes real companion model calls and automatic execution of its task proposals within this fixed worker/access/directory/SSH scope. Up to 8 tasks and 9 model calls; calls may incur provider charges. No continuous background autonomy. Custom commands retain their reviewed user permissions.");
+    kit::section(ui, "Experimental bounded task loop");
+    kit::note(
+        ui,
+        "Review then Start authorizes real companion model calls and automatic execution of its task proposals within this fixed worker/access/directory/SSH scope. Up to 8 tasks and 9 model calls; calls may incur provider charges. No continuous background autonomy. Custom commands retain their reviewed user permissions.",
+    );
     ui.add_enabled_ui(!state.is_active(), |ui| {
         let mut changed = ui
             .add(
@@ -491,12 +495,20 @@ pub fn ui(
                     .desired_rows(3),
             )
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut state.max_steps, 1..=8).text("Maximum worker tasks"))
-            .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut state.cooldown_seconds, 1..=3600).text("Cooldown seconds"))
-            .changed();
+        changed |= kit::slider_row(
+            ui,
+            "Maximum worker tasks",
+            "",
+            egui::Slider::new(&mut state.max_steps, 1..=8),
+        )
+        .changed();
+        changed |= kit::slider_row(
+            ui,
+            "Cooldown seconds",
+            "",
+            egui::Slider::new(&mut state.cooldown_seconds, 1..=3600),
+        )
+        .changed();
         if changed {
             state.reviewed = None;
         }

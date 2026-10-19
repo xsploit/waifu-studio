@@ -1,4 +1,5 @@
 use bevy_egui::egui;
+use waifu_studio::settings_kit as kit;
 use waifu_studio::{data::Library, scene_chat::SceneChat, scene_roster::SceneRoster};
 pub fn ui(
     ui: &mut egui::Ui,
@@ -7,9 +8,15 @@ pub fn ui(
     roster: &SceneRoster,
     decision: &waifu_studio::recipient_decision::DecisionConfig,
 ) {
-    ui.heading("Talk to the scene");
-    ui.small("Each checked character replies in order. Scene conversations are saved separately per character; private chat histories and other characters' notes are never shared.");
-    ui.small("Checkboxes override @names. With no checkboxes, exact @names route locally; a sole scene character is selected automatically. Jev runs only when you click its button.");
+    kit::section(ui, "Talk to the scene");
+    kit::note(
+        ui,
+        "Each selected character replies in order. Scene conversations are saved separately per character; private chat histories and other characters' notes are never shared.",
+    );
+    kit::note(
+        ui,
+        "Selected recipients override @names. With none selected, exact @names route locally; a sole scene character is selected automatically. Jev runs only when you click its button.",
+    );
     let busy = chat.is_busy();
     ui.add_enabled_ui(!busy, |ui| {
         for c in &library.characters {
@@ -25,10 +32,7 @@ pub fn ui(
                     .get(provider)
                     .map(|p| p.effective_model())
                     .unwrap_or_else(|| "Missing connection".into());
-                if ui
-                    .checkbox(&mut checked, format!("{} · {}", c.name, model))
-                    .changed()
-                {
+                if kit::toggle_row(ui, &c.name, &model, &mut checked).changed() {
                     if checked {
                         chat.recipients.push(c.id);
                     } else {
@@ -40,7 +44,7 @@ pub fn ui(
         ui.add(
             egui::TextEdit::multiline(&mut chat.draft)
                 .desired_rows(3)
-                .hint_text("Message the checked characters…"),
+                .hint_text("Message the selected characters…"),
         );
         if chat.recipients.is_empty()
             && ui.button("Ask Jev to choose recipient").clicked()
@@ -59,7 +63,7 @@ pub fn ui(
     }
     ui.label(&chat.status);
     egui::CollapsingHeader::new("Latest scene emotions").show(ui, |ui| {
-        ui.small("Uses each recipient’s saved automatic-emotion opt-in. Local behavior is required for facial output. Reply metadata costs no extra call; Jev appraisal adds a separate bounded request. Neither guarantees speech-onset synchronization.");
+        kit::note(ui, "Uses each recipient’s saved automatic-emotion opt-in. Local behavior is required for facial output. Reply metadata costs no extra call; Jev appraisal adds a separate bounded request. Neither guarantees speech-onset synchronization.");
         for receipt in chat.affect_receipts() {
             let name = library.characters.iter().find(|c| c.id == receipt.character).map(|c| c.name.as_str()).unwrap_or("Removed character");
             if let Some(error) = &receipt.error { ui.colored_label(egui::Color32::LIGHT_RED, format!("{name}: {error}")); }
@@ -72,7 +76,7 @@ pub fn ui(
     egui::CollapsingHeader::new("Latest scene recall")
         .id_salt("scene_recall")
         .show(ui, |ui| {
-            ui.small("Memory prepared for the latest scene requests. This does not confirm provider delivery or a successful reply. Traces stay in this session; focused-chat inspectors are separate.");
+            kit::note(ui, "Memory prepared for the latest scene requests. This does not confirm provider delivery or a successful reply. Traces stay in this session; focused-chat inspectors are separate.");
             if chat.recalls().is_empty() {
                 ui.weak("No scene recall prepared yet.");
             }

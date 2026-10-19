@@ -54,27 +54,7 @@ impl Card<'_> {
         control: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
         self.divider();
-        let ui = &mut *self.ui;
-        ui.add_space(10.0);
-        let (_, inner) = egui::Sides::new().shrink_left().wrap().show(
-            ui,
-            |ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    if hint.is_empty() {
-                        // Line a lone title up with the control's text.
-                        ui.add_space(5.0);
-                    }
-                    ui.label(RichText::new(title).size(14.0).color(TITLE));
-                    if !hint.is_empty() {
-                        ui.label(RichText::new(hint).size(12.0).color(HINT));
-                    }
-                });
-            },
-            control,
-        );
-        ui.add_space(10.0);
-        inner
+        row_body(self.ui, title, hint, control)
     }
     /// Free-form content spanning the card width (lists, editors).
     pub fn block<R>(&mut self, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -85,6 +65,135 @@ impl Card<'_> {
         ui.add_space(10.0);
         inner
     }
+}
+
+fn row_body<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.add_space(10.0);
+    let (_, inner) = egui::Sides::new().shrink_left().wrap().show(
+        ui,
+        |ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                if hint.is_empty() {
+                    // Line a lone title up with the control's text.
+                    ui.add_space(5.0);
+                }
+                ui.label(RichText::new(title).size(14.0).color(TITLE));
+                if !hint.is_empty() {
+                    ui.label(RichText::new(hint).size(12.0).color(HINT));
+                }
+            });
+        },
+        |ui| {
+            ui.set_max_width(ui.available_width().min(280.0));
+            control(ui)
+        },
+    );
+    ui.add_space(10.0);
+    inner
+}
+
+/// Hairline between stacked rows; skipped at the top of a container.
+fn divider_if_needed(ui: &mut egui::Ui) {
+    if ui.cursor().top() - ui.min_rect().top() > 2.0 {
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 0.0, CARD_LINE);
+    }
+}
+
+/// A settings row anywhere (inside [`group`] or a plain container).
+pub fn row<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    control: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    divider_if_needed(ui);
+    row_body(ui, title, hint, control)
+}
+
+/// Row with a switch on the right; drop-in for `ui.checkbox(value, title)`.
+pub fn toggle_row(
+    ui: &mut egui::Ui,
+    title: impl AsRef<str>,
+    hint: &str,
+    value: &mut bool,
+) -> egui::Response {
+    row(ui, title.as_ref(), hint, |ui| toggle(ui, value))
+}
+
+/// Row with a slider on the right; pass the slider without `.text(...)`.
+pub fn slider_row(
+    ui: &mut egui::Ui,
+    title: impl AsRef<str>,
+    hint: &str,
+    slider: impl egui::Widget,
+) -> egui::Response {
+    row(ui, title.as_ref(), hint, |ui| {
+        ui.spacing_mut().slider_width = 160.0;
+        ui.add(slider)
+    })
+}
+
+/// Row with a single-line text box on the right.
+pub fn text_row(
+    ui: &mut egui::Ui,
+    title: impl AsRef<str>,
+    hint: &str,
+    value: &mut String,
+    placeholder: &str,
+) -> egui::Response {
+    row(ui, title.as_ref(), hint, |ui| {
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .hint_text(placeholder)
+                .desired_width(240.0),
+        )
+    })
+}
+
+/// Row with a masked text box on the right (keys, tokens).
+pub fn secret_row(
+    ui: &mut egui::Ui,
+    title: impl AsRef<str>,
+    hint: &str,
+    value: &mut String,
+) -> egui::Response {
+    row(ui, title.as_ref(), hint, |ui| {
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .password(true)
+                .hint_text("Session only")
+                .desired_width(240.0),
+        )
+    })
+}
+
+/// Muted explanatory line; use instead of paragraphs of body text.
+pub fn note(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.label(RichText::new(text.into()).size(12.0).color(HINT));
+}
+
+/// Collapsible card with a title, open by default; holds rows.
+pub fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) {
+    ui.add_space(6.0);
+    egui::Frame::new()
+        .fill(CARD)
+        .stroke(Stroke::new(1.0, CARD_LINE))
+        .corner_radius(12)
+        .inner_margin(egui::Margin::symmetric(16, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::CollapsingHeader::new(RichText::new(title).size(14.0).color(TITLE))
+                .default_open(true)
+                .show_unindented(ui, add);
+        });
 }
 
 /// iOS-style switch. Returns a response whose `changed()` reports a flip.

@@ -3,9 +3,13 @@ use waifu_studio::facts_memory::{
     CANDIDATE_TTL_SECS, FactsMemoryState, FactsRecallOutcome, MAX_CANDIDATES, RecordKind,
     reflection::{MAX_CITED, MAX_SOURCE_CHARS, ReflectionStatus},
 };
+use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
-    ui.label("Evidence ledger: facts, preferences, questions and reflections are local to this character. Candidate extraction uses only user turns and always requires acceptance.");
+    kit::note(
+        ui,
+        "Evidence ledger: facts, preferences, questions and reflections are local to this character. Candidate extraction uses only user turns and always requires acceptance.",
+    );
     if !state.has_character() {
         ui.label("Select a character to manage the ledger.");
         return;
@@ -18,19 +22,14 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
     }
     ui.add_enabled_ui(state.loaded && !state.busy, |ui| {
         let mut enabled = state.enabled;
-        if ui
-            .checkbox(&mut enabled, "Include relevant evidence in chat (opt in)")
+        if kit::toggle_row(ui, "Include relevant evidence in chat", "Opt in for this character.", &mut enabled)
             .changed()
             && let Err(e) = state.set_enabled(enabled)
         {
             state.error = Some(e);
         }
         let mut candidates = state.candidates_enabled;
-        if ui
-            .checkbox(
-                &mut candidates,
-                "Suggest candidates from ‘remember’, ‘I like’, ‘I dislike’ user turns",
-            )
+        if kit::toggle_row(ui, "Suggest memory candidates", "From ‘remember’, ‘I like’ and ‘I dislike’ user turns.", &mut candidates)
             .changed()
             && let Err(e) = state.set_candidates_enabled(candidates)
         {
@@ -111,7 +110,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                 ui.group(|ui| {
                     ui.label(format!("{:?} · {}", record.kind, record.id));
                     if !state.reflection_is_current(&record) {
-                        ui.weak("Excluded from recall: cited evidence changed, expired or was removed, or this older reflection has unverifiable citations. Review the current evidence and create a new draft.");
+                        kit::note(ui, "Excluded from recall: cited evidence changed, expired or was removed, or this older reflection has unverifiable citations. Review the current evidence and create a new draft.");
                     }
                     ui.label(format!(
                         "Source: {} · turn: {:?}",
@@ -182,10 +181,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         let mut confirm = ui
             .data_mut(|d| d.get_temp::<bool>(confirm_id))
             .unwrap_or(false);
-        ui.checkbox(
-            &mut confirm,
-            "Confirm deletion of this character’s entire evidence ledger",
-        );
+        kit::toggle_row(ui, "Confirm deletion of this character’s entire evidence ledger", "", &mut confirm);
         ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
         if ui
             .add_enabled(confirm && !state.busy, egui::Button::new("Delete ledger"))
@@ -205,12 +201,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
 /// Separate opt-in for keeping pending candidates in candidates.jsonl across restarts.
 fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
     let mut retain = state.retain_pending;
-    if ui
-        .checkbox(
-            &mut retain,
-            "Keep pending candidates across restarts (opt in)",
-        )
-        .changed()
+    if kit::toggle_row(
+        ui,
+        "Keep pending candidates across restarts",
+        "Opt in to local candidate storage.",
+        &mut retain,
+    )
+    .changed()
         && let Err(e) = state.set_retain_pending(retain)
     {
         state.error = Some(e);
@@ -239,7 +236,10 @@ fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             format!("Pending candidate file unavailable; nothing is written to it: {e}"),
         );
         if state.pending_write_failed() {
-            ui.weak("The suggestions shown were not saved. Retry once, or stop retaining them.");
+            kit::note(
+                ui,
+                "The suggestions shown were not saved. Retry once, or stop retaining them.",
+            );
             if ui.button("Retry saving pending candidates").clicked()
                 && let Err(e) = state.retry_pending()
             {
@@ -312,23 +312,10 @@ fn reflection_drafts(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                  rejected. The result is a pending reflection you review, edit, accept or dismiss.",
                 sources.len()
             ));
-            ui.horizontal(|ui| {
-                ui.label("Chat completions URL");
-                ui.text_edit_singleline(&mut config.endpoint);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Model");
-                ui.text_edit_singleline(&mut config.model);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Key variable");
-                ui.text_edit_singleline(&mut config.key_env);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Session key");
-                ui.add(egui::TextEdit::singleline(&mut config.session_key).password(true))
-                    .on_hover_text("Kept in memory for this session only.");
-            });
+            kit::text_row(ui, "Chat completions URL", "", &mut config.endpoint, "");
+            kit::text_row(ui, "Model", "", &mut config.model, "");
+            kit::text_row(ui, "Key variable", "Environment variable name.", &mut config.key_env, "");
+            kit::secret_row(ui, "Session key", "Kept in memory for this session only.", &mut config.session_key);
             egui::CollapsingHeader::new(format!("Records that would be sent ({})", sources.len()))
                 .id_salt("facts-reflection-sources")
                 .show(ui, |ui| {
@@ -344,10 +331,7 @@ fn reflection_drafts(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             let mut confirm = ui
                 .data_mut(|d| d.get_temp::<bool>(confirm_id))
                 .unwrap_or(false);
-            ui.checkbox(
-                &mut confirm,
-                "I confirm sending these records to this endpoint for one draft",
-            );
+            kit::toggle_row(ui, "I confirm sending these records to this endpoint for one draft", "", &mut confirm);
             ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
             let running = state.reflection.running();
             ui.horizontal(|ui| {

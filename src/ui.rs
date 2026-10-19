@@ -8,8 +8,6 @@ mod motion_decision;
 mod motion_library;
 #[path = "personality_catalog.rs"]
 mod personality_catalog;
-#[path = "settings_kit.rs"]
-mod settings_kit;
 #[path = "settings_pages.rs"]
 mod settings_pages;
 
@@ -17,6 +15,7 @@ use crate::studio::{Studio, Tab, ViewMode};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use egui::{Color32, RichText, Stroke, Vec2 as EVec2};
+use waifu_studio::settings_kit::{self, self as kit};
 use waifu_studio::{
     animation::AnimationState,
     loading::{AvatarLoadState, LoadStatus},
@@ -62,6 +61,7 @@ pub fn style(ctx: &egui::Context) {
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct AvatarUi<'w> {
+    capture: Option<Res<'w, crate::offscreen::OffscreenCapture>>,
     gaze: ResMut<'w, waifu_studio::gaze::GazeState>,
     preview: ResMut<'w, crate::avatar_preview::AvatarPreview>,
     catalogs: ResMut<'w, waifu_studio::model_catalog::SpeechCatalogs>,
@@ -96,6 +96,9 @@ pub fn studio_ui(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    if avatar_ui.capture.as_ref().is_some_and(|capture| capture.1) {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("capture-advanced"), true));
+    }
     // Runs on every frame and view, not only the Scene page, so a completed
     // reply is noticed wherever the user is.
     reply_motion_frame(
@@ -379,11 +382,11 @@ pub fn studio_ui(
                             &mut config.key_env,
                             "AI_GATEWAY_API_KEY",
                         );
-                        caption(ui, "SESSION KEY (NOT SAVED)");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut config.session_key)
-                                .password(true)
-                                .desired_width(control_width(ui)),
+                        kit::secret_row(
+                            ui,
+                            "Session key",
+                            "Not saved to disk.",
+                            &mut config.session_key,
                         );
                         if before != studio.library.decision {
                             studio.save();
@@ -406,7 +409,9 @@ pub fn studio_ui(
                             "Speech",
                             "Give each character a voice, hosted or on your own machine.",
                         );
-                        voice_settings(ui, &mut studio, &mut avatar_ui.catalogs.tts);
+                        group(ui, "Speech settings", |ui| {
+                            voice_settings(ui, &mut studio, &mut avatar_ui.catalogs.tts)
+                        });
                         group(ui, "Live stream status", |ui| {
                             crate::fish_live_controls::ui(ui, &mut fish);
                             crate::fish_ws_controls::ui(ui, &mut ws);
@@ -496,14 +501,19 @@ pub fn studio_ui(
                         );
                         agent_tasks(ui, &mut studio, &mut agents, &mut board);
                         ui.separator();
-                        crate::task_board_controls::ui(ui, &mut board, &agents);
+                        group(ui, "Task board", |ui| {
+                            crate::task_board_controls::ui(ui, &mut board, &agents)
+                        });
                         let available = 32_000usize.saturating_sub(
                             studio.composer.len() + usize::from(!studio.composer.is_empty()),
                         );
                         if let Some(context) = board.try_take_context(available) {
                             append_context(&mut studio, &context);
                         } else if board.peek_context_len().is_some() {
-                            ui.label("Result is ready. Shorten the draft to make room; the staged result is retained.");
+                            kit::note(
+                                ui,
+                                "Result is ready. Shorten the draft to make room; the staged result is retained.",
+                            );
                         }
                     });
                 }
@@ -674,18 +684,7 @@ fn anchored_section(ui: &mut egui::Ui, tab_key: &str, title: &str, description: 
 
 /// An open, framed group of related controls (collapsible, but visible by default).
 fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) {
-    egui::Frame::new()
-        .fill(Color32::from_rgb(32, 36, 34))
-        .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(10)
-        .inner_margin(12)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            egui::CollapsingHeader::new(RichText::new(title).size(16.0).strong())
-                .default_open(true)
-                .show(ui, add);
-        });
-    ui.add_space(6.0);
+    kit::group(ui, title, add);
 }
 
 /// WebWaifu-style caption above a control.
@@ -694,12 +693,7 @@ fn caption(ui: &mut egui::Ui, text: &str) {
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    ui.label(RichText::new(label).size(12.0).color(MUTED));
-    ui.add(
-        egui::TextEdit::singleline(value)
-            .desired_width(control_width(ui))
-            .hint_text(hint),
-    );
+    kit::text_row(ui, label, "", value, hint);
 }
 
 fn characters(ui: &mut egui::Ui, studio: &mut Studio) {
@@ -1040,27 +1034,36 @@ fn scene(
         "Avatar",
         "Shading, face, lip-sync and behavior for this character.",
     );
-    caption(ui, "MODEL SHADING");
-    egui::ComboBox::from_id_salt("shader")
-        .selected_text(match studio.library.scene.shader {
-            1 => "Lit / PBR",
-            2 => "Unlit",
-            _ => "MToon / Anime",
-        })
-        .width(control_width(ui))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut studio.library.scene.shader, 0, "MToon / Anime");
-            ui.selectable_value(&mut studio.library.scene.shader, 1, "Lit / PBR");
-            ui.selectable_value(&mut studio.library.scene.shader, 2, "Unlit");
-        });
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut studio.library.scene.outlines, "Character outlines");
-        ui.checkbox(
-            &mut studio.library.scene.idle_motion,
+    kit::row(ui, "Model shading", "", |ui| {
+        egui::ComboBox::from_id_salt("shader")
+            .selected_text(match studio.library.scene.shader {
+                1 => "Lit / PBR",
+                2 => "Unlit",
+                _ => "MToon / Anime",
+            })
+            .width(control_width(ui))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut studio.library.scene.shader, 0, "MToon / Anime");
+                ui.selectable_value(&mut studio.library.scene.shader, 1, "Lit / PBR");
+                ui.selectable_value(&mut studio.library.scene.shader, 2, "Unlit");
+            });
+    });
+    kit::card(ui, |c| {
+        let ui = &mut *c.ui;
+        kit::toggle_row(
+            ui,
+            "Character outlines",
+            "",
+            &mut studio.library.scene.outlines,
+        );
+        kit::toggle_row(
+            ui,
             "Gentle idle movement",
+            "",
+            &mut studio.library.scene.idle_motion,
         );
     });
-    group(ui, "Local behavior", |ui| {
+    {
         let selected = studio.library.selected;
         if crate::behavior_controls::ui(
             ui,
@@ -1071,7 +1074,7 @@ fn scene(
         ) {
             studio.save();
         }
-    });
+    }
     group(ui, "Fictional routine", |ui| {
         if crate::routine_controls::ui(ui, &mut studio.library.scene.routine) {
             studio.save();
@@ -1117,24 +1120,24 @@ fn scene(
             studio.save();
         }
     });
-    group(ui, "Face, expressions & lip-sync", |ui| {
+    {
         if crate::expression_controls::ui(ui, facial) {
             studio.library.scene.facial = facial.config.clone();
             studio.save();
         }
-    });
-    group(ui, "Head & eye gaze", |ui| {
+    }
+    {
         if crate::gaze_controls::ui(ui, &mut avatar.gaze) {
             studio.library.scene.gaze = avatar.gaze.config.clone();
             studio.save();
         }
-    });
-    group(ui, "Calibrated vowel lip-sync", |ui| {
+    }
+    {
         if crate::lipsync_controls::ui(ui, &mut avatar.visemes) {
             studio.library.scene.visemes = avatar.visemes.config.clone();
             studio.save();
         }
-    });
+    }
 
     anchored_section(
         ui,
@@ -1167,14 +1170,17 @@ fn scene(
         studio.frame_requested = true;
         studio.save();
     }
-    if ui
-        .checkbox(&mut studio.library.scene.room_view, "Wide room view")
-        .changed()
+    if kit::toggle_row(
+        ui,
+        "Wide room view",
+        "Frame the furnished room around the companion.",
+        &mut studio.library.scene.room_view,
+    )
+    .changed()
     {
         studio.frame_requested = true;
         studio.save();
     }
-    caption(ui, "BACKGROUND IMAGE");
     let backgrounds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/backgrounds");
     let current = studio.library.scene.image.clone();
     let current_label = match &current {
@@ -1190,40 +1196,46 @@ fn scene(
                 )
             }),
     };
-    egui::ComboBox::from_id_salt("background_image")
-        .selected_text(current_label)
-        .width(control_width(ui))
-        .show_ui(ui, |ui| {
-            if ui
-                .selectable_label(current.is_none(), "None (studio color)")
-                .clicked()
-            {
-                studio.library.scene.image = None;
-                studio.save();
-            }
-            for (label, file) in ILLUSTRATED_BACKGROUNDS {
-                let path = backgrounds.join(file);
+    kit::row(ui, "Background image", "", |ui| {
+        egui::ComboBox::from_id_salt("background_image")
+            .selected_text(current_label)
+            .width(control_width(ui))
+            .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(current.as_ref() == Some(&path), label)
+                    .selectable_label(current.is_none(), "None (studio color)")
                     .clicked()
                 {
-                    studio.library.scene.environment =
-                        waifu_studio::environments::EnvironmentKind::Disabled;
-                    studio.library.scene.image = Some(path);
+                    studio.library.scene.image = None;
                     studio.save();
                 }
-            }
-            if ui
-                .selectable_label(false, "Choose your own image…")
-                .clicked()
-            {
-                studio.open_background();
-            }
-        });
-    ui.horizontal(|ui| {
-        ui.color_edit_button_rgb(&mut studio.library.scene.background);
-        ui.label("Studio color (shown when no image or room is active)");
+                for (label, file) in ILLUSTRATED_BACKGROUNDS {
+                    let path = backgrounds.join(file);
+                    if ui
+                        .selectable_label(current.as_ref() == Some(&path), label)
+                        .clicked()
+                    {
+                        studio.library.scene.environment =
+                            waifu_studio::environments::EnvironmentKind::Disabled;
+                        studio.library.scene.image = Some(path);
+                        studio.save();
+                    }
+                }
+                if ui
+                    .selectable_label(false, "Choose your own image…")
+                    .clicked()
+                {
+                    studio.open_background();
+                }
+            });
     });
+    kit::row(
+        ui,
+        "Studio color",
+        "Shown when no image or room is active.",
+        |ui| {
+            ui.color_edit_button_rgb(&mut studio.library.scene.background);
+        },
+    );
     caption(ui, "CAMERA");
     ui.horizontal_wrapped(|ui| {
         if ui
@@ -1242,7 +1254,7 @@ fn scene(
             studio.frame_requested = true;
         }
     });
-    group(ui, "Look: postprocessing, toon & PBR", |ui| {
+    {
         let mut state = waifu_studio::visuals::VisualState {
             settings: studio.library.scene.visuals.clone(),
             suppressed: false,
@@ -1251,7 +1263,7 @@ fn scene(
             studio.library.scene.visuals = state.settings;
             studio.save();
         }
-    });
+    }
     group(ui, "Scene companions", |ui| {
         crate::scene_roster_controls::ui(ui, &mut avatar.roster, &studio.library);
     });
@@ -1542,16 +1554,16 @@ fn motion_suggestion(
     egui::CollapsingHeader::new("Motion suggestion (optional)")
         .id_salt("motion_suggest")
         .show(ui, |ui| {
-            ui.small("A decision model picks one of up to 16 scanned motions, or none. Manual suggestions require Play.");
+            kit::note(ui, "A decision model picks one of up to 16 scanned motions, or none. Manual suggestions require Play.");
             model_picker(ui);
-            caption(ui, "AFTER EACH REPLY");
-            let mode_name = |mode| match mode {
+                    let mode_name = |mode| match mode {
                 ReplyMotionMode::Off => "Off",
                 ReplyMotionMode::Suggest => "Suggest after reply",
                 ReplyMotionMode::AutoPlay => "Auto-play after reply",
                 ReplyMotionMode::EmotionMapped => "Play bound motion for reply emotion",
             };
-            egui::ComboBox::from_id_salt("reply_motion_mode")
+            kit::row(ui, "After each reply", "", |ui| {
+egui::ComboBox::from_id_salt("reply_motion_mode")
                 .selected_text(mode_name(config.mode))
                 .show_ui(ui, |ui| {
                     for mode in [
@@ -1565,43 +1577,36 @@ fn motion_suggestion(
                             .changed();
                     }
                 });
+});
             if config.mode != ReplyMotionMode::Off {
                 let mut seconds = config.cooldown_seconds.clamp(
                     motion_decision::MIN_COOLDOWN_SECONDS,
                     motion_decision::MAX_COOLDOWN_SECONDS,
                 );
-                if ui
-                    .add(
-                        egui::Slider::new(
-                            &mut seconds,
-                            motion_decision::MIN_COOLDOWN_SECONDS
-                                ..=motion_decision::MAX_COOLDOWN_SECONDS,
-                        )
-                        .text("Cooldown")
-                        .suffix(" s"),
-                    )
+                if kit::slider_row(ui, "Cooldown", "Minimum time between automatic motion requests.", egui::Slider::new(&mut seconds, motion_decision::MIN_COOLDOWN_SECONDS..=motion_decision::MAX_COOLDOWN_SECONDS).suffix(" s"))
                     .changed()
                 {
                     config.cooldown_seconds = seconds;
                     changed = true;
                 }
                 if config.mode == ReplyMotionMode::EmotionMapped {
-                    ui.small("No request is sent. Rotates through your selected motions for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
+                    kit::note(ui, "No request is sent. Rotates through your selected motions for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
                     changed |= emotion_bindings(ui, config, entries);
                 } else {
-                    ui.small("Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
+                    kit::note(ui, "Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
                 }
                 if let Some(note) = &auto.note {
                     ui.small(RichText::new(note).color(MUTED));
                 }
             }
-            caption(ui, "MANUAL");
-            egui::ComboBox::from_id_salt("motion_suggest_source")
+                    kit::row(ui, "Suggestion context", "", |ui| {
+egui::ComboBox::from_id_salt("motion_suggest_source")
                 .selected_text(if use_reply { "Latest reply" } else { "Composer draft" })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut use_reply, false, "Composer draft");
                     ui.selectable_value(&mut use_reply, true, "Latest reply");
                 });
+});
             let context = if use_reply { reply.unwrap_or("") } else { draft };
             let context = motion_decision::bounded_context(context);
             match suggester.status().clone() {
@@ -1685,7 +1690,10 @@ fn emotion_bindings(
 ) -> bool {
     let mut changed = false;
     caption(ui, "EMOTION PLAYLISTS");
-    ui.small("Check one or more motions per emotion. Eligible replies rotate in selection order; the cooldown still applies.");
+    kit::note(
+        ui,
+        "Check one or more motions per emotion. Eligible replies rotate in selection order; the cooldown still applies.",
+    );
     for emotion in motion_decision::EMOTIONS {
         let mut current = Vec::new();
         for binding in config
@@ -1735,7 +1743,7 @@ fn emotion_bindings(
                         "Unavailable: {}",
                         path.file_name().unwrap_or_default().to_string_lossy()
                     );
-                    if ui.checkbox(&mut keep, label).changed() {
+                    if kit::toggle_row(ui, label, "", &mut keep).changed() {
                         if keep {
                             picked.push(path.clone());
                         } else {
@@ -1917,27 +1925,38 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
                 manual_motion(ui.ctx());
                 animation.stop();
             }
-            ui.checkbox(&mut animation.looping, "Loop");
         });
+        kit::toggle_row(
+            ui,
+            "Loop",
+            "Repeat manually selected playback.",
+            &mut animation.looping,
+        );
         ui.spacing_mut().slider_width = (control_width(ui) - 120.0).max(160.0);
-        if ui
-            .add(
-                egui::Slider::new(&mut animation.position, 0.0..=duration)
-                    .text("Position")
-                    .suffix(" s"),
-            )
-            .changed()
+        if kit::slider_row(
+            ui,
+            "Position",
+            "",
+            egui::Slider::new(&mut animation.position, 0.0..=duration).suffix(" s"),
+        )
+        .changed()
             && !animation.is_posing()
         {
             animation.play();
             animation.pause();
         }
-        ui.add(
-            egui::Slider::new(&mut animation.speed, 0.1..=2.0)
-                .text("Speed")
-                .suffix("×"),
+        kit::slider_row(
+            ui,
+            "Speed",
+            "",
+            egui::Slider::new(&mut animation.speed, 0.1..=2.0).suffix("×"),
         );
-        ui.add(egui::Slider::new(&mut animation.weight, 0.0..=1.0).text("Motion weight"));
+        kit::slider_row(
+            ui,
+            "Motion weight",
+            "",
+            egui::Slider::new(&mut animation.weight, 0.0..=1.0),
+        );
         if animation.is_posing() && !animation.playing {
             ui.label(RichText::new("Paused on this pose").small().color(MUTED));
         }
@@ -1955,7 +1974,6 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
 
 fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
     const KEY: &str = "Connections";
-    caption(ui, "CONNECTION");
     let previous = studio.library.provider;
     let selected_name = studio
         .library
@@ -1963,14 +1981,16 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
         .get(previous)
         .map(|p| p.name.as_str())
         .unwrap_or("Choose a connection");
-    egui::ComboBox::from_id_salt("settings_connection")
-        .selected_text(selected_name)
-        .width(control_width(ui))
-        .show_ui(ui, |ui| {
-            for (index, provider) in studio.library.providers.iter().enumerate() {
-                ui.selectable_value(&mut studio.library.provider, index, &provider.name);
-            }
-        });
+    kit::row(ui, "Connection", "", |ui| {
+        egui::ComboBox::from_id_salt("settings_connection")
+            .selected_text(selected_name)
+            .width(control_width(ui))
+            .show_ui(ui, |ui| {
+                for (index, provider) in studio.library.providers.iter().enumerate() {
+                    ui.selectable_value(&mut studio.library.provider, index, &provider.name);
+                }
+            });
+    });
     if previous != studio.library.provider {
         studio.connected = false;
         studio.save();
@@ -2050,12 +2070,11 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
                 &mut provider.base_url,
                 "http://127.0.0.1:11434/v1",
             );
-            ui.label(RichText::new("SESSION API KEY").small().color(MUTED));
-            ui.add(
-                egui::TextEdit::singleline(&mut provider.session_key)
-                    .password(true)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Session only"),
+            kit::secret_row(
+                ui,
+                "Session API key",
+                "Not saved to disk.",
+                &mut provider.session_key,
             );
             field(
                 ui,
@@ -2063,7 +2082,12 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
                 &mut provider.key_env,
                 "AI_GATEWAY_API_KEY",
             );
-            ui.add(egui::Slider::new(&mut provider.temperature, 0.0..=2.0).text("Creativity"));
+            kit::slider_row(
+                ui,
+                "Creativity",
+                "",
+                egui::Slider::new(&mut provider.temperature, 0.0..=2.0),
+            );
         }
         if ui.button("Save connection").clicked() {
             studio.save();
@@ -2076,26 +2100,33 @@ fn voice_settings(
     studio: &mut Studio,
     catalog: &mut waifu_studio::model_catalog::ModelCatalog,
 ) {
-    ui.checkbox(&mut studio.library.voice.enabled, "Read new replies aloud");
+    kit::toggle_row(
+        ui,
+        "Read new replies aloud",
+        "",
+        &mut studio.library.voice.enabled,
+    );
     let mut adapter = studio.library.voice.adapter;
-    egui::ComboBox::from_id_salt("voice_adapter")
-        .selected_text(match adapter {
-            VoiceAdapter::FishHosted => "Fish Audio",
-            VoiceAdapter::FishLocal => "Fish Speech · local",
-            VoiceAdapter::OpenAi => "OpenAI-compatible speech",
-            VoiceAdapter::Vercel => "Vercel AI Gateway",
-        })
-        .width(control_width(ui))
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut adapter, VoiceAdapter::Vercel, "Vercel AI Gateway");
-            ui.selectable_value(&mut adapter, VoiceAdapter::FishHosted, "Fish Audio");
-            ui.selectable_value(&mut adapter, VoiceAdapter::FishLocal, "Fish Speech · local");
-            ui.selectable_value(
-                &mut adapter,
-                VoiceAdapter::OpenAi,
-                "OpenAI-compatible speech",
-            );
-        });
+    kit::row(ui, "Voice service", "", |ui| {
+        egui::ComboBox::from_id_salt("voice_adapter")
+            .selected_text(match adapter {
+                VoiceAdapter::FishHosted => "Fish Audio",
+                VoiceAdapter::FishLocal => "Fish Speech · local",
+                VoiceAdapter::OpenAi => "OpenAI-compatible speech",
+                VoiceAdapter::Vercel => "Vercel AI Gateway",
+            })
+            .width(control_width(ui))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut adapter, VoiceAdapter::Vercel, "Vercel AI Gateway");
+                ui.selectable_value(&mut adapter, VoiceAdapter::FishHosted, "Fish Audio");
+                ui.selectable_value(&mut adapter, VoiceAdapter::FishLocal, "Fish Speech · local");
+                ui.selectable_value(
+                    &mut adapter,
+                    VoiceAdapter::OpenAi,
+                    "OpenAI-compatible speech",
+                );
+            });
+    });
     if adapter != studio.library.voice.adapter {
         studio.stop_voice();
         let autoplay = studio.library.voice.enabled;
@@ -2145,7 +2176,10 @@ fn voice_settings(
     );
     match voice.adapter {
         VoiceAdapter::FishHosted => {
-            ui.small("Free tier: s2.1-pro-free. Other models use your Fish account pricing.");
+            kit::note(
+                ui,
+                "Free tier: s2.1-pro-free. Other models use your Fish account pricing.",
+            );
             if voice.model == "drama-3" {
                 field(
                     ui,
@@ -2199,7 +2233,10 @@ fn voice_settings(
                     "Optional instructions, where supported by the selected model",
                 );
                 voice.delivery = waifu_studio::voice::VoiceDelivery::Buffered;
-                ui.small("Vercel speech uses buffered audio. Voice IDs and formats depend on the selected model.");
+                kit::note(
+                    ui,
+                    "Vercel speech uses buffered audio. Voice IDs and formats depend on the selected model.",
+                );
             }
         }
     }
@@ -2207,68 +2244,83 @@ fn voice_settings(
         voice.adapter,
         VoiceAdapter::FishHosted | VoiceAdapter::FishLocal
     ) {
-        egui::ComboBox::from_label("Delivery")
-            .selected_text(match voice.delivery {
-                waifu_studio::voice::VoiceDelivery::Buffered => "Buffered",
-                waifu_studio::voice::VoiceDelivery::HttpWavStream => "Progressive HTTP WAV",
-                waifu_studio::voice::VoiceDelivery::TimestampSse => "Fish timestamp SSE",
-                waifu_studio::voice::VoiceDelivery::LiveWebSocket => "Live text/audio WebSocket",
-                waifu_studio::voice::VoiceDelivery::TimestampWebSocket => {
-                    "Live WebSocket + timestamps"
-                }
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut voice.delivery,
-                    waifu_studio::voice::VoiceDelivery::Buffered,
-                    "Buffered",
-                );
-                ui.selectable_value(
-                    &mut voice.delivery,
-                    waifu_studio::voice::VoiceDelivery::HttpWavStream,
-                    "Progressive HTTP WAV",
-                );
-                if voice.adapter == VoiceAdapter::FishHosted {
-                    ui.selectable_value(
-                        &mut voice.delivery,
-                        waifu_studio::voice::VoiceDelivery::TimestampSse,
-                        "Fish timestamp SSE",
-                    );
-                    ui.selectable_value(
-                        &mut voice.delivery,
-                        waifu_studio::voice::VoiceDelivery::LiveWebSocket,
-                        "Live text/audio WebSocket",
-                    );
-                    ui.selectable_value(
-                        &mut voice.delivery,
-                        waifu_studio::voice::VoiceDelivery::TimestampWebSocket,
-                        "Live WebSocket + timestamps",
-                    );
-                }
-            });
-        egui::ComboBox::from_label("Latency")
-            .selected_text(&voice.latency)
-            .show_ui(ui, |ui| {
-                for latency in ["normal", "balanced", "low"] {
-                    if latency != "low" || voice.adapter == VoiceAdapter::FishHosted {
-                        ui.selectable_value(&mut voice.latency, latency.to_owned(), latency);
+        kit::row(ui, "Delivery", "", |ui| {
+            egui::ComboBox::from_id_salt("Delivery")
+                .selected_text(match voice.delivery {
+                    waifu_studio::voice::VoiceDelivery::Buffered => "Buffered",
+                    waifu_studio::voice::VoiceDelivery::HttpWavStream => "Progressive HTTP WAV",
+                    waifu_studio::voice::VoiceDelivery::TimestampSse => "Fish timestamp SSE",
+                    waifu_studio::voice::VoiceDelivery::LiveWebSocket => {
+                        "Live text/audio WebSocket"
                     }
-                }
-            });
+                    waifu_studio::voice::VoiceDelivery::TimestampWebSocket => {
+                        "Live WebSocket + timestamps"
+                    }
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut voice.delivery,
+                        waifu_studio::voice::VoiceDelivery::Buffered,
+                        "Buffered",
+                    );
+                    ui.selectable_value(
+                        &mut voice.delivery,
+                        waifu_studio::voice::VoiceDelivery::HttpWavStream,
+                        "Progressive HTTP WAV",
+                    );
+                    if voice.adapter == VoiceAdapter::FishHosted {
+                        ui.selectable_value(
+                            &mut voice.delivery,
+                            waifu_studio::voice::VoiceDelivery::TimestampSse,
+                            "Fish timestamp SSE",
+                        );
+                        ui.selectable_value(
+                            &mut voice.delivery,
+                            waifu_studio::voice::VoiceDelivery::LiveWebSocket,
+                            "Live text/audio WebSocket",
+                        );
+                        ui.selectable_value(
+                            &mut voice.delivery,
+                            waifu_studio::voice::VoiceDelivery::TimestampWebSocket,
+                            "Live WebSocket + timestamps",
+                        );
+                    }
+                });
+        });
+        kit::row(ui, "Latency", "", |ui| {
+            egui::ComboBox::from_id_salt("Latency")
+                .selected_text(&voice.latency)
+                .show_ui(ui, |ui| {
+                    for latency in ["normal", "balanced", "low"] {
+                        if latency != "low" || voice.adapter == VoiceAdapter::FishHosted {
+                            ui.selectable_value(&mut voice.latency, latency.to_owned(), latency);
+                        }
+                    }
+                });
+        });
         let maximum = if voice.adapter == VoiceAdapter::FishHosted {
             300
         } else {
             1000
         };
-        ui.add(egui::Slider::new(&mut voice.chunk_length, 100..=maximum).text("Chunk length"));
+        kit::slider_row(
+            ui,
+            "Chunk length",
+            "",
+            egui::Slider::new(&mut voice.chunk_length, 100..=maximum),
+        );
         if voice.adapter == VoiceAdapter::FishHosted {
-            ui.add(
-                egui::Slider::new(&mut voice.min_chunk_length, 0..=100)
-                    .text("Minimum chunk length"),
+            kit::slider_row(
+                ui,
+                "Minimum chunk length",
+                "",
+                egui::Slider::new(&mut voice.min_chunk_length, 0..=100),
             );
-            ui.checkbox(
-                &mut voice.condition_on_previous_chunks,
+            kit::toggle_row(
+                ui,
                 "Condition on previous audio chunks",
+                "",
+                &mut voice.condition_on_previous_chunks,
             );
         }
     }
@@ -2279,22 +2331,29 @@ fn voice_settings(
         voice.format = "wav".into();
     }
     ui.label(RichText::new("AUDIO FORMAT").small().color(MUTED));
-    egui::ComboBox::from_id_salt("voice_format")
-        .selected_text(&voice.format)
-        .show_ui(ui, |ui| {
-            for format in ["wav", "mp3"] {
-                if ui
-                    .selectable_label(voice.format == format, format)
-                    .clicked()
-                {
-                    voice.format = format.into();
+    kit::row(ui, "Audio format", "", |ui| {
+        egui::ComboBox::from_id_salt("voice_format")
+            .selected_text(&voice.format)
+            .show_ui(ui, |ui| {
+                for format in ["wav", "mp3"] {
+                    if ui
+                        .selectable_label(voice.format == format, format)
+                        .clicked()
+                    {
+                        voice.format = format.into();
+                    }
                 }
-            }
-        });
+            });
+    });
     if voice.delivery != waifu_studio::voice::VoiceDelivery::Buffered {
         voice.format = "wav".into();
     }
-    ui.add(egui::Slider::new(&mut voice.speed, 0.5..=2.0).text("Speech speed"));
+    kit::slider_row(
+        ui,
+        "Speech speed",
+        "",
+        egui::Slider::new(&mut voice.speed, 0.5..=2.0),
+    );
     if voice.adapter == VoiceAdapter::FishLocal {
         ui.small("Local speed changes playback rate and pitch.");
     }
@@ -2304,12 +2363,11 @@ fn voice_settings(
         &mut voice.api_key_env,
         "Optional for local speech",
     );
-    ui.label(RichText::new("SESSION SPEECH KEY").small().color(MUTED));
-    ui.add(
-        egui::TextEdit::singleline(&mut studio.voice_key)
-            .password(true)
-            .desired_width(f32::INFINITY)
-            .hint_text("Never saved to disk"),
+    kit::secret_row(
+        ui,
+        "Session speech key",
+        "Not saved to disk.",
+        &mut studio.voice_key,
     );
     ui.horizontal_wrapped(|ui| {
         if ui
@@ -2572,7 +2630,7 @@ fn composer_mode(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
             ui.selectable_value(&mut enabled, false, "Chat only");
             ui.selectable_value(&mut enabled, true, "Suggest coding tasks");
         });
-        ui.small("Suggestions never execute by themselves. Review tasks or start a bounded loop in Tasks.");
+        kit::note(ui, "Suggestions never execute by themselves. Review tasks or start a bounded loop in Tasks.");
         if ui.button("Open task permissions & runner…").clicked() { studio.tab = Tab::Tasks; ui.close(); }
     });
     if enabled != was_enabled {
@@ -2676,8 +2734,12 @@ pub(crate) fn speech_model_picker(
     model: &mut String,
 ) {
     ui.push_id(salt, |ui| {
-        caption(ui, "MODEL");
-        if let Some(selected) = model_dropdown(ui, salt, &catalog.models, model) {
+        if let Some(selected) = kit::row(
+            ui,
+            "Model",
+            "Search available models or enter an exact ID.",
+            |ui| model_dropdown(ui, salt, &catalog.models, model),
+        ) {
             *model = selected;
         }
         ui.horizontal_wrapped(|ui| {
@@ -2720,7 +2782,9 @@ fn memory_advanced(
     memory: &mut waifu_studio::memory::MemoryState,
     semantic: &mut waifu_studio::semantic_memory::SemanticMemory,
 ) {
-    crate::memory_controls::ui(ui, memory);
+    group(ui, "Local notes", |ui| {
+        crate::memory_controls::ui(ui, memory)
+    });
     group(ui, "Facts, preferences & evidence", |ui| {
         if ui
             .add_enabled(
@@ -2741,22 +2805,31 @@ fn memory_advanced(
         ui.separator();
         ui.weak(&studio.facts.triage_status);
         ui.separator();
-        ui.heading("Automatic reflection drafts");
-        ui.small("Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.");
+        kit::section(ui, "Automatic reflection drafts");
+        kit::note(
+            ui,
+            "Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.",
+        );
         let before = studio.library.scene.automatic_reflection.clone();
         let reflection_connection = studio.facts.reflection.config.clone();
         let automatic = &mut studio.library.scene.automatic_reflection;
-        ui.checkbox(
-            &mut automatic.enabled,
+        kit::toggle_row(
+            ui,
             "Automatically send accepted records for reflection drafts",
+            "",
+            &mut automatic.enabled,
         );
-        ui.add(
-            egui::Slider::new(&mut automatic.new_records, 1..=12)
-                .text("New accepted records per draft"),
+        kit::slider_row(
+            ui,
+            "New accepted records per draft",
+            "",
+            egui::Slider::new(&mut automatic.new_records, 1..=12),
         );
-        ui.add(
-            egui::Slider::new(&mut automatic.cooldown_minutes, 10..=1440)
-                .text("Minimum minutes between attempts"),
+        kit::slider_row(
+            ui,
+            "Minimum minutes between attempts",
+            "",
+            egui::Slider::new(&mut automatic.cooldown_minutes, 10..=1440),
         );
         ui.label(format!(
             "Connection: {} · {}",
@@ -2768,27 +2841,35 @@ fn memory_advanced(
         {
             automatic.connection = reflection_connection;
         }
-        ui.small("Pauses while a reflection awaits review. Connection and opt-in are saved per character; session keys are not saved. Changes or disabling cancel an in-flight automatic draft.");
+        kit::note(
+            ui,
+            "Pauses while a reflection awaits review. Connection and opt-in are saved per character; session keys are not saved. Changes or disabling cancel an in-flight automatic draft.",
+        );
         ui.weak(&studio.facts.automatic.status);
         if studio.library.scene.automatic_reflection != before {
             studio.save();
         }
     });
     ui.separator();
-    crate::semantic_memory_controls::ui(
-        ui,
-        semantic,
-        studio.library.selected,
-        memory,
-        &studio.facts,
-    );
+    group(ui, "Semantic lookup", |ui| {
+        crate::semantic_memory_controls::ui(
+            ui,
+            semantic,
+            studio.library.selected,
+            memory,
+            &studio.facts,
+        );
+    });
     let semantic_source: &dyn waifu_studio::semantic_memory::SemanticSource =
         if semantic.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
             &studio.facts
         } else {
             memory
         };
-    ui.small("Search the selected memory source for this draft. A matching result is attached only to the next request.");
+    kit::note(
+        ui,
+        "Search the selected memory source for this draft. A matching result is attached only to the next request.",
+    );
     if ui
         .add_enabled(
             !studio.composer.trim().is_empty()
@@ -2800,7 +2881,10 @@ fn memory_advanced(
         semantic.query(studio.library.selected, semantic_source, &studio.composer);
     }
     if semantic.has_result_for(studio.library.selected, semantic_source, &studio.composer) {
-        ui.label("Retrieved memories will be used once when this draft is sent; they are not saved in chat.");
+        kit::note(
+            ui,
+            "Retrieved memories will be used once when this draft is sent; they are not saved in chat.",
+        );
     }
 }
 
@@ -3284,12 +3368,13 @@ fn agent_tasks(
     use waifu_studio::{agents::AgentProvider, delegation::Provider};
     let mut save = false;
     if let Some(character) = studio.library.selected_character_mut() {
-        save = ui
-            .checkbox(
-                &mut character.delegation.enabled,
-                "Let this character propose agent tasks",
-            )
-            .changed();
+        save = kit::toggle_row(
+            ui,
+            "Let this character propose agent tasks",
+            "Proposals still require review before running.",
+            &mut character.delegation.enabled,
+        )
+        .changed();
         ui.small(character.delegation.opt_in_message());
     }
     if save {
@@ -3332,7 +3417,9 @@ fn agent_tasks(
         agents.disarm();
     }
     ui.separator();
-    crate::agent_controls::ui(ui, agents);
+    group(ui, "Worker settings", |ui| {
+        crate::agent_controls::ui(ui, agents)
+    });
     if ui
         .add_enabled(
             !agents.is_busy() && !agents.output.is_empty(),
@@ -3650,7 +3737,7 @@ mod composer_tests {
                             .resizable(false)
                             .show(ui, |_| {});
                         let response = settings_page(ui, |ui| {
-                            ui.heading("Voice & microphone");
+                            kit::section(ui, "Voice & microphone");
                             viewport = egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {

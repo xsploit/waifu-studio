@@ -2,18 +2,27 @@ use bevy_egui::egui;
 use waifu_studio::routines::{
     DAYS, MAX_ANCHORS, MAX_LABEL_CHARS, RoutineAnchor, RoutineConfig, local_clock,
 };
+use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     let before = config.clone();
-    ui.checkbox(&mut config.enabled, "Show fictional weekly routine");
-    ui.small("Imagined character activities in this computer's local timezone. Each activity lasts until the next anchor; these are not bookings or measured presence.");
+    kit::toggle_row(ui, "Show fictional weekly routine", "", &mut config.enabled);
+    kit::note(
+        ui,
+        "Imagined character activities in this computer's local timezone. Each activity lasts until the next anchor; these are not bookings or measured presence.",
+    );
     ui.add_enabled_ui(config.enabled, |ui| {
-        ui.checkbox(
-            &mut config.share_with_chat,
+        kit::toggle_row(
+            ui,
             "Share fictional activity with chat",
+            "",
+            &mut config.share_with_chat,
         );
     });
-    ui.small("When enabled, ordinary replies receive the current and next imagined activity. No background messages or extra model calls.");
+    kit::note(
+        ui,
+        "When enabled, ordinary replies receive the current and next imagined activity. No background messages or extra model calls.",
+    );
     if let Some((day, minute)) = local_clock() {
         ui.label(format!(
             "Local clock: {} {:02}:{:02}",
@@ -42,7 +51,7 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     let mut remove = None;
     for (index, anchor) in config.anchors.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            kit::row(ui, "Activity time", "Weekly local-time anchor.", |ui| {
                 egui::ComboBox::from_id_salt("weekday")
                     .selected_text(
                         DAYS.get(usize::from(anchor.day))
@@ -76,11 +85,14 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
                     remove = Some(index);
                 }
             });
-            ui.add(
-                egui::TextEdit::singleline(&mut anchor.activity)
-                    .char_limit(MAX_LABEL_CHARS)
-                    .hint_text("Fictional activity"),
-            );
+            kit::row(ui, "Fictional activity", "", |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut anchor.activity)
+                        .char_limit(MAX_LABEL_CHARS)
+                        .hint_text("Fictional activity")
+                        .desired_width(240.0),
+                );
+            });
         });
     }
     if let Some(index) = remove {

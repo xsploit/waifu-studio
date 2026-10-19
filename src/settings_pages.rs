@@ -13,10 +13,25 @@ use waifu_studio::{
 /// Closed fold holding a page's complete original controls.
 pub(super) fn advanced(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(18.0);
-    egui::CollapsingHeader::new(RichText::new("Advanced").size(14.0))
+    let capture = ui.ctx().data(|data| {
+        data.get_temp::<bool>(egui::Id::new("capture-advanced"))
+            .unwrap_or(false)
+    });
+    let response = egui::CollapsingHeader::new(RichText::new("Advanced").size(14.0))
         .id_salt((id, "advanced"))
-        .default_open(false)
-        .show(ui, add);
+        .default_open(capture)
+        .show_unindented(ui, add);
+    let scroll_id = egui::Id::new(("capture-advanced-scrolled", id));
+    if capture
+        && !ui
+            .ctx()
+            .data(|data| data.get_temp::<bool>(scroll_id).unwrap_or(false))
+    {
+        response
+            .header_response
+            .scroll_to_me(Some(egui::Align::TOP));
+        ui.ctx().data_mut(|data| data.insert_temp(scroll_id, true));
+    }
 }
 
 fn dropdown(ui: &mut egui::Ui, id: &str, current: usize, labels: &[&str]) -> usize {

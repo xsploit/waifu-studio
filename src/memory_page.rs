@@ -239,11 +239,7 @@ pub(super) fn ui(
     });
     ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
 
-    ui.add_space(18.0);
-    egui::CollapsingHeader::new(RichText::new("Advanced").size(14.0))
-        .id_salt("memory_advanced")
-        .default_open(false)
-        .show(ui, |ui| {
-            super::memory_advanced(ui, studio, memory, semantic)
-        });
+    super::settings_pages::advanced(ui, "memory", |ui| {
+        super::memory_advanced(ui, studio, memory, semantic)
+    });
 }

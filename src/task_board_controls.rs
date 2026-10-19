@@ -1,12 +1,16 @@
 use bevy_egui::egui;
+use waifu_studio::settings_kit as kit;
 use waifu_studio::{
     agents::{AgentState, Transport},
     task_board::{MAX_OUTSTANDING, MAX_RETAINED, TaskBoard, TaskConfig, TaskStatus},
 };
 
 pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
-    ui.heading("Multi-agent task board");
-    ui.label("Independent installed CLI tasks. Add a card to copy the current coding-agent provider, directory, transport, access and command. Review each immutable card, then Run the reviewed batch. CLI authentication is inherited at execution. Hermes works through Custom executable and arguments.");
+    kit::section(ui, "Multi-agent task board");
+    kit::note(
+        ui,
+        "Independent installed CLI tasks. Add a card to copy the current coding-agent provider, directory, transport, access and command. Review each immutable card, then Run the reviewed batch. CLI authentication is inherited at execution. Hermes works through Custom executable and arguments.",
+    );
     ui.label(format!(
         "{} / {MAX_OUTSTANDING} outstanding · {} running · last {MAX_RETAINED} results retained",
         board.outstanding_count(),
@@ -14,10 +18,15 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
     ));
     let mut concurrency = board.concurrency();
     if ui
-        .add_enabled(
-            board.running_count() == 0,
-            egui::Slider::new(&mut concurrency, 1..=4).text("Concurrent tasks"),
-        )
+        .add_enabled_ui(board.running_count() == 0, |ui| {
+            kit::slider_row(
+                ui,
+                "Concurrent tasks",
+                "Change while no tasks are running.",
+                egui::Slider::new(&mut concurrency, 1..=4),
+            )
+        })
+        .inner
         .changed()
         && let Err(error) = board.set_concurrency(concurrency)
     {
@@ -36,11 +45,13 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
                 &scope.working_dir
             }
         ));
-        ui.add(
-            egui::TextEdit::singleline(&mut board.draft_title)
-                .hint_text("Card title (up to 120 characters)")
-                .char_limit(120),
-        );
+        kit::row(ui, "Card title", "Up to 120 characters.", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut board.draft_title)
+                    .char_limit(120)
+                    .desired_width(240.0),
+            );
+        });
         ui.add(
             egui::TextEdit::multiline(&mut board.draft_prompt)
                 .hint_text("Independent task instructions")
@@ -93,7 +104,10 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
         }
     });
     if board.reviewed_count() > 0 {
-        ui.label("Reviewed commands below apply only to these cards. New cards require a separate review. Parallel tasks sharing a directory may edit the same files; choose independent scopes before adding cards.");
+        kit::note(
+            ui,
+            "Reviewed commands below apply only to these cards. New cards require a separate review. Parallel tasks sharing a directory may edit the same files; choose independent scopes before adding cards.",
+        );
     }
     if let Some(error) = &board.error {
         ui.colored_label(egui::Color32::RED, error);

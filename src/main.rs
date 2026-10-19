@@ -76,6 +76,7 @@ fn run() -> Result<(), String> {
     let mut imports = vec![];
     let mut capture = None;
     let mut offscreen = false;
+    let mut capture_advanced = false;
     let mut capture_size = UVec2::new(1920, 1080);
     let mut desktop = false;
     let mut environment = None;
@@ -86,7 +87,7 @@ fn run() -> Result<(), String> {
         match arg.to_str() {
             Some("--help" | "-h") => {
                 println!(
-                    "Waifu Studio — native Rust character companion\n\nUsage: waifu-studio [model.vrm] [--import-folder DIR] [--data-dir DIR]\n       waifu-studio --desktop\n\nModels: VRM 0.0 / 1.0, GLB, glTF\nConnections: Vercel AI Gateway, OpenRouter, OpenAI-compatible local/custom\n--environment rose-bedroom|violet-studio|cyan-lounge selects a furnished room\n--room-view frames the room\n--capture FILE.png saves the rendered app and exits\n--offscreen-capture FILE.png renders the actual UI without creating a desktop window\n--offscreen-showcase PLAN.json records UI frames (isolated --data-dir required)\n--capture-size WIDTHxHEIGHT sets offscreen dimensions (default 1920x1080)\n--screen chat|scene-chat|characters|scene|connections|voice|tools|memory|tasks chooses the initial panel\n--animation FILE.bvh|vrma|fbx loads a humanoid motion\n--shader toon|lit|unlit selects appearance\nXR/VR will follow the base app; it is not enabled in this build."
+                    "Waifu Studio — native Rust character companion\n\nUsage: waifu-studio [model.vrm] [--import-folder DIR] [--data-dir DIR]\n       waifu-studio --desktop\n\nModels: VRM 0.0 / 1.0, GLB, glTF\nConnections: Vercel AI Gateway, OpenRouter, OpenAI-compatible local/custom\n--environment rose-bedroom|violet-studio|cyan-lounge selects a furnished room\n--room-view frames the room\n--capture FILE.png saves the rendered app and exits\n--offscreen-capture FILE.png renders the actual UI without creating a desktop window\n--offscreen-showcase PLAN.json records UI frames (isolated --data-dir required)\n--capture-advanced expands and scrolls to Advanced in offscreen settings captures\n--capture-size WIDTHxHEIGHT sets offscreen dimensions (default 1920x1080)\n--screen chat|scene-chat|characters|scene|connections|voice|tools|memory|tasks chooses the initial panel\n--animation FILE.bvh|vrma|fbx loads a humanoid motion\n--shader toon|lit|unlit selects appearance\nXR/VR will follow the base app; it is not enabled in this build."
                 );
                 return Ok(());
             }
@@ -105,6 +106,7 @@ fn run() -> Result<(), String> {
                 &PathBuf::from(args.next().ok_or("--import-folder requires a folder")?),
                 8,
             )),
+            Some("--capture-advanced") => capture_advanced = true,
             Some("--capture") => {
                 capture = Some(PathBuf::from(
                     args.next().ok_or("--capture requires a path")?,
@@ -180,6 +182,9 @@ fn run() -> Result<(), String> {
             Some(arg) if arg.starts_with('-') => return Err(format!("Unknown option: {arg}")),
             _ => imports.push(PathBuf::from(arg)),
         }
+    }
+    if capture_advanced && !offscreen {
+        return Err("--capture-advanced requires offscreen capture".into());
     }
     if offscreen && desktop {
         return Err("Offscreen UI capture requires Studio mode".into());
@@ -279,7 +284,7 @@ fn run() -> Result<(), String> {
         plugins = plugins
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::audio::AudioPlugin>();
-        app.insert_resource(offscreen::OffscreenCapture(capture_size))
+        app.insert_resource(offscreen::OffscreenCapture(capture_size, capture_advanced))
             .add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(
                 std::time::Duration::from_secs_f64(1.0 / 60.0),
             ))

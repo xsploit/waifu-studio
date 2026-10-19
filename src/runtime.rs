@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+use waifu_studio::settings_kit as kit;
 
 use bevy::{
     asset::AssetPath,
@@ -463,20 +464,16 @@ fn desktop_controls(
         egui::UiBuilder::new(),
     );
     egui::CentralPanel::default().show(&mut root_ui, |ui| {
-        ui.heading("Desktop companion");
+        kit::section(ui, "Desktop companion");
         ui.add_space(7.0);
         ui.label("This window always stays interactive.");
-        ui.label("Right-click the companion for its radial menu. Grab it with the left button to move it.");
-        if ui.checkbox(&mut desktop.automatic_motions, "Automatic desktop animations").changed() {
+        kit::note(ui, "Right-click the companion for its radial menu. Grab it with the left button to move it.");
+        if kit::toggle_row(ui, "Automatic desktop animations", "", &mut desktop.automatic_motions).changed() {
             desktop.mark_dirty();
         }
-        ui.checkbox(
-            &mut studio.click_through,
-            "Pass clicks through the character window",
-        );
+        kit::toggle_row(ui, "Pass clicks through the character window", "", &mut studio.click_through);
         let mut sitting = desktop.sit_requested.unwrap_or(desktop.sitting);
-        if ui
-            .checkbox(&mut sitting, "Sit on a detected edge")
+        if kit::toggle_row(ui, "Sit on a detected edge", "", &mut sitting)
             .changed()
         {
             desktop.request_sitting(sitting);

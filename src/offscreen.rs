@@ -7,7 +7,7 @@ use bevy::{
 use bevy_egui::PrimaryEguiContext;
 
 #[derive(Resource)]
-pub(crate) struct OffscreenCapture(pub UVec2);
+pub(crate) struct OffscreenCapture(pub UVec2, pub bool);
 
 pub(crate) fn setup(
     mut commands: Commands,

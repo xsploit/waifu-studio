@@ -1,8 +1,12 @@
 use bevy_egui::egui;
 use waifu_studio::memory::{MemoryState, RecallOutcome};
+use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
-    ui.label("Explicit local notes, stored separately for this character. Nothing is extracted automatically. Relevant and pinned notes are sent with chat only when enabled.");
+    kit::note(
+        ui,
+        "Explicit local notes, stored separately for this character. Nothing is extracted automatically. Relevant and pinned notes are sent with chat only when enabled.",
+    );
     if !state.has_character() {
         ui.label("Select a character to manage memory.");
         return;
@@ -15,8 +19,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
     }
     ui.add_enabled_ui(state.loaded && !state.busy, |ui| {
         let mut enabled = state.enabled;
-        if ui
-            .checkbox(&mut enabled, "Include local notes in chat")
+        if kit::toggle_row(ui, "Include local notes in chat", "", &mut enabled)
             .changed()
             && let Err(e) = state.set_enabled(enabled)
         {
@@ -33,9 +36,9 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
             }
         }
         let mut linked_recall = state.linked_recall();
-        if ui.add_enabled(!state.busy, egui::Checkbox::new(&mut linked_recall, "Recall explicitly linked notes (one hop)")).changed()
+        if ui.add_enabled_ui(!state.busy, |ui| kit::toggle_row(ui, "Recall explicitly linked notes", "One hop from directly matched notes.", &mut linked_recall)).inner.changed()
             && let Err(error) = state.set_linked_recall(linked_recall) { state.error = Some(error); }
-        ui.small("Links are authored by you. When enabled, up to two linked notes follow directly matched notes within the existing recall limits. Lexical recall only; semantic lookup is unchanged. No automatic fact inference.");
+        kit::note(ui, "Links are authored by you. When enabled, up to two linked notes follow directly matched notes within the existing recall limits. Lexical recall only; semantic lookup is unchanged. No automatic fact inference.");
         let links: std::collections::BTreeSet<_> = state.links().iter().map(|link| (link.a, link.b)).collect();
         let notes = state.notes().to_vec();
         for note in &notes {
@@ -47,13 +50,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
                         .unwrap_or(note.text.clone());
                     ui.add(egui::TextEdit::multiline(&mut text));
                     ui.data_mut(|data| data.insert_temp(draft_id, text.clone()));
-                    ui.horizontal(|ui| {
-                        let mut pinned = note.pinned;
-                        if ui.checkbox(&mut pinned, "Pinned").changed()
+                    let mut pinned = note.pinned;
+                        if kit::toggle_row(ui, "Pinned", "", &mut pinned).changed()
                             && let Err(e) = state.set_pinned(note.id, pinned)
                         {
                             state.error = Some(e);
                         }
+                    ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
                                 !state.busy && text != note.text,
@@ -77,7 +80,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
                             let key = if note.id < other.id { (note.id, other.id) } else { (other.id, note.id) };
                             let mut linked = links.contains(&key);
                             let label: String = other.text.chars().take(64).collect();
-                            if ui.add_enabled(!state.busy, egui::Checkbox::new(&mut linked, label))
+                            if ui.add_enabled_ui(!state.busy, |ui| kit::toggle_row(ui, label, "", &mut linked)).inner
                                 .on_hover_text(&other.text).changed()
                                 && let Err(error) = state.set_link(note.id, other.id, linked) { state.error = Some(error); }
                         }

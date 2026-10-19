@@ -1,10 +1,11 @@
 use bevy_egui::egui;
 use waifu_studio::appearance::AppearanceState;
+use waifu_studio::settings_kit as kit;
 
 /// Returns true when persistent character settings changed.
 pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
     let before = state.config.clone();
-    ui.heading("Avatar parts");
+    kit::section(ui, "Avatar parts");
     ui.label(&state.status);
     ui.small(
         "Shows or hides whole mesh parts the model already contains. Pieces baked \
@@ -23,10 +24,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
         }
         return state.config != before;
     }
-    ui.horizontal(|ui| {
-        ui.label("Search");
-        ui.text_edit_singleline(&mut state.filter);
-    });
+    kit::text_row(
+        ui,
+        "Search parts",
+        "Filter model meshes and materials",
+        &mut state.filter,
+        "Part name…",
+    );
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -50,40 +54,44 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
         }
     });
     let needle = state.filter.trim().to_lowercase();
-    egui::ScrollArea::vertical()
-        .max_height(280.0)
-        .id_salt("appearance_parts")
-        .show(ui, |ui| {
-            let mut shown = 0;
-            for part in &state.parts {
-                let text = match &part.material {
-                    Some(material) => format!("{} · {material}", part.label),
-                    None => part.label.clone(),
-                };
-                if !needle.is_empty()
-                    && !text.to_lowercase().contains(&needle)
-                    && !part.key.to_lowercase().contains(&needle)
-                {
-                    continue;
-                }
-                shown += 1;
-                if part.hidden_by_model {
-                    ui.add_enabled(false, egui::Checkbox::new(&mut false, text))
+    kit::group(ui, "Model parts", |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(280.0)
+            .id_salt("appearance_parts")
+            .show(ui, |ui| {
+                let mut shown = 0;
+                for part in &state.parts {
+                    let text = match &part.material {
+                        Some(material) => format!("{} · {material}", part.label),
+                        None => part.label.clone(),
+                    };
+                    if !needle.is_empty()
+                        && !text.to_lowercase().contains(&needle)
+                        && !part.key.to_lowercase().contains(&needle)
+                    {
+                        continue;
+                    }
+                    shown += 1;
+                    if part.hidden_by_model {
+                        ui.add_enabled_ui(false, |ui| {
+                            kit::toggle_row(ui, text, "Hidden by the model itself", &mut false)
+                        })
+                        .inner
                         .on_disabled_hover_text("Hidden by the model itself");
-                    continue;
+                        continue;
+                    }
+                    let mut visible = !state.config.is_hidden(&part.key);
+                    if kit::toggle_row(ui, text, "", &mut visible)
+                        .on_hover_text(&part.key)
+                        .changed()
+                    {
+                        state.config.set_hidden(&part.key, !visible);
+                    }
                 }
-                let mut visible = !state.config.is_hidden(&part.key);
-                if ui
-                    .checkbox(&mut visible, text)
-                    .on_hover_text(&part.key)
-                    .changed()
-                {
-                    state.config.set_hidden(&part.key, !visible);
+                if shown == 0 {
+                    ui.label("No parts match.");
                 }
-            }
-            if shown == 0 {
-                ui.label("No parts match.");
-            }
-        });
+            });
+    });
     state.config != before
 }

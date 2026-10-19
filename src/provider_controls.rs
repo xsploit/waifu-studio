@@ -4,6 +4,7 @@ use bevy_egui::egui;
 use waifu_studio::provider::{
     GatewayRoute, ProviderConfig, ReasoningEffort, RoutingSort, remap_removed_provider,
 };
+use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
     let can_add = studio.library.providers.len() < 64;
@@ -73,14 +74,21 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
     }
     if let Some(config) = studio.library.providers.get_mut(studio.library.provider) {
         let mut route = config.route;
-        egui::ComboBox::from_id_salt("gateway-route")
-            .selected_text(route.map_or("Custom / compatible", GatewayRoute::label))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut route, None, "Custom / compatible");
-                for gateway in GatewayRoute::ALL {
-                    ui.selectable_value(&mut route, Some(gateway), gateway.label());
-                }
-            });
+        kit::row(
+            ui,
+            "Gateway route",
+            "Choose a hosted gateway or compatible endpoint.",
+            |ui| {
+                egui::ComboBox::from_id_salt("gateway-route")
+                    .selected_text(route.map_or("Custom / compatible", GatewayRoute::label))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut route, None, "Custom / compatible");
+                        for gateway in GatewayRoute::ALL {
+                            ui.selectable_value(&mut route, Some(gateway), gateway.label());
+                        }
+                    });
+            },
+        );
         if route != config.route {
             config.set_route(route);
         }
@@ -89,81 +97,178 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
                 "WebWaifu defaults: fixed gateway URL; routed model IDs. Effective model: {}",
                 config.effective_model()
             ));
-            ui.small("Explicit vendor/model IDs are sent unchanged, including premium models and routing suffixes. Empty or unrouted IDs use the gateway default.");
-            ui.collapsing("Upstream provider routing", |ui| {
-                ui.small("Use exact provider slugs from this gateway's model page. Availability depends on the selected model.");
-                slug_list(ui, "Try providers in this order", "provider-order", &mut config.routing.order);
-                slug_list(ui, "Allow only these providers", "provider-only", &mut config.routing.only);
-                ui.small("An empty allow list permits all providers. Order is a preference; only is a restriction.");
-                egui::ComboBox::from_id_salt("upstream-sort")
-                    .selected_text(config.routing.sort.label())
-                    .show_ui(ui, |ui| {
-                        for sort in RoutingSort::ALL {
-                            ui.selectable_value(&mut config.routing.sort, sort, sort.label());
-                        }
-                    });
+            kit::note(
+                ui,
+                "Explicit vendor/model IDs are sent unchanged, including premium models and routing suffixes. Empty or unrouted IDs use the gateway default.",
+            );
+            kit::group(ui, "Upstream provider routing", |ui| {
+                kit::note(
+                    ui,
+                    "Use exact provider slugs from this gateway's model page. Availability depends on the selected model.",
+                );
+                slug_list(
+                    ui,
+                    "Try providers in this order",
+                    "provider-order",
+                    &mut config.routing.order,
+                );
+                slug_list(
+                    ui,
+                    "Allow only these providers",
+                    "provider-only",
+                    &mut config.routing.only,
+                );
+                kit::note(
+                    ui,
+                    "An empty allow list permits all providers. Order is a preference; only is a restriction.",
+                );
+                kit::row(
+                    ui,
+                    "Provider preference",
+                    "Sort eligible upstream providers.",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("upstream-sort")
+                            .selected_text(config.routing.sort.label())
+                            .show_ui(ui, |ui| {
+                                for sort in RoutingSort::ALL {
+                                    ui.selectable_value(
+                                        &mut config.routing.sort,
+                                        sort,
+                                        sort.label(),
+                                    );
+                                }
+                            });
+                    },
+                );
                 if route == GatewayRoute::OpenRouterResponses {
-                    ui.checkbox(&mut config.routing.allow_fallbacks, "Allow fallback providers");
-                    ui.small("For Nitro routing, append :nitro to the model ID. Nitro also permits priority endpoints and may cost more than throughput sorting.");
-                    ui.hyperlink_to("Provider slugs and routing", "https://openrouter.ai/docs/features/provider-routing");
+                    kit::toggle_row(
+                        ui,
+                        "Allow fallback providers",
+                        "",
+                        &mut config.routing.allow_fallbacks,
+                    );
+                    kit::note(
+                        ui,
+                        "For Nitro routing, append :nitro to the model ID. Nitro also permits priority endpoints and may cost more than throughput sorting.",
+                    );
+                    ui.hyperlink_to(
+                        "Provider slugs and routing",
+                        "https://openrouter.ai/docs/features/provider-routing",
+                    );
                 } else {
-                    ui.small("To pin one provider without fallback, put its slug alone in the allow list. Sorting requests a preference, not a latency guarantee.");
-                    ui.hyperlink_to("Provider slugs and routing", "https://vercel.com/docs/ai-gateway/models-and-providers/provider-options");
+                    kit::note(
+                        ui,
+                        "To pin one provider without fallback, put its slug alone in the allow list. Sorting requests a preference, not a latency guarantee.",
+                    );
+                    ui.hyperlink_to(
+                        "Provider slugs and routing",
+                        "https://vercel.com/docs/ai-gateway/models-and-providers/provider-options",
+                    );
                 }
             });
             if route == GatewayRoute::VercelGateway {
-                ui.label("Optional OpenAI BYOK environment variable");
-                ui.text_edit_singleline(&mut config.byok_openai_key_env);
+                kit::text_row(
+                    ui,
+                    "OpenAI BYOK environment variable",
+                    "Optional key for your own OpenAI account.",
+                    &mut config.byok_openai_key_env,
+                    "",
+                );
             }
         }
-        ui.label("Connection name");
-        ui.text_edit_singleline(&mut config.name);
-        ui.collapsing("Generation budget & sampling", |ui| {
+        kit::text_row(
+            ui,
+            "Connection name",
+            "Name shown in the connection picker.",
+            &mut config.name,
+            "",
+        );
+        kit::group(ui, "Generation budget & sampling", |ui| {
             ui.small(
                 "Optional parameters depend on the model. Leave disabled to use server defaults.",
             );
             if config.uses_server_sampling() {
-                ui.small("This GPT-5 gateway model uses server sampling defaults. Saved temperature and Top P settings are not sent.");
+                kit::note(
+                    ui,
+                    "This GPT-5 gateway model uses server sampling defaults. Saved temperature and Top P settings are not sent.",
+                );
             }
             let supported = config.supported_reasoning_efforts();
-            egui::ComboBox::from_id_salt("connection-reasoning-effort")
-                .selected_text(config.reasoning_effort.map_or("Automatic", ReasoningEffort::label))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut config.reasoning_effort, None, "Automatic");
-                    for effort in ReasoningEffort::ALL {
-                        if supported.as_ref().is_some_and(|listed| !listed.contains(&effort)) {
-                            continue;
-                        }
-                        ui.selectable_value(&mut config.reasoning_effort, Some(effort), effort.label());
-                    }
-                });
+            kit::row(
+                ui,
+                "Reasoning effort",
+                "Automatic leaves the choice to the server.",
+                |ui| {
+                    egui::ComboBox::from_id_salt("connection-reasoning-effort")
+                        .selected_text(
+                            config
+                                .reasoning_effort
+                                .map_or("Automatic", ReasoningEffort::label),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut config.reasoning_effort, None, "Automatic");
+                            for effort in ReasoningEffort::ALL {
+                                if supported
+                                    .as_ref()
+                                    .is_some_and(|listed| !listed.contains(&effort))
+                                {
+                                    continue;
+                                }
+                                ui.selectable_value(
+                                    &mut config.reasoning_effort,
+                                    Some(effort),
+                                    effort.label(),
+                                );
+                            }
+                        });
+                },
+            );
             if let Some(error) = config.reasoning_effort_error() {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             }
-            ui.small("Reasoning levels depend on the selected model. None explicitly disables reasoning where supported.");
+            kit::note(
+                ui,
+                "Reasoning levels depend on the selected model. None explicitly disables reasoning where supported.",
+            );
             let mut budget = config.max_tokens.is_some();
-            if ui
-                .checkbox(&mut budget, "Set output token budget (max_tokens)")
-                .changed()
+            if kit::toggle_row(
+                ui,
+                "Set output token budget (max_tokens)",
+                "Limit generated output tokens.",
+                &mut budget,
+            )
+            .changed()
             {
                 config.max_tokens = budget.then_some(2048);
             }
             if let Some(tokens) = &mut config.max_tokens {
-                ui.add(egui::DragValue::new(tokens).range(1..=1_000_000).speed(64));
+                kit::row(
+                    ui,
+                    "Output token budget",
+                    "Maximum generated tokens.",
+                    |ui| ui.add(egui::DragValue::new(tokens).range(1..=1_000_000).speed(64)),
+                );
             }
             let mut nucleus = config.top_p.is_some();
-            if ui
-                .checkbox(&mut nucleus, "Set nucleus sampling (top_p)")
-                .changed()
+            if kit::toggle_row(
+                ui,
+                "Set nucleus sampling (top_p)",
+                "Override the server default.",
+                &mut nucleus,
+            )
+            .changed()
             {
                 config.top_p = nucleus.then_some(1.0);
             }
             if let Some(top_p) = &mut config.top_p {
-                ui.add(egui::Slider::new(top_p, 0.0..=1.0).text("Top P"));
+                kit::slider_row(ui, "Top P", "", egui::Slider::new(top_p, 0.0..=1.0));
             }
         });
     }
-    ui.small("Presets use OpenAI-compatible APIs. Anthropic and Gemini presets route through OpenRouter. Choose a model and save after editing.");
+    kit::note(
+        ui,
+        "Presets use OpenAI-compatible APIs. Anthropic and Gemini presets route through OpenRouter. Choose a model and save after editing.",
+    );
 }
 
 fn slug_list(ui: &mut egui::Ui, label: &str, id: &str, slugs: &mut Vec<String>) {
@@ -171,17 +276,21 @@ fn slug_list(ui: &mut egui::Ui, label: &str, id: &str, slugs: &mut Vec<String>) 
         ui.label(label);
         let mut remove = None;
         for (index, slug) in slugs.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("{}.", index + 1));
-                ui.add(
-                    egui::TextEdit::singleline(slug)
-                        .char_limit(128)
-                        .hint_text("Exact provider slug"),
-                );
-                if ui.small_button("Remove").clicked() {
-                    remove = Some(index);
-                }
-            });
+            kit::row(
+                ui,
+                &format!("Provider {}", index + 1),
+                "Exact provider slug.",
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(slug)
+                            .char_limit(128)
+                            .hint_text("Exact provider slug"),
+                    );
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(index);
+                    }
+                },
+            );
         }
         if let Some(index) = remove {
             slugs.remove(index);

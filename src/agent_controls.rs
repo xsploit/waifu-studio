@@ -1,27 +1,33 @@
 use bevy_egui::egui;
 use waifu_studio::agents::{Access, AgentProvider, AgentState, Transport};
+use waifu_studio::settings_kit as kit;
 pub fn ui(ui: &mut egui::Ui, state: &mut AgentState) {
-    ui.heading("Coding agents");
-    ui.label("Run an installed CLI on one explicitly reviewed task. No chat-triggered execution. Installed CLI authentication/environment is inherited; this app stores no credentials.");
-    ui.label("Read only is the default. File edits explicitly authorizes the preset's editing tools. Codex uses its CLI OS sandbox; Claude and Pi use tool restrictions, not an OS sandbox. No permission bypass flags are used. Custom commands use their supplied arguments with your user permissions. Process groups stop on cancel/timeout on Unix; independently detached descendants may escape.");
+    kit::section(ui, "Coding agents");
+    kit::note(
+        ui,
+        "Run an installed CLI on one explicitly reviewed task. No chat-triggered execution. Installed CLI authentication/environment is inherited; this app stores no credentials.",
+    );
+    kit::note(
+        ui,
+        "Read only is the default. File edits explicitly authorizes the preset's editing tools. Codex uses its CLI OS sandbox; Claude and Pi use tool restrictions, not an OS sandbox. No permission bypass flags are used. Custom commands use their supplied arguments with your user permissions. Process groups stop on cancel/timeout on Unix; independently detached descendants may escape.",
+    );
     let busy = state.is_busy();
     ui.add_enabled_ui(!busy, |ui| {
         let mut changed = false;
-        ui.horizontal(|ui| {
-            changed |= ui.selectable_value(&mut state.transport,Transport::Local,"Local").changed();
-            changed |= ui.selectable_value(&mut state.transport,Transport::Ssh,"SSH host").changed();
+        kit::row(ui, "Transport", "Where the installed CLI runs.", |ui| {
+            changed |= ui.selectable_value(&mut state.transport, Transport::Ssh, "SSH host").changed();
+            changed |= ui.selectable_value(&mut state.transport, Transport::Local, "Local").changed();
         });
         if state.transport == Transport::Ssh {
-            ui.label("Remote installed CLI/authentication. SSH requires a known host key and noninteractive authentication. No keys are read by this app. GNU timeout must be installed remotely. Cancel closes SSH; detached processes and prior file changes may survive.");
-            ui.horizontal(|ui| {ui.label("Host");changed |= ui.text_edit_singleline(&mut state.ssh.host).changed();});
-            ui.horizontal(|ui| {ui.label("User");changed |= ui.text_edit_singleline(&mut state.ssh.user).changed();});
-            changed |= ui.add(egui::DragValue::new(&mut state.ssh.port).range(1..=65535).prefix("Port ")).changed();
-            ui.label("Identity file path (optional; passed to ssh, never loaded by this app)");
-            changed |= ui.text_edit_singleline(&mut state.ssh.identity_file).changed();
-            ui.label("Remote absolute POSIX working directory");
-            changed |= ui.text_edit_singleline(&mut state.ssh.working_dir).changed();
+            kit::note(ui, "Remote installed CLI/authentication. SSH requires a known host key and noninteractive authentication. No keys are read by this app. GNU timeout must be installed remotely. Cancel closes SSH; detached processes and prior file changes may survive.");
+            changed |= kit::text_row(ui, "Host", "", &mut state.ssh.host, "").changed();
+            changed |= kit::text_row(ui, "User", "", &mut state.ssh.user, "").changed();
+            changed |= kit::row(ui, "Port", "", |ui| ui.add(egui::DragValue::new(&mut state.ssh.port).range(1..=65535))).changed();
+            changed |= kit::text_row(ui, "Identity file", "Optional path passed to ssh; never loaded by this app.", &mut state.ssh.identity_file, "").changed();
+            changed |= kit::text_row(ui, "Remote directory", "Absolute POSIX working directory.", &mut state.ssh.working_dir, "").changed();
         }
 
+        kit::row(ui, "Coding agent", "Installed provider CLI.", |ui| {
         egui::ComboBox::from_id_salt("coding_agent_provider")
             .selected_text(state.provider.label())
             .show_ui(ui, |ui| {
@@ -36,18 +42,18 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AgentState) {
                         .changed();
                 }
             });
+        });
         if state.provider != AgentProvider::Custom {
-            ui.horizontal(|ui| {
-                changed |= ui.selectable_value(&mut state.access, Access::ReadOnly, "Read only").changed();
+            kit::row(ui, "Task access", "Review permissions before running.", |ui| {
                 changed |= ui.selectable_value(&mut state.access, Access::FileEdits, "Allow file edits").changed();
+                changed |= ui.selectable_value(&mut state.access, Access::ReadOnly, "Read only").changed();
             });
             if state.access == Access::FileEdits {
-                ui.label("This task may modify files. Review the directory, permissions and exact command before Start. Claude/Pi editing tools are not confined by an app OS sandbox; Codex workspace-write follows its CLI sandbox policy. No Bash tool is enabled for Claude/Pi.");
+                kit::note(ui, "This task may modify files. Review the directory, permissions and exact command before Start. Claude/Pi editing tools are not confined by an app OS sandbox; Codex workspace-write follows its CLI sandbox policy. No Bash tool is enabled for Claude/Pi.");
             }
         }
         if state.provider == AgentProvider::Custom {
-            ui.label("Executable (a path or installed program name; no shell)");
-            changed |= ui.text_edit_singleline(&mut state.executable).changed();
+            changed |= kit::text_row(ui, "Executable", "Path or installed program name; no shell.", &mut state.executable, "").changed();
             let id = ui.id().with("agent_argument_json");
             let mut arguments = ui
                 .data_mut(|d| d.get_temp::<String>(id))
@@ -68,15 +74,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AgentState) {
             ui.data_mut(|d| d.insert_temp(id, arguments));
         }
         if state.transport == Transport::Local {
-            ui.label("Existing working directory");
-            changed |= ui.text_edit_singleline(&mut state.working_dir).changed();
+            changed |= kit::text_row(ui, "Working directory", "Existing local directory.", &mut state.working_dir, "").changed();
         }
         ui.label("Task (maximum 32 KiB; passed literally, not as shell code)");
         changed |= ui
             .add(egui::TextEdit::multiline(&mut state.prompt).desired_rows(4))
             .changed();
-        changed |= ui
-            .add(egui::Slider::new(&mut state.timeout_seconds, 1..=600).text("Timeout seconds"))
+        changed |= kit::slider_row(ui, "Timeout", "Seconds before the process is stopped.", egui::Slider::new(&mut state.timeout_seconds, 1..=600))
             .changed();
         if changed {
             state.disarm();
