@@ -1,6 +1,6 @@
 # Waifu Studio: review and test handoff
 
-Updated 2026-10-18. Latest published source baseline when updated: `4b8f1e4` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
+Updated 2026-10-18. Latest published source baseline when updated: `f4adb1a` on `main`; current semantic-evidence work may be uncommitted. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
 
 ## Prompt for the reviewing model
 

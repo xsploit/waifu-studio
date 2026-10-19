@@ -986,12 +986,20 @@ impl Studio {
             self.error = Some(error);
             return;
         }
+        let semantic_evidence = semantic.as_ref().is_some_and(|state| {
+            state.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence
+        });
         let semantic_notes = semantic.and_then(|state| {
-            state.take_context_for(self.library.selected, memory, &self.composer)
+            let source: &dyn waifu_studio::semantic_memory::SemanticSource = if semantic_evidence {
+                &self.facts
+            } else {
+                memory
+            };
+            state.take_context_for(self.library.selected, source, &self.composer)
         });
         // Semantic retrieval excludes pinned notes. Use only pins alongside it,
         // so the same unpinned note cannot also appear via lexical retrieval.
-        let notes = if semantic_notes.is_some() {
+        let notes = if semantic_notes.is_some() && !semantic_evidence {
             memory.context_pins_only()
         } else {
             memory.context(&self.composer)
@@ -1015,7 +1023,11 @@ impl Studio {
         });
         self.cancel_appraisal();
         self.facts.select_character(Some(id));
-        let facts_context = self.facts.context(&self.composer);
+        let facts_context = if semantic_evidence && semantic_notes.is_some() {
+            None
+        } else {
+            self.facts.context(&self.composer)
+        };
         self.affect.entries.entry(id).or_default().config = self.library.scene.affect.clone();
         self.affect.take_pending(id);
         self.reply_affect_requested = false;
@@ -1668,7 +1680,13 @@ pub fn poll_assistant(
 ) {
     memory.select_character(studio.library.selected);
     memory.poll();
-    semantic.sync(studio.library.selected, &memory);
+    let source: &dyn waifu_studio::semantic_memory::SemanticSource =
+        if semantic.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
+            &studio.facts
+        } else {
+            &*memory
+        };
+    semantic.sync(studio.library.selected, source);
     board.poll();
     mcp.poll();
     agents.poll();

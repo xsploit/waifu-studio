@@ -288,6 +288,18 @@ impl FactsMemoryState {
     pub fn has_character(&self) -> bool {
         self.selected.is_some()
     }
+    /// Only current accepted entries; no pending drafts, corrections' old values,
+    /// expired records or generated interpretations with stale evidence.
+    pub fn semantic_entries(&self) -> Vec<crate::memory::MemoryNote> {
+        if !self.enabled || !self.loaded || self.busy {
+            return vec![];
+        }
+        let superseded: HashSet<_> = self.records.iter().filter_map(|r| r.supersedes).collect();
+        let at = now();
+        self.records.iter().filter(|r| !superseded.contains(&r.id) && r.expires_at.is_none_or(|t| t > at) && current_reflection_evidence(r, &self.records, at))
+            .map(|r| crate::memory::MemoryNote { id: r.id, pinned: false,
+                text: serde_json::json!({"kind":r.kind,"text":r.text,"source":r.source,"evidence":r.evidence}).to_string() }).collect()
+    }
     pub fn reflection_is_current(&self, record: &MemoryRecord) -> bool {
         current_reflection_evidence(record, &self.records, now())
     }

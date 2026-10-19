@@ -7,19 +7,42 @@ pub fn ui(
     state: &mut SemanticMemory,
     character: Option<Uuid>,
     memory: &MemoryState,
+    facts: &waifu_studio::facts_memory::FactsMemoryState,
 ) {
     ui.separator();
     ui.heading("Semantic lookup (optional)");
-    ui.label("Finds related explicit notes with an OpenAI-compatible /embeddings endpoint. Saved notes are indexed in the background after opt-in. Use Find notes for current draft to send that draft as a lookup query, then Add retrieved notes to place matching results in the composer. Chat does not add new memories automatically.");
+    ui.label("Finds related explicit notes or current accepted evidence records with an OpenAI-compatible /embeddings endpoint. The selected source is indexed in the background after opt-in. Use Find memories for current draft to send that draft as a lookup query. Matching results attach once when you send the same draft. Chat does not add new memories automatically.");
     if !state.settings_loaded() {
         ui.label("Loading settings…");
         return;
     }
-    if !memory.enabled {
-        ui.label("Turn on \"Include local notes in chat\" above to use semantic lookup.");
+    if (state.settings.scope == waifu_studio::semantic_memory::SemanticScope::Notes
+        && !memory.enabled)
+        || (state.settings.scope == waifu_studio::semantic_memory::SemanticScope::Evidence
+            && !facts.enabled)
+    {
+        ui.label("Turn on the selected source above to use semantic lookup.");
     }
     let s = &mut state.settings;
     ui.checkbox(&mut s.enabled, "Use semantic lookup");
+    egui::ComboBox::from_id_salt("semantic-source")
+        .selected_text(match s.scope {
+            waifu_studio::semantic_memory::SemanticScope::Notes => "Explicit notes",
+            waifu_studio::semantic_memory::SemanticScope::Evidence => "Accepted evidence",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut s.scope,
+                waifu_studio::semantic_memory::SemanticScope::Notes,
+                "Explicit notes",
+            );
+            ui.selectable_value(
+                &mut s.scope,
+                waifu_studio::semantic_memory::SemanticScope::Evidence,
+                "Accepted evidence",
+            );
+        });
+    ui.small("Evidence mode sends current accepted record text, type and quoted evidence to the embedding endpoint. Pending candidates and stale/expired/corrected records are excluded. Save lookup settings to apply a source change.");
     egui::Grid::new("semantic-memory-settings")
         .num_columns(2)
         .show(ui, |ui| {
@@ -43,7 +66,7 @@ pub fn ui(
     if s.allow_remote {
         ui.colored_label(
             egui::Color32::YELLOW,
-            "Notes and looked-up drafts will be sent to this server, which may charge per request.",
+            "Selected memory entries and looked-up drafts will be sent to this server, which may charge per request.",
         );
     }
     ui.horizontal(|ui| {
@@ -68,7 +91,13 @@ pub fn ui(
             state.forget(id);
         }
     });
-    let ready = state.ready(character, memory);
+    let source: &dyn waifu_studio::semantic_memory::SemanticSource =
+        if state.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
+            facts
+        } else {
+            memory
+        };
+    let ready = state.ready(character, source);
     ui.label(if ready {
         format!("✔ {}", state.status)
     } else {

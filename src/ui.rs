@@ -487,20 +487,33 @@ pub fn studio_ui(
                         &mut semantic,
                         studio.library.selected,
                         &memory,
+                        &studio.facts,
                     );
-                    ui.small("Search your notes for this draft. A matching result is attached only to the next request.");
+                    let semantic_source: &dyn waifu_studio::semantic_memory::SemanticSource =
+                        if semantic.scope()
+                            == waifu_studio::semantic_memory::SemanticScope::Evidence
+                        {
+                            &studio.facts
+                        } else {
+                            &*memory
+                        };
+                    ui.small("Search the selected memory source for this draft. A matching result is attached only to the next request.");
                     if ui
                         .add_enabled(
                             !studio.composer.trim().is_empty()
-                                && semantic.ready(studio.library.selected, &memory),
-                            egui::Button::new("Find notes for current draft"),
+                                && semantic.ready(studio.library.selected, semantic_source),
+                            egui::Button::new("Find memories for current draft"),
                         )
                         .clicked()
                     {
-                        semantic.query(studio.library.selected, &memory, &studio.composer);
+                        semantic.query(studio.library.selected, semantic_source, &studio.composer);
                     }
-                    if semantic.has_result_for(studio.library.selected, &memory, &studio.composer) {
-                        ui.label("Retrieved notes will be used once when this draft is sent; they are not saved in chat.");
+                    if semantic.has_result_for(
+                        studio.library.selected,
+                        semantic_source,
+                        &studio.composer,
+                    ) {
+                        ui.label("Retrieved memories will be used once when this draft is sent; they are not saved in chat.");
                     }
                 }
                 Tab::Tools => {

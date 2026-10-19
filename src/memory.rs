@@ -106,6 +106,9 @@ impl MemoryState {
     pub fn notes(&self) -> &[MemoryNote] {
         &self.notes
     }
+    pub fn selected_character(&self) -> Option<Uuid> {
+        self.selected
+    }
     pub fn has_character(&self) -> bool {
         self.selected.is_some()
     }

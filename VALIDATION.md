@@ -485,3 +485,14 @@ Confirmed acceptance/recall gap: the previous code checked citations only when c
 Two new regression tests cover acceptance after source mutation, pending invalidation after correction, accepted-reflection expiry suppression, derived deletion on forgetting, bounded escaped citation encoding and legacy/manual distinction. First targeted run38/39 exposed over-broad deletion of newer ordinary fact corrections when forgetting an ancestor; restricted additional cascading to derived reflection chains, preserving existing behavior. Rerun39/39 passed. Announced one-job low-priority full suite passed459 library +95 application +6 integration +2 benchmark =562 tests, zero failures. No live provider, GUI or fresh independent Fable review.
 
 Final strict all-target Clippy, source rustfmt checks and diff whitespace passed for the reflection-provenance slice; compilation completion announced.
+
+
+## Accepted-evidence semantic lookup — 2026-10-18
+
+Added a saved source selector: explicit notes remain the default; accepted evidence is optional. The evidence projection includes current record text, kind, source and evidence; pending candidates, superseded/expired records and stale generated reflections are excluded. Indexing still requires semantic opt-in plus the selected memory source enabled; non-local embedding endpoints retain their separate consent check. Lookup consumption checks the source scope, loaded character, current revision, saved settings and matching draft, then consumes the result once. Focused chat retains lexical notes in evidence mode and avoids duplicate lexical facts when evidence results attach; retrieved context remains a transient untrusted data message rather than saved history.
+
+The initial targeted compile failed on the generic Bevy ResMut mutability bound; corrected before tests ran. Existing five semantic tests passed, then a new local fake-vector regression passed for source selection, once-only consumption, correction, expiry and forgetting. Added explicit loaded-character validation, pending-candidate exclusion and old-settings default coverage. Full announced one-job low-priority `cargo test --all-targets` passed: 461 library + 95 application + 6 integration + 2 benchmark = 564 tests. Formatting and diff whitespace checks passed.
+
+Fake vectors test lifecycle and isolation only; they do not demonstrate real paraphrase retrieval quality. The committed lexical behavior evaluation remains 8/9, with its paraphrase miss unchanged. No live embedding endpoint, GUI, GPU render or physical audio check was run. Fable review delegation was attempted but rejected by the orchestrator automated causal-hop limit; no fresh independent review is claimed.
+
+Final strict all-target Clippy completed cleanly after the source-character check and additional tests. No compilation remains active from this slice.
