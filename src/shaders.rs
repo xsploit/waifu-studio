@@ -220,6 +220,7 @@ impl Plugin for ShaderPreviewPlugin {
 
 fn standard_from_toon(source: &MtoonMaterial) -> StandardMaterial {
     StandardMaterial {
+        uv_transform: source.uv_transform,
         base_color: source.base_color,
         base_color_texture: source.base_color_texture.clone(),
         emissive: source.emissive_factor.to_linear(),
@@ -239,6 +240,7 @@ fn standard_from_toon(source: &MtoonMaterial) -> StandardMaterial {
 
 fn toon_from_standard(source: &StandardMaterial) -> MtoonMaterial {
     MtoonMaterial {
+        uv_transform: source.uv_transform,
         base_color: source.base_color,
         base_color_texture: source.base_color_texture.clone(),
         emissive_factor: Color::LinearRgba(source.emissive),
@@ -482,8 +484,7 @@ fn apply_material_expressions(
             tuning.matcap_strength,
             tuning.emission_strength,
         );
-        // UV binds have no representation in vendored MToon.
-        toon.uv = bevy::math::Affine2::IDENTITY;
+
         if toons
             .get(&handles.toon)
             .is_some_and(|m| MaterialValues::read_toon(m) != toon)
@@ -699,6 +700,14 @@ mod tests {
             assert_eq!(m.uv_transform.matrix2.y_axis.y, 4.);
             assert!((m.uv_transform.translation.x - 0.2).abs() < 1e-6);
         }
+        let toon = app
+            .world()
+            .resource::<Assets<MtoonMaterial>>()
+            .get(&handles.toon)
+            .unwrap();
+        assert_eq!(toon.uv_transform.matrix2.x_axis.x, 3.);
+        assert_eq!(toon.uv_transform.matrix2.y_axis.y, 4.);
+        assert!((toon.uv_transform.translation.x - 0.2).abs() < 1e-6);
         app.world_mut()
             .resource_mut::<MaterialExpressionFrame>()
             .0
@@ -713,6 +722,14 @@ mod tests {
             assert_eq!(m.base_color, original.base_color);
             assert_eq!(m.uv_transform, original.uv_transform);
         }
+        assert_eq!(
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&handles.toon)
+                .unwrap()
+                .uv_transform,
+            original.uv_transform
+        );
         let source_now = app
             .world()
             .resource::<Assets<StandardMaterial>>()

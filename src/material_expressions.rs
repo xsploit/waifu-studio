@@ -29,8 +29,7 @@ pub(crate) struct MaterialBind {
 #[reflect(Component, Clone)]
 pub(crate) struct MaterialExpressionBinds {
     pub binds: Vec<MaterialBind>,
-    /// MToon has no UV field; its Lit/Unlit conversions still need the authored
-    /// base texture transform. Standard imports already retain it themselves.
+    /// Authored base texture transform shared by Toon/Lit/Unlit variants.
     pub authored_uv: Option<[f32; 4]>,
 }
 #[derive(Default, Clone)]
@@ -103,9 +102,14 @@ impl ParsedMaterials {
                     .and_then(Value::as_str)
                     .unwrap_or("<missing type>");
                 let Some(property) = property(kind, vrm0) else {
-                    self.issues.insert(format!("Unsupported material property {kind}{}", if kind == "_MainTex_ST" {
-                        ": vendored MToon has no UV transform; Unity/glTF mapping is not implemented"
-                    } else { "" }));
+                    self.issues.insert(format!(
+                        "Unsupported material property {kind}{}",
+                        if kind == "_MainTex_ST" {
+                            ": Unity/glTF texture-coordinate mapping is not implemented"
+                        } else {
+                            ""
+                        }
+                    ));
                     continue;
                 };
                 let material = if vrm0 {
@@ -254,7 +258,6 @@ impl ParsedMaterials {
                     authored: None,
                     rgba: true,
                 });
-                self.issues.insert("Texture transforms affect shared UV0 in Lit/Unlit only; vendored Toon has no UV transform field".into());
             }
             if binds.len() > limit {
                 self.issues
@@ -285,7 +288,7 @@ impl MaterialValues {
             matcap: m.matcap_factor,
             rim: m.parametric_rim_color,
             outline: m.outline_color,
-            uv: Affine2::IDENTITY,
+            uv: m.uv_transform,
         }
     }
     pub fn read_standard(m: &StandardMaterial) -> Self {
@@ -297,6 +300,7 @@ impl MaterialValues {
         }
     }
     pub fn write_toon(&self, m: &mut bevy_shader_mtoon::MtoonMaterial) {
+        m.uv_transform = self.uv;
         m.base_color = self.color;
         m.emissive_factor = self.emission;
         m.shade_factor = self.shade;

@@ -1068,12 +1068,13 @@ mod tests {
             parsed.materials.binds[&0].authored_uv,
             Some([2., 3., 0.1, 0.2])
         );
+        assert_eq!(parsed.materials.issues.len(), 1);
         assert!(
             parsed
                 .materials
                 .issues
                 .iter()
-                .any(|s| s.contains("Toon has no UV"))
+                .all(|s| s.contains("Toon only"))
         );
         let zero = ExpressionHandler::parse(&material_fixture(
             serde_json::json!([
@@ -1223,6 +1224,11 @@ mod tests {
             .init_resource::<crate::visuals::VisualState>()
             .add_plugins((ExpressionsPlugin, ShaderPreviewPlugin));
         let original = MtoonMaterial {
+            uv_transform: bevy::math::Affine2::from_scale_angle_translation(
+                Vec2::new(2., 3.),
+                0.,
+                Vec2::new(0.1, 0.2),
+            ),
             base_color: Color::linear_rgba(0.5, 0.5, 0.5, 1.),
             emissive_factor: Color::linear_rgb(0.1, 0.2, 0.3),
             shade_factor: Color::linear_rgb(0.2, 0.3, 0.4),
@@ -1332,7 +1338,7 @@ mod tests {
         assert!((outline_color.red - 0.5).abs() < 1e-5);
         assert_eq!(outline_color.alpha, 1.);
         assert!(
-            app.world()
+            !app.world()
                 .resource::<FacialState>()
                 .status
                 .contains("Toon has no UV")
@@ -1366,6 +1372,8 @@ mod tests {
             .unwrap();
         assert!((toon.emissive_factor.to_linear().red - 1.5).abs() < 1e-5);
         assert!((toon.matcap_factor.x - 1.1).abs() < 1e-5);
+        assert_eq!(toon.uv_transform.matrix2.x_axis.x, 3.);
+        assert!((toon.uv_transform.translation.x - 0.2).abs() < 1e-5);
         // Tuning's shade baseline changes without swallowing the authored delta.
         let baseline = Color::srgb_from_array(
             app.world()

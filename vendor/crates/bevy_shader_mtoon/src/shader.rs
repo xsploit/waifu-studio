@@ -17,6 +17,8 @@ use crate::SHADER_PATH;
 #[uniform(0, MtoonShaderUniform)]
 #[reflect(PartialEq)]
 pub struct MtoonMaterial {
+    /// Shared mesh-UV transform; matcap sampling remains in view space.
+    pub uv_transform: bevy::math::Affine2,
     pub outline_color: Color,
     pub outline_mode: OutlineMode,
     pub outline_width: f32,
@@ -79,6 +81,7 @@ pub enum OutlineMode {
 impl Default for MtoonMaterial {
     fn default() -> Self {
         Self {
+            uv_transform: bevy::math::Affine2::IDENTITY,
             outline_color: Color::BLACK,
             outline_mode: OutlineMode::None,
             outline_width: 0.0,
@@ -113,6 +116,7 @@ impl Default for MtoonMaterial {
 
 #[derive(Clone, Default, ShaderType)]
 pub struct MtoonShaderUniform {
+    pub uv_transform: Mat3,
     pub alpha_cutoff: f32,
     pub base_color: Vec4,
     pub emissive_factor: Vec4,
@@ -186,6 +190,7 @@ impl AsBindGroupShaderType<MtoonShaderUniform> for MtoonMaterial {
         let shade_color = Vec3::new(shade_color[0], shade_color[1], shade_color[2]);
 
         MtoonShaderUniform {
+            uv_transform: Mat3::from(self.uv_transform),
             alpha_cutoff,
             base_color: self.base_color.to_linear().to_f32_array().into(),
             emissive_factor: self.emissive_factor.to_linear().to_f32_array().into(),

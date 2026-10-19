@@ -16,6 +16,7 @@
 #endif
 
 struct MtoonMaterialUniform {
+    uv_transform: mat3x3<f32>,
     alpha_cutoff: f32,
     base_color: vec4<f32>,
     emissive_factor: vec4<f32>,
@@ -67,7 +68,7 @@ const EPSILON: f32 = 0.00001;
 
 fn mtoon_uv(in: VertexOutput) -> vec2<f32> {
 #ifdef VERTEX_UVS_A
-    return in.uv;
+    return (material.uv_transform * vec3<f32>(in.uv, 1.0)).xy;
 #else
     return vec2<f32>(0.0);
 #endif
