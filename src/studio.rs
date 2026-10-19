@@ -660,26 +660,7 @@ impl Studio {
                 .add_filter("Audio", &["wav", "mp3"])
                 .pick_file()
             {
-                use std::io::Read;
-                let result = (|| {
-                    let file = std::fs::File::open(path)
-                        .map_err(|_| "Could not open local audio".to_owned())?;
-                    let meta = file
-                        .metadata()
-                        .map_err(|_| "Could not inspect local audio")?;
-                    const LIMIT: u64 = 32 * 1024 * 1024;
-                    if !meta.is_file() || meta.len() > LIMIT {
-                        return Err("Choose a regular WAV/MP3 file of at most 32 MiB".into());
-                    }
-                    let mut bytes = Vec::new();
-                    file.take(LIMIT + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(|_| "Could not read local audio")?;
-                    if bytes.len() as u64 > LIMIT {
-                        return Err("Local audio exceeds 32 MiB".into());
-                    }
-                    Ok(bytes)
-                })();
+                let result = read_local_preview(&path);
                 let _ = tx.send(FileEvent::LocalAudio(generation, character, result));
             }
         });
@@ -1567,6 +1548,37 @@ fn play_clip(
     true
 }
 
+/// Bounded local read on the picker worker. NONBLOCK makes FIFO/device selection
+/// return to validation rather than holding the sole file-dialog slot forever.
+fn read_local_preview(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    const LIMIT: u64 = 32 * 1024 * 1024;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| "Could not open local audio")?;
+    let meta = file
+        .metadata()
+        .map_err(|_| "Could not inspect local audio")?;
+    if !meta.is_file() || meta.len() > LIMIT {
+        return Err("Choose a regular WAV/MP3 file of at most 32 MiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read local audio")?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("Local audio exceeds 32 MiB".into());
+    }
+    Ok(bytes)
+}
+
 struct DialogGuard(Arc<AtomicBool>);
 impl Drop for DialogGuard {
     fn drop(&mut self) {
@@ -2272,6 +2284,32 @@ mod tests {
         assert!(studio.appraised_affect.is_none());
         drop(studio);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn local_preview_read_is_bounded_and_rejects_nonregular_inputs() {
+        let root = std::env::temp_dir().join(format!("local-preview-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("clip.wav");
+        std::fs::write(&file, [1, 2, 3]).unwrap();
+        assert_eq!(read_local_preview(&file).unwrap(), vec![1, 2, 3]);
+        assert!(read_local_preview(&root).is_err());
+        assert!(read_local_preview(&root.join("missing")).is_err());
+        std::fs::File::create(&file)
+            .unwrap()
+            .set_len(32 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(read_local_preview(&file).unwrap_err().contains("32 MiB"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let fifo = root.join("pipe.wav");
+            let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            // SAFETY: path is a valid nul-terminated pathname in our temporary directory.
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            assert!(read_local_preview(&fifo).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
