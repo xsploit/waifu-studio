@@ -183,11 +183,18 @@ const CATEGORY_WORDS: &[(MotionCategory, &[&str])] = &[
             "realization",
         ],
     ),
+    // Sachi CC0 clips use Japanese names; WebWaifu4's catalog labels zatu
+    // "casual talk", ruru "talk", point "explain", hima "waiting", stand "stand".
     (
         MotionCategory::Talking,
-        &["talk", "talking", "speak", "speaking", "explain"],
+        &[
+            "talk", "talking", "speak", "speaking", "explain", "zatu", "ruru", "point",
+        ],
     ),
-    (MotionCategory::Idle, &["idle", "neutral", "breathing"]),
+    (
+        MotionCategory::Idle,
+        &["idle", "neutral", "breathing", "hima", "stand"],
+    ),
 ];
 
 /// Category from a file name alone; digits separate words and are ignored.
@@ -429,6 +436,12 @@ mod tests {
             ("dance_2.bvh", MotionCategory::Dance),
             ("action_walk.bvh", MotionCategory::Locomotion),
             ("talking.fbx", MotionCategory::Talking),
+            ("CC0animationzatu01.vrma", MotionCategory::Talking),
+            ("CC0animationruru02.vrma", MotionCategory::Talking),
+            ("CC0animationpoint1.vrma", MotionCategory::Talking),
+            ("CC0animationhima01.vrma", MotionCategory::Idle),
+            ("CC0animationstand01.vrma", MotionCategory::Idle),
+            ("action_standup.bvh", MotionCategory::Unknown),
             ("CC0animationunwave.vrma", MotionCategory::Unknown),
             ("CC0animationunknown3.vrma", MotionCategory::Unknown),
             ("CC0animationother1.vrma", MotionCategory::Unknown),

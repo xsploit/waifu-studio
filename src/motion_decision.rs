@@ -456,7 +456,8 @@ fn emotion_words(emotion: AffectEmotion) -> &'static [&'static str] {
         E::Confused => &["confusion"],
         E::Thinking => &["realization", "thinking", "think"],
         E::Annoyed => &["annoyance", "disapproval", "disaproval"],
-        E::Embarrassed => &["embarrassment"],
+        // Sachi's skirt-tug clip is catalogued as shy/nervous in WebWaifu4.
+        E::Embarrassed => &["embarrassment", "skirt"],
         E::Grateful => &["gratitude"],
         E::Optimistic => &["optimism", "approval"],
         E::Proud => &["pride", "admiration"],
