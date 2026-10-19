@@ -31,3 +31,7 @@
 ## Opus Fish mailbox investigation
 
 Opus 5.5 inspected the historical overflow hypothesis and proposed reserved terminal admission. Its own producer audit established that current sessions publish exactly one Playing, coalesced Timing and one terminal event, so at most three entries coexist. Parent declined the speculative production policy and duplicate-Playing pressure fixtures. A realistic regression retained from that investigation exercises both terminal outcomes, 500 coalesced timing updates, playback initialization, session cleanup and stale-generation rejection against the unchanged production implementation. This clears the current overflow hypothesis; it is not a reproduced user-visible stall fix.
+
+## Slow-body follow-up
+
+Parent inspected installed reqwest 0.12.28: blocking `ClientBuilder::timeout` sets a blocking operation timeout; `blocking::Response::read` restarts that duration on each read. `RequestBuilder::timeout` additionally propagates the total deadline into the async response body. Appraisal now sets that per-request deadline to 1.5 seconds. A local server sends one body byte every 300 ms: the new test passed with the fix, failed without the request timeout after the complete 3.00-second drip, and the fix was restored. This confirms the original slow-body worker-retention lead; DNS interruption remains outside this claim.

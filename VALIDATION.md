@@ -405,3 +405,8 @@ Opus confirmed the historical Fish mailbox overflow hypothesis is unreachable wi
 Parent announced sequential one-job, low-priority checks: appraisal tests 3/3 and Fish tests 19/19 passed. No full-suite rerun in this slice; the previous 538-test receipt remains historical. No live provider, GUI, microphone, GPU or physical audio check.
 
 Strict all-target Clippy, package formatting and diff whitespace also passed on the final source.
+
+
+### Appraisal total response deadline — 2026-10-18
+
+Confirmed Fable slow-body lead against installed reqwest 0.12.28: a blocking client timeout restarts on each body Read, while a request timeout also guards the async body total lifetime. Added the existing 1.5-second budget at request level. A loopback server drips ten bytes at 300 ms intervals. New regression passed with the fix; removing only the request timeout made it fail after the full 3.00-second body; restored fix and reran all four appraisal tests successfully. Strict all-target Clippy also passed. No full-suite rerun, GUI, live request or DNS interruption claim. Opus expression-gaze work remained separate and unfinished during these checks.

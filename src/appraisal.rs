@@ -153,6 +153,9 @@ pub fn choose(
     }
     let mut request = client()?
         .post(url)
+        // Blocking Client::timeout restarts on each Read; request timeout also
+        // reaches the async body and bounds slow-drip responses in total.
+        .timeout(DEADLINE)
         .header("ai-gateway-protocol-version", "0.0.1")
         .header("ai-evaluation-model-specification-version", "4")
         .header("ai-model-id", &config.model)
@@ -292,6 +295,57 @@ mod tests {
         assert!(parse(&invalid).is_err());
         assert!(parse(&json!({})).is_err());
         assert_eq!(bounded("aあb", 3), "a");
+    }
+    #[test]
+    fn slow_drip_body_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = DecisionConfig {
+            endpoint: format!("http://{}/evaluation", listener.local_addr().unwrap()),
+            ..Default::default()
+        };
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            for _ in 0..10 {
+                if stream.write_all(b" ").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        let started = Instant::now();
+        let result = choose(&config, "A", "persona", "Hello!", &|| false);
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Cannot read appraisal response")
+        );
+        assert!(
+            elapsed < DEADLINE + Duration::from_millis(800),
+            "slow body held request for {elapsed:?}"
+        );
     }
     #[test]
     fn offline_wire_contract_and_errors_do_not_echo_secrets() {
