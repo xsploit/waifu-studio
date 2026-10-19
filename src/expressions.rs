@@ -78,6 +78,11 @@ pub struct FacialState {
     pub config: FacialConfig,
     pub available: Vec<String>,
     pub status: String,
+    /// Ephemeral consumed-speech envelope for the focused avatar, before gain.
+    pub speech_level: f32,
+    /// Largest composed vowel/configured-mouth expression weight; not a
+    /// measurement of rendered geometry or physical speaker synchronization.
+    pub mouth_weight: f32,
 }
 /// Insert on each scene occupant root. Focused config still comes from FacialState.
 #[derive(Component, Clone)]
@@ -1231,6 +1236,8 @@ fn update_expressions(
     mut extras: Local<BTreeMap<Entity, FacialRuntime>>,
     mut material_frame: Option<ResMut<MaterialExpressionFrame>>,
 ) {
+    state.speech_level = 0.;
+    state.mouth_weight = 0.;
     if let Some(frame) = material_frame.as_mut() {
         frame.0.clear();
     }
@@ -1347,6 +1354,11 @@ fn update_expressions(
     } else {
         2.0
     };
+    state.speech_level = if avatar.active.is_some() && focused_speaks {
+        unit(envelope.level())
+    } else {
+        0.
+    };
     let target = if state.config.lip_sync && focused_speaks {
         unit(envelope.level() * gain)
     } else {
@@ -1386,6 +1398,15 @@ fn update_expressions(
             .map(|weights| weights.map(|value| unit(value * gain))),
         look,
     );
+    state.mouth_weight = runtime
+        .expressions
+        .iter()
+        .zip(&values)
+        .filter(|(expression, _)| {
+            is_mouth(&expression.name) || expression.name == state.config.mouth_expression
+        })
+        .map(|(_, value)| unit(*value))
+        .fold(0., f32::max);
     let mut automatic = behavior
         .filter(|_| matches!(avatar.status, crate::loading::LoadStatus::Ready))
         .map(|behavior| {
@@ -2239,11 +2260,38 @@ mod tests {
         }
         app.update();
         assert!(app.world().get::<MorphWeights>(node).unwrap().weights()[0] > 0.5);
+        let diagnostics = app.world().resource::<FacialState>();
+        assert!(diagnostics.speech_level > 0.4);
+        assert!(diagnostics.mouth_weight > 0.5);
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .lip_sync = false;
+        for _ in 0..160 {
+            assert_eq!(decoder.next(), Some(0.5));
+        }
+        app.update();
+        let diagnostics = app.world().resource::<FacialState>();
+        assert!(
+            diagnostics.speech_level > 0.4,
+            "audio signal is independent of the lip-sync switch"
+        );
+        assert_eq!(diagnostics.mouth_weight, 0.);
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .lip_sync = true;
         meter.stop();
         for _ in 0..20 {
             app.update();
         }
         assert!(app.world().get::<MorphWeights>(node).unwrap().weights()[0] < 0.001);
+        assert_eq!(app.world().resource::<FacialState>().speech_level, 0.);
+        assert!(app.world().resource::<FacialState>().mouth_weight < 0.001);
+        app.world_mut().resource_mut::<AvatarLoadState>().active = None;
+        app.update();
+        assert_eq!(app.world().resource::<FacialState>().speech_level, 0.);
+        assert_eq!(app.world().resource::<FacialState>().mouth_weight, 0.);
     }
     #[test]
     fn scene_faces_isolate_speakers_manual_weights_and_restore_removed_members() {
@@ -2287,6 +2335,8 @@ mod tests {
         app.world_mut().resource_mut::<SpeechTarget>().0 = Some(companion);
         app.world().resource::<AudioEnvelope>().set(1.0);
         app.update();
+        assert_eq!(app.world().resource::<FacialState>().speech_level, 0.);
+        assert_eq!(app.world().resource::<FacialState>().mouth_weight, 0.);
         assert_eq!(
             app.world()
                 .get::<MorphWeights>(first_node)

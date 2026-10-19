@@ -42,7 +42,7 @@ Use the included character library or import your own models. Bring your own API
 - Offers MToon, lit/PBR and unlit rendering, outlines, and image or color backgrounds.
 - Includes three simple procedural scenes and three furnished 3D rooms: Rose bedroom, Violet gaming studio and Cyan gaming lounge. The rooms are rendered geometry, not navigable worlds.
 - Lets you add up to three scene companions next to the focused avatar.
-- Has per-character mesh-part visibility, face and expression controls, cosine-envelope auto-blink and optional head/eye gaze with authored VRM bone or expression look-at.
+- Has per-character mesh-part visibility, face and expression controls, cosine-envelope auto-blink and optional head/eye gaze with authored VRM bone or expression look-at. **Live mouth diagnostics** in the Face panel show consumed speech level and composed mouth-expression weight to help diagnose silent or blocked lip sync; these are software signals, not speaker-timing measurements.
 - Imports BVH, VRMA and FBX animation, retargeted to VRM humanoids, with play/scrub/loop/speed/weight controls.
 - Supports hair, skirt and accessory spring bones with VRM sphere/capsule colliders. These are joint-level springs; there is **no cloth simulation or self-collision**.
 - Provides post-processing: tone mapping, exposure, color, bloom and chromatic aberration, with presets.

@@ -43,12 +43,19 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FacialState) -> bool {
             }
         });
     if !state.config.lip_sync {
-        ui.weak("Mouth movement is disabled here, including calibrated vowels.");
+        ui.weak("Audio-driven mouth movement is disabled, including calibrated vowels. Manual expressions still apply.");
     } else if state.config.mouth_gain <= 0.0 {
         ui.weak("Mouth sensitivity is zero: audio-envelope mouth movement is disabled.");
     } else if !state.available.contains(&state.config.mouth_expression) {
         ui.weak("The selected mouth expression is unavailable on this avatar. Choose one from the dropdown for audio-envelope lip sync.");
     }
+    ui.collapsing("Live mouth diagnostics", |ui| {
+        ui.add(egui::ProgressBar::new(state.speech_level)
+            .text(format!("Speech signal: {:.0}%", state.speech_level * 100.)));
+        ui.add(egui::ProgressBar::new(state.mouth_weight)
+            .text(format!("Mouth expression weight: {:.0}%", state.mouth_weight * 100.)));
+        ui.small("Selected character only. Signal comes from speech samples consumed for playback, before mouth sensitivity. Expression weight includes manual controls and expression overrides; it does not prove visible motion or speaker timing.");
+    });
     if ui.button("Restore mouth defaults").clicked() {
         let defaults = waifu_studio::expressions::FacialConfig::default();
         state.config.lip_sync = defaults.lip_sync;
