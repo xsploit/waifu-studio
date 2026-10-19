@@ -221,7 +221,7 @@ The recorded **Fish Pro → DeepSeek → Drama3** adapter sequence measured1623m
 
 **Memory**
 
-- No autonomous reflection, diary, routines or proactive outreach.
+- Fictional weekly routines can optionally inform ordinary replies; autonomous reflection, diary generation and proactive outreach remain unimplemented.
 - Removing a profile leaves its notes and history on disk.
 
 **Not implemented**

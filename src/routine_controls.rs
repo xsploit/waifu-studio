@@ -7,6 +7,13 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     let before = config.clone();
     ui.checkbox(&mut config.enabled, "Show fictional weekly routine");
     ui.small("Imagined character activities in this computer's local timezone. Each activity lasts until the next anchor; these are not bookings or measured presence.");
+    ui.add_enabled_ui(config.enabled, |ui| {
+        ui.checkbox(
+            &mut config.share_with_chat,
+            "Share fictional activity with chat",
+        );
+    });
+    ui.small("When enabled, ordinary replies receive the current and next imagined activity. No background messages or extra model calls.");
     if let Some((day, minute)) = local_clock() {
         ui.label(format!(
             "Local clock: {} {:02}:{:02}",

@@ -363,3 +363,10 @@ Opted-in scene recipients request the existing trailing affect schema without an
 Offline checks: `cargo test --all-targets` passed 528 tests (429 library, 91 binary, 6 integration, 2 benchmark). After tightening configuration invalidation and the final speech-filter path, all 12 scene-chat tests passed again. The mock streaming test checks opted-in Alice versus opted-out Bob, speech before completion and filtered persistence. New tests cover receipt isolation, stale settings, cancellation and bounded local facial weights/restoration. Strict all-target Clippy, package formatting and diff whitespace checks passed on the final source.
 
 No live provider, GUI, speaker/lip-sync or multi-avatar visual acceptance was run. Metadata arrives after prose; this does not synchronize emotion to speech onset and does not add group body-motion selection. A fresh Fable review was attempted but blocked before model invocation by the orchestration causal-hop limit.
+
+
+### Optional fictional routine chat context — 2026-10-18
+
+A separate persisted `share_with_chat` flag defaults to false for old and new profiles. Both routine display and sharing must be enabled, and anchors/local time must be valid. Current/next activity labels are JSON-serialized inside explicitly fictional user-role context immediately before the latest user turn. Focused and serial group requests use their own character settings; context is not added to saved conversation history. No extra provider call, scheduler, presence inference or outreach was added. Platforms without a local-clock implementation omit the context.
+
+Checks: all 430 library tests and 91 app tests passed. The focused production-request mock test was extended afterward and passed again, checking user-role placement and exclusion from history. The group streaming mock checks Alice-only context, absence from Bob's request and absence from persisted history. A pure routine regression checks both opt-ins, escaping, current/next selection, invalid schedules and old-profile migration. Strict all-target Clippy, package formatting and whitespace checks passed. No live model or GUI acceptance was run.

@@ -28,6 +28,7 @@ struct Recipient {
     provider: ProviderConfig,
     voice: VoiceConfig,
     affect: AffectConfig,
+    routine_context: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct SceneLine {
@@ -357,6 +358,13 @@ impl SceneChat {
                 persona: c.persona.clone(),
                 provider: config,
                 affect: affect_config(library, *id),
+                routine_context: if focused {
+                    library.scene.routine.chat_context()
+                } else {
+                    c.scene
+                        .as_ref()
+                        .and_then(|scene| scene.routine.chat_context())
+                },
                 voice: if focused {
                     library.voice.clone()
                 } else {
@@ -602,7 +610,16 @@ fn run(
         } else {
             recipient.persona.clone()
         };
-        let context = request_context(&persona, &history, &text, notes, evidence);
+        let mut context = request_context(&persona, &history, &text, notes, evidence);
+        if let Some(content) = recipient.routine_context {
+            context.insert(
+                context.len() - 1,
+                Turn {
+                    role: "user".into(),
+                    content,
+                },
+            );
+        }
         let (provider_tx, provider_rx) = mpsc::channel();
         let job = provider::spawn_chat(recipient.provider, context, provider_tx);
         // Reserve one final event for this and each later voiced recipient.
@@ -1347,6 +1364,15 @@ mod tests {
         ]);
         let (root, mut library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
         library.scene.affect.enabled = true;
+        library.scene.routine = crate::routines::RoutineConfig {
+            enabled: true,
+            share_with_chat: true,
+            anchors: vec![crate::routines::RoutineAnchor {
+                day: 0,
+                minute: 0,
+                activity: "Alice-only fictional reading".into(),
+            }],
+        };
         let mut chat = SceneChat::new(root.clone());
         chat.recipients = ids.clone();
         chat.draft = "Hello both".into();
@@ -1407,6 +1433,29 @@ mod tests {
                 .all(|line| !line.text.contains("<waifu-affect>"))
         );
         let requests = server.join().unwrap();
+        if crate::routines::local_clock().is_some() {
+            let messages = requests[0]["messages"].as_array().unwrap();
+            let routine = &messages[messages.len() - 2];
+            assert_eq!(routine["role"], "user");
+            assert!(
+                routine["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Alice-only fictional reading")
+            );
+            assert!(
+                !requests[1]
+                    .to_string()
+                    .contains("Alice-only fictional reading")
+            );
+            assert!(
+                !store
+                    .history(ids[0])
+                    .unwrap()
+                    .iter()
+                    .any(|turn| turn.content.contains("Alice-only fictional reading"))
+            );
+        }
         assert!(requests[0].to_string().contains("waifu-affect"));
         assert!(!requests[1].to_string().contains("waifu-affect"));
         assert_eq!(chat.affect_receipts().len(), 1);

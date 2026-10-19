@@ -937,6 +937,12 @@ impl Studio {
                 content,
             });
         }
+        if let Some(content) = self.library.scene.routine.chat_context() {
+            context.push(Turn {
+                role: "user".into(),
+                content,
+            });
+        }
         context.extend(self.turns[latest..].iter().cloned());
         self.pending_response.clear();
         self.reply_filter = Some(Default::default());
@@ -1882,6 +1888,15 @@ mod tests {
                 content: "Earlier answer".into(),
             },
         ];
+        studio.library.scene.routine = waifu_studio::routines::RoutineConfig {
+            enabled: true,
+            share_with_chat: true,
+            anchors: vec![waifu_studio::routines::RoutineAnchor {
+                day: 0,
+                minute: 0,
+                activity: "Fictional tea tasting".into(),
+            }],
+        };
         studio.send_chat_with_semantic(&mut memory, Some(&mut semantic));
         let request = received.recv_timeout(Duration::from_secs(5)).unwrap();
         server.join().unwrap();
@@ -1904,6 +1919,22 @@ mod tests {
                 .unwrap()
                 .contains("80 degrees")
         );
+        if waifu_studio::routines::local_clock().is_some() {
+            let routine = &messages[messages.len() - 2];
+            assert_eq!(routine["role"], "user");
+            assert!(
+                routine["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Fictional tea tasting")
+            );
+            assert!(
+                studio
+                    .turns
+                    .iter()
+                    .all(|turn| !turn.content.contains("Fictional tea tasting"))
+            );
+        }
         assert_eq!(messages.last().unwrap()["content"], "Which tea do I like?");
         assert_eq!(studio.turns.len(), 3);
         assert_eq!(studio.turns[2].content, "Which tea do I like?");
