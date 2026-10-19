@@ -97,6 +97,8 @@ struct PendingAppraisal {
 #[derive(Resource)]
 pub struct Studio {
     pub facts: waifu_studio::facts_memory::FactsMemoryState,
+    /// Evaluation models advertised by the shared decision endpoint (UI dropdowns).
+    pub decision_models: waifu_studio::model_catalog::ModelCatalog,
     pub affect: waifu_studio::reply_affect::AffectLibrary,
     reply_filter: Option<waifu_studio::reply_affect::ReplyAffectFilter>,
     reply_affect_requested: bool,
@@ -170,6 +172,7 @@ impl Studio {
             waifu_studio::facts_memory::FactsMemoryState::load(store.root.join("facts-memory"));
         let mut studio = Self {
             facts,
+            decision_models: Default::default(),
             affect: Default::default(),
             reply_filter: None,
             reply_affect_requested: false,

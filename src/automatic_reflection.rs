@@ -18,7 +18,7 @@ pub struct AutomaticReflectionConfig {
 impl Default for AutomaticReflectionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             new_records: 3,
             cooldown_minutes: 30,
             connection: Default::default(),
@@ -183,6 +183,7 @@ mod tests {
     fn disabled_and_blocked_do_not_send_or_consume_new_evidence() {
         let mut state = AutomaticReflectionState::default();
         let mut config = AutomaticReflectionConfig {
+            enabled: false,
             new_records: 0,
             cooldown_minutes: 0,
             ..Default::default()
@@ -197,9 +198,10 @@ mod tests {
         assert!(state.due(character, ids(&[1, 2, 3]), &config, at, false));
         assert!(!state.due(Uuid::new_v4(), ids(&[1, 2, 3]), &config, at, false));
         assert!(
-            !serde_json::from_str::<AutomaticReflectionConfig>("{}")
+            serde_json::from_str::<AutomaticReflectionConfig>("{}")
                 .unwrap()
-                .enabled
+                .enabled,
+            "on by default; drafts still require review"
         );
     }
 }

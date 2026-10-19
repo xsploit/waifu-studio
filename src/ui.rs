@@ -1,11 +1,15 @@
 //! Studio chrome: conversation overlays the avatar; settings occupy an opaque full page.
 // UI-only catalogs live beside this file; declared here so main.rs stays untouched.
+#[path = "memory_page.rs"]
+mod memory_page;
 #[path = "motion_decision.rs"]
 mod motion_decision;
 #[path = "motion_library.rs"]
 mod motion_library;
 #[path = "personality_catalog.rs"]
 mod personality_catalog;
+#[path = "settings_kit.rs"]
+mod settings_kit;
 
 use crate::studio::{Studio, Tab, ViewMode};
 use bevy::prelude::*;
@@ -39,9 +43,9 @@ pub fn style(ctx: &egui::Context) {
     s.visuals.widgets.hovered.bg_fill = Color32::from_rgb(53, 58, 54);
     s.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(53, 58, 54);
     s.visuals.widgets.active.bg_fill = Color32::from_rgb(84, 55, 54);
-    s.spacing.item_spacing = EVec2::new(10.0, 10.0);
-    s.spacing.button_padding = EVec2::new(12.0, 9.0);
-    s.spacing.interact_size.y = 34.0;
+    s.spacing.item_spacing = EVec2::new(10.0, 8.0);
+    s.spacing.button_padding = EVec2::new(10.0, 5.0);
+    s.spacing.interact_size.y = 28.0;
     s.text_styles
         .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
     s.text_styles
@@ -49,7 +53,7 @@ pub fn style(ctx: &egui::Context) {
     s.text_styles
         .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
     s.text_styles
-        .insert(egui::TextStyle::Heading, egui::FontId::proportional(25.0));
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(19.0));
     ctx.set_style_of(egui::Theme::Dark, s);
     ctx.set_theme(egui::Theme::Dark);
 }
@@ -310,7 +314,11 @@ pub fn studio_ui(
         let settings_tab = studio.tab;
         let tab_key = format!("{settings_tab:?}");
         settings_page(&mut viewport_ui, |ui| {
-            settings_header(ui, &mut studio);
+            if settings_tab == Tab::Memory {
+                settings_kit::column(ui, |ui| settings_header(ui, &mut studio));
+            } else {
+                settings_header(ui, &mut studio);
+            }
             if matches!(settings_tab, Tab::Characters | Tab::Scene) {
                 crate::avatar_preview::dock(ui, &mut avatar_ui.preview);
             }
@@ -332,18 +340,35 @@ pub fn studio_ui(
                     &mut avatar_ui,
                 ),
                 Tab::SceneChat => {
-                    group(ui, "Decision model settings", |ui| {
+                    group(ui, "Decision model", |ui| {
                         let before = studio.library.decision.clone();
-                        ui.label("Optional Vercel evaluation model; runs only when you ask it to choose a recipient.");
-                        let config = &mut studio.library.decision;
-                        ui.label("Evaluation endpoint");
-                        ui.text_edit_singleline(&mut config.endpoint);
-                        ui.label("Model");
-                        ui.text_edit_singleline(&mut config.model);
-                        ui.label("Key environment variable");
-                        ui.text_edit_singleline(&mut config.key_env);
-                        ui.label("Session key");
-                        ui.add(egui::TextEdit::singleline(&mut config.session_key).password(true));
+                        ui.small("Shared by recipient choice, motion suggestions and incoming-message emotions.");
+                        let studio = &mut *studio;
+                        decision_model_picker(
+                            ui,
+                            "decision_model",
+                            &mut studio.decision_models,
+                            &before,
+                            &mut studio.library.decision.model,
+                        );
+                        egui::CollapsingHeader::new("Connection")
+                            .id_salt("decision_connection")
+                            .show(ui, |ui| {
+                                let config = &mut studio.library.decision;
+                                field(ui, "Evaluation endpoint", &mut config.endpoint, "");
+                                field(
+                                    ui,
+                                    "Key environment variable",
+                                    &mut config.key_env,
+                                    "AI_GATEWAY_API_KEY",
+                                );
+                                caption(ui, "SESSION KEY (NOT SAVED)");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut config.session_key)
+                                        .password(true)
+                                        .desired_width(control_width(ui)),
+                                );
+                            });
                         if before != studio.library.decision {
                             studio.save();
                         }
@@ -425,113 +450,9 @@ pub fn studio_ui(
                     }
                 }
                 Tab::Memory => {
-                    ui.heading("Character memory");
-                    memory.select_character(studio.library.selected);
-                    crate::memory_controls::ui(ui, &mut memory);
-                    group(ui, "Facts, preferences & evidence", |ui| {
-                        if ui
-                            .add_enabled(
-                                !studio.facts.reflection.running()
-                                    && !studio.facts.reflection.shutting_down(),
-                                egui::Button::new("Copy chat connection for reflection drafts"),
-                            )
-                            .on_hover_text("Copies the endpoint, model and key source. Provider routing and BYOK overrides are not copied. Review the reflection connection before requesting a draft.")
-                            .clicked()
-                            && let Some(provider) = studio.library.providers.get(studio.library.provider)
-                        {
-                            match waifu_studio::facts_memory::reflection::ReflectionConfig::from_provider(provider) {
-                                Ok(config) => studio.facts.reflection.config = config,
-                                Err(error) => studio.error = Some(error),
-                            }
-                        }
-                        crate::facts_memory_controls::ui(ui, &mut studio.facts);
-                        ui.separator();
-                        ui.heading("Decision-model memory suggestions");
-                        ui.small("Off by default. When candidate suggestions are on, each user message the built-in rules skip is sent with at most one related accepted record to the endpoint and key in Decision model settings. The model only picks a label (fact, preference, correction, duplicate, skip, abstain); the saved text is always your exact words, and nothing enters recall until you accept it.");
-                        let before = studio.library.scene.memory_triage.clone();
-                        let triage = &mut studio.library.scene.memory_triage;
-                        ui.checkbox(
-                            &mut triage.enabled,
-                            "Suggest memories with a decision model",
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Model");
-                            ui.text_edit_singleline(&mut triage.model);
-                        });
-                        ui.weak(&studio.facts.triage_status);
-                        if studio.library.scene.memory_triage != before {
-                            studio.save();
-                        }
-                        ui.separator();
-                        ui.heading("Automatic reflection drafts");
-                        ui.small("Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.");
-                        let before = studio.library.scene.automatic_reflection.clone();
-                        let reflection_connection = studio.facts.reflection.config.clone();
-                        let automatic = &mut studio.library.scene.automatic_reflection;
-                        ui.checkbox(
-                            &mut automatic.enabled,
-                            "Automatically send accepted records for reflection drafts",
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut automatic.new_records, 1..=12)
-                                .text("New accepted records per draft"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut automatic.cooldown_minutes, 10..=1440)
-                                .text("Minimum minutes between attempts"),
-                        );
-                        ui.label(format!(
-                            "Connection: {} · {}",
-                            automatic.connection.endpoint, automatic.connection.model
-                        ));
-                        if ui
-                            .button(
-                                "Use the reflection connection shown above for automatic drafts",
-                            )
-                            .clicked()
-                        {
-                            automatic.connection = reflection_connection;
-                        }
-                        ui.small("Pauses while a reflection awaits review. Connection and opt-in are saved per character; session keys are not saved. Changes or disabling cancel an in-flight automatic draft.");
-                        ui.weak(&studio.facts.automatic.status);
-                        if studio.library.scene.automatic_reflection != before {
-                            studio.save();
-                        }
+                    settings_kit::column(ui, |ui| {
+                        memory_page::ui(ui, &mut studio, &mut memory, &mut semantic)
                     });
-                    ui.separator();
-                    crate::semantic_memory_controls::ui(
-                        ui,
-                        &mut semantic,
-                        studio.library.selected,
-                        &memory,
-                        &studio.facts,
-                    );
-                    let semantic_source: &dyn waifu_studio::semantic_memory::SemanticSource =
-                        if semantic.scope()
-                            == waifu_studio::semantic_memory::SemanticScope::Evidence
-                        {
-                            &studio.facts
-                        } else {
-                            &*memory
-                        };
-                    ui.small("Search the selected memory source for this draft. A matching result is attached only to the next request.");
-                    if ui
-                        .add_enabled(
-                            !studio.composer.trim().is_empty()
-                                && semantic.ready(studio.library.selected, semantic_source),
-                            egui::Button::new("Find memories for current draft"),
-                        )
-                        .clicked()
-                    {
-                        semantic.query(studio.library.selected, semantic_source, &studio.composer);
-                    }
-                    if semantic.has_result_for(
-                        studio.library.selected,
-                        semantic_source,
-                        &studio.composer,
-                    ) {
-                        ui.label("Retrieved memories will be used once when this draft is sent; they are not saved in chat.");
-                    }
                 }
                 Tab::Tools => {
                     crate::mcp_controls::ui(ui, &mut mcp);
@@ -643,8 +564,8 @@ fn settings_page<R>(
                 .inner_margin(28),
         )
         .show(ui, |ui| {
-            ui.spacing_mut().text_edit_width = ui.available_width();
-            ui.spacing_mut().combo_width = ui.available_width().min(560.0);
+            ui.spacing_mut().text_edit_width = control_width(ui);
+            ui.spacing_mut().combo_width = control_width(ui);
             add(ui)
         })
 }
@@ -667,10 +588,7 @@ fn settings_title(tab: Tab) -> (&'static str, &'static str) {
             "Voice & microphone",
             "Speech, voice library, voice design and transcription.",
         ),
-        Tab::Memory => (
-            "Memory",
-            "Notes, evidence and recall for the selected companion.",
-        ),
+        Tab::Memory => ("Memory", "What your companion remembers about you."),
         Tab::Tools => ("Assistant tools", "Connect tools and review their results."),
         Tab::Tasks => (
             "Agent tasks",
@@ -688,7 +606,9 @@ fn settings_header(ui: &mut egui::Ui, studio: &mut Studio) {
     let (title, description) = settings_title(studio.tab);
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            ui.label(RichText::new("SETTINGS").size(11.0).strong().color(MUTED));
+            if studio.tab != Tab::Memory {
+                ui.label(RichText::new("SETTINGS").size(11.0).strong().color(MUTED));
+            }
             ui.label(RichText::new(title).size(30.0).strong());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
@@ -805,7 +725,7 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     ui.label(RichText::new(label).size(12.0).color(MUTED));
     ui.add(
         egui::TextEdit::singleline(value)
-            .desired_width(f32::INFINITY)
+            .desired_width(control_width(ui))
             .hint_text(hint),
     );
 }
@@ -1071,9 +991,10 @@ fn character_editor(ui: &mut egui::Ui, studio: &mut Studio) {
     }
 }
 
-/// Dropdowns use the width of their form column.
+/// Form controls share one readable column instead of stretching across the page.
+const FORM_WIDTH: f32 = 440.0;
 fn control_width(ui: &egui::Ui) -> f32 {
-    ui.available_width()
+    ui.available_width().min(FORM_WIDTH)
 }
 
 const ILLUSTRATED_BACKGROUNDS: [(&str, &str); 3] = [
@@ -1153,6 +1074,22 @@ fn scene(
                 studio.library.scene.affect = state.config.clone();
                 studio.cancel_appraisal();
                 studio.save();
+            }
+            if studio.library.scene.affect.source
+                == waifu_studio::reply_affect::AffectSource::UserMessageJev
+            {
+                let connection = studio.library.decision.clone();
+                let studio = &mut *studio;
+                if decision_model_picker(
+                    ui,
+                    "affect_decision_model",
+                    &mut studio.decision_models,
+                    &connection,
+                    &mut studio.library.decision.model,
+                ) {
+                    studio.cancel_appraisal();
+                    studio.save();
+                }
             }
             if studio.library.scene.affect.enabled && !studio.library.scene.behavior.enabled {
                 ui.small("Enable Local behavior to show reply emotions on the avatar.");
@@ -1580,6 +1517,7 @@ fn motion_suggestion(
     character: Option<(uuid::Uuid, &str)>,
     draft: &str,
     reply: Option<&str>,
+    model_picker: impl FnOnce(&mut egui::Ui),
 ) -> (Option<SuggestAction>, bool) {
     use waifu_studio::data::ReplyMotionMode;
     let source_id = egui::Id::new("motion_suggest_use_reply");
@@ -1592,7 +1530,8 @@ fn motion_suggestion(
     egui::CollapsingHeader::new("Motion suggestion (optional)")
         .id_salt("motion_suggest")
         .show(ui, |ui| {
-            ui.small("Asks the Scene chat decision model to pick one of up to 16 scanned motions, or none. Manual suggestions require Play. The after-reply dropdown can enable suggestions or automatic playback.");
+            ui.small("A decision model picks one of up to 16 scanned motions, or none. Manual suggestions require Play.");
+            model_picker(ui);
             caption(ui, "AFTER EACH REPLY");
             let mode_name = |mode| match mode {
                 ReplyMotionMode::Off => "Off",
@@ -1843,6 +1782,8 @@ fn suggest_motion(
         .find(|turn| turn.role == "assistant")
         .map(|turn| turn.content.as_str());
     let mut config = studio.library.scene.reply_motion.clone();
+    let connection = studio.library.decision.clone();
+    let mut model = connection.model.clone();
     let (action, changed) = motion_suggestion(
         ui,
         &mut suggester,
@@ -1852,7 +1793,20 @@ fn suggest_motion(
         character,
         &studio.composer,
         reply,
+        |ui| {
+            decision_model_picker(
+                ui,
+                "motion_decision_model",
+                &mut studio.decision_models,
+                &connection,
+                &mut model,
+            );
+        },
     );
+    if model != studio.library.decision.model {
+        studio.library.decision.model = model;
+        studio.save();
+    }
     if changed {
         studio.library.scene.reply_motion = config;
         studio.save();
@@ -2119,7 +2073,7 @@ fn voice_settings(
             VoiceAdapter::OpenAi => "OpenAI-compatible speech",
             VoiceAdapter::Vercel => "Vercel AI Gateway",
         })
-        .width(ui.available_width() - 8.0)
+        .width(control_width(ui))
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut adapter, VoiceAdapter::Vercel, "Vercel AI Gateway");
             ui.selectable_value(&mut adapter, VoiceAdapter::FishHosted, "Fish Audio");
@@ -2721,6 +2675,148 @@ pub(crate) fn speech_model_picker(
             ui.label(RichText::new(&catalog.status).small().color(MUTED));
         });
     });
+}
+
+/// Searchable dropdown of the evaluation models the shared decision endpoint advertises.
+/// Returns true when the selection changed.
+fn decision_model_picker(
+    ui: &mut egui::Ui,
+    salt: &str,
+    catalog: &mut waifu_studio::model_catalog::ModelCatalog,
+    connection: &waifu_studio::recipient_decision::DecisionConfig,
+    model: &mut String,
+) -> bool {
+    use waifu_studio::model_catalog::CatalogKind::Decision;
+    let (endpoint, key_env, session) = (
+        &connection.endpoint,
+        &connection.key_env,
+        &connection.session_key,
+    );
+    catalog.sync(endpoint, key_env, session, Decision);
+    let before = model.clone();
+    speech_model_picker(ui, salt, catalog, model);
+    if catalog.models.is_empty() && !catalog.loading && ui.small_button("Retry").clicked() {
+        catalog.retry(endpoint, key_env, session, Decision);
+    }
+    *model != before
+}
+
+/// Full memory inspectors and connection settings, behind the Memory page's Advanced fold.
+fn memory_advanced(
+    ui: &mut egui::Ui,
+    studio: &mut Studio,
+    memory: &mut waifu_studio::memory::MemoryState,
+    semantic: &mut waifu_studio::semantic_memory::SemanticMemory,
+) {
+    crate::memory_controls::ui(ui, memory);
+    group(ui, "Facts, preferences & evidence", |ui| {
+        if ui
+            .add_enabled(
+                !studio.facts.reflection.running()
+                    && !studio.facts.reflection.shutting_down(),
+                egui::Button::new("Copy chat connection for reflection drafts"),
+            )
+            .on_hover_text("Copies the endpoint, model and key source. Provider routing and BYOK overrides are not copied. Review the reflection connection before requesting a draft.")
+            .clicked()
+            && let Some(provider) = studio.library.providers.get(studio.library.provider)
+        {
+            match waifu_studio::facts_memory::reflection::ReflectionConfig::from_provider(provider) {
+                Ok(config) => studio.facts.reflection.config = config,
+                Err(error) => studio.error = Some(error),
+            }
+        }
+        crate::facts_memory_controls::ui(ui, &mut studio.facts);
+        ui.separator();
+        ui.weak(&studio.facts.triage_status);
+        ui.separator();
+        ui.heading("Automatic reflection drafts");
+        ui.small("Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.");
+        let before = studio.library.scene.automatic_reflection.clone();
+        let reflection_connection = studio.facts.reflection.config.clone();
+        let automatic = &mut studio.library.scene.automatic_reflection;
+        ui.checkbox(
+            &mut automatic.enabled,
+            "Automatically send accepted records for reflection drafts",
+        );
+        ui.add(
+            egui::Slider::new(&mut automatic.new_records, 1..=12)
+                .text("New accepted records per draft"),
+        );
+        ui.add(
+            egui::Slider::new(&mut automatic.cooldown_minutes, 10..=1440)
+                .text("Minimum minutes between attempts"),
+        );
+        ui.label(format!(
+            "Connection: {} · {}",
+            automatic.connection.endpoint, automatic.connection.model
+        ));
+        if ui
+            .button("Use the reflection connection shown above for automatic drafts")
+            .clicked()
+        {
+            automatic.connection = reflection_connection;
+        }
+        ui.small("Pauses while a reflection awaits review. Connection and opt-in are saved per character; session keys are not saved. Changes or disabling cancel an in-flight automatic draft.");
+        ui.weak(&studio.facts.automatic.status);
+        if studio.library.scene.automatic_reflection != before {
+            studio.save();
+        }
+    });
+    ui.separator();
+    crate::semantic_memory_controls::ui(
+        ui,
+        semantic,
+        studio.library.selected,
+        memory,
+        &studio.facts,
+    );
+    let semantic_source: &dyn waifu_studio::semantic_memory::SemanticSource =
+        if semantic.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
+            &studio.facts
+        } else {
+            memory
+        };
+    ui.small("Search the selected memory source for this draft. A matching result is attached only to the next request.");
+    if ui
+        .add_enabled(
+            !studio.composer.trim().is_empty()
+                && semantic.ready(studio.library.selected, semantic_source),
+            egui::Button::new("Find memories for current draft"),
+        )
+        .clicked()
+    {
+        semantic.query(studio.library.selected, semantic_source, &studio.composer);
+    }
+    if semantic.has_result_for(studio.library.selected, semantic_source, &studio.composer) {
+        ui.label("Retrieved memories will be used once when this draft is sent; they are not saved in chat.");
+    }
+}
+
+/// Dropdown sized for the right side of a settings row; status shows on hover.
+fn decision_model_compact(
+    ui: &mut egui::Ui,
+    salt: &str,
+    catalog: &mut waifu_studio::model_catalog::ModelCatalog,
+    connection: &waifu_studio::recipient_decision::DecisionConfig,
+    model: &mut String,
+) {
+    use waifu_studio::model_catalog::CatalogKind::Decision;
+    catalog.sync(
+        &connection.endpoint,
+        &connection.key_env,
+        &connection.session_key,
+        Decision,
+    );
+    ui.set_max_width(260.0);
+    if let Some(picked) = model_dropdown(ui, salt, &catalog.models, model) {
+        *model = picked;
+    }
+    if catalog.loading {
+        ui.spinner();
+    } else if catalog.models.is_empty() {
+        ui.label(RichText::new("⚠").color(ACCENT))
+            .on_hover_text(&catalog.status);
+    }
 }
 
 fn model_discovery_status(ui: &mut egui::Ui, studio: &Studio) {
@@ -3786,6 +3882,7 @@ mod composer_tests {
                     Some((character, "Hikari")),
                     "Hi everyone!",
                     None,
+                    |_| {},
                 );
                 assert!(!changed, "automatic mode is never enabled silently");
                 if a.is_some() {

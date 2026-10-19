@@ -131,11 +131,20 @@ pub struct MemoryRecord {
     pub supersedes: Option<Uuid>,
 }
 /// Unchanged on disk: older binaries reject unknown fields, so new settings live elsewhere.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
     enabled: bool,
     candidates_enabled: bool,
+}
+/// New characters start with memory on; saved per-character choices are kept.
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            candidates_enabled: true,
+        }
+    }
 }
 #[derive(Clone, Default)]
 struct Document {
@@ -1531,6 +1540,12 @@ mod tests {
         let mut s = FactsMemoryState::load(root.clone());
         s.select_character(Some(a));
         ready(&mut s);
+        assert!(
+            s.enabled && s.candidates_enabled,
+            "new characters default to on"
+        );
+        s.set_enabled(false).unwrap();
+        ready(&mut s);
         s.observe_user_turn(a, turn, "I like tea");
         assert!(s.candidates().is_empty());
         s.set_enabled(true).unwrap();
@@ -1576,7 +1591,8 @@ mod tests {
         assert_eq!(s.records().len(), 1);
         s.delete_character_data().unwrap();
         ready(&mut s);
-        assert!(!s.enabled);
+        // Deleting data resets to default settings, which are on.
+        assert!(s.enabled);
         assert!(s.records().is_empty());
         assert!(!root.join(a.to_string()).join("facts.jsonl").exists());
         fs::remove_dir_all(root).unwrap();
@@ -1612,16 +1628,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("facts-read-only-{}", Uuid::new_v4()));
         let id = Uuid::new_v4();
         assert!(context_from_disk(&root, id, "tea").unwrap().is_none());
-        assert_eq!(
-            context_from_disk_traced(&root, id, "tea").unwrap(),
-            (None, None)
-        );
+        let (context, trace) = context_from_disk_traced(&root, id, "tea").unwrap();
+        assert!(context.is_none() && trace.is_none_or(|t| t.hits.is_empty()));
         assert!(
             !root.exists(),
             "read-only recall must not create directories"
         );
         let mut s = FactsMemoryState::load(root.clone());
         s.select_character(Some(id));
+        ready(&mut s);
+        s.set_enabled(false).unwrap();
         ready(&mut s);
         s.add_record(
             RecordKind::Preference,
@@ -1891,6 +1907,9 @@ mod tests {
         let id = Uuid::new_v4();
         let mut s = suggesting(&root, id, false);
         assert!(!s.retain_pending);
+        // New characters default to on; write the settings line explicitly.
+        s.set_enabled(true).unwrap();
+        settle(&mut s);
         s.observe_user_turn(id, Uuid::new_v4(), "I like tea");
         settle(&mut s);
         assert_eq!(s.candidates().len(), 1);

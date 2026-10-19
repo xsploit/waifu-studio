@@ -27,7 +27,7 @@ pub struct NoteLink {
     pub b: Uuid,
 }
 const MAX_LINKS: usize = 512;
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     #[serde(default)]
@@ -36,6 +36,17 @@ struct Document {
     links: Vec<NoteLink>,
     enabled: bool,
     notes: Vec<MemoryNote>,
+}
+/// New characters include their notes in chat; saved per-character choices are kept.
+impl Default for Document {
+    fn default() -> Self {
+        Self {
+            linked_recall: false,
+            links: Vec::new(),
+            enabled: true,
+            notes: Vec::new(),
+        }
+    }
 }
 enum Command {
     Load(u64, Uuid),
@@ -588,7 +599,7 @@ mod tests {
         s.select_character(Some(b));
         ready(&mut s);
         assert!(s.notes().is_empty());
-        assert!(!s.enabled);
+        assert!(s.enabled, "new characters include notes by default");
         s.select_character(Some(a));
         ready(&mut s);
         s.remove_note(note).unwrap();

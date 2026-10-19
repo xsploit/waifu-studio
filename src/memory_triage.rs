@@ -39,7 +39,7 @@ pub struct MemoryTriageConfig {
 impl Default for MemoryTriageConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             // Best of eight on the 2026-10-18 triage smoke set (benchmarks/MEMORY-DECISIONS.md).
             model: "microsoft/microsoft-decision-1".into(),
         }
@@ -372,7 +372,7 @@ mod tests {
         let bad = json!({"answers":{"memory":{"type":"choice","choice":"write everything"}}});
         assert!(parse(&bad).is_err());
         let config = MemoryTriageConfig::default();
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.model, "microsoft/microsoft-decision-1");
         assert_eq!(
             serde_json::from_str::<MemoryTriageConfig>("{}").unwrap(),
@@ -512,7 +512,10 @@ mod tests {
             endpoint: "http://127.0.0.1:9/never".into(),
             ..Default::default()
         };
-        let mut config = MemoryTriageConfig::default();
+        let mut config = MemoryTriageConfig {
+            enabled: false,
+            ..Default::default()
+        };
         s.triage_user_turn(id, Uuid::new_v4(), "I moved to Calgary", &decision, &config);
         assert!(s.triage.is_none());
         config.enabled = true;

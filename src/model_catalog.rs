@@ -40,6 +40,8 @@ impl Drop for Worker {
 pub enum CatalogKind {
     Speech,
     Transcription,
+    /// Vercel evaluation-protocol models (`type: evaluation`): Jev, Decision-1, Decider…
+    Decision,
 }
 
 #[derive(Resource, Default)]
@@ -180,6 +182,7 @@ impl ModelCatalog {
             self.models = match kind {
                 CatalogKind::Speech => FISH_SPEECH_MODELS.as_slice(),
                 CatalogKind::Transcription => FISH_ASR_MODELS.as_slice(),
+                CatalogKind::Decision => &[],
             }
             .iter()
             .map(|s| (*s).into())
@@ -247,7 +250,10 @@ fn catalog_url(endpoint: &str) -> Result<Url, String> {
     let path = url.path().trim_end_matches('/');
     let models = if path.ends_with("/models") {
         path.to_owned()
-    } else if path == "/v4/ai/transcription-model" || path == "/v4/ai/speech-model" {
+    } else if path == "/v4/ai/transcription-model"
+        || path == "/v4/ai/speech-model"
+        || path == "/v4/ai/evaluation-model"
+    {
         "/v1/models".into()
     } else if let Some(base) = path
         .strip_suffix("/audio/speech")
@@ -346,6 +352,7 @@ fn model_ids(value: &Value, host: &str, kind: CatalogKind) -> Result<Vec<String>
                         && !contains_modality(model, "/architecture/output_modalities", "audio"))
                     || (host != "ai-gateway.vercel.sh" && transcription_name)
             }
+            CatalogKind::Decision => declared == Some("evaluation"),
         };
         if matches {
             ids.push(id.to_owned());
@@ -410,6 +417,21 @@ mod tests {
         assert_eq!(
             model_ids(&router, "openrouter.ai", CatalogKind::Transcription).unwrap(),
             ["vendor/listen"]
+        );
+        let gateway = json!({"data":[
+            {"id":"typesafe-ai/jev", "type":"evaluation"},
+            {"id":"microsoft/microsoft-decision-1", "type":"evaluation"},
+            {"id":"openai/gpt-6-luna", "type":"language"}
+        ]});
+        assert_eq!(
+            model_ids(&gateway, "ai-gateway.vercel.sh", CatalogKind::Decision).unwrap(),
+            ["microsoft/microsoft-decision-1", "typesafe-ai/jev"]
+        );
+        assert_eq!(
+            catalog_url("https://ai-gateway.vercel.sh/v4/ai/evaluation-model")
+                .unwrap()
+                .as_str(),
+            "https://ai-gateway.vercel.sh/v1/models"
         );
     }
 

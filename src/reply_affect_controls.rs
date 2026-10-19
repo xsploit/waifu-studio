@@ -13,7 +13,7 @@ pub fn draw_affect_controls(ui: &mut egui::Ui, state: &mut CharacterAffect) -> b
     egui::ComboBox::from_id_salt("affect_source")
         .selected_text(match state.config.source {
             AffectSource::ReplyMetadata => "Reply metadata (no extra call)",
-            AffectSource::UserMessageJev => "Incoming message via Jev (extra call)",
+            AffectSource::UserMessageJev => "Incoming message via decision model (extra call)",
         })
         .show_ui(ui, |ui| {
             ui.selectable_value(
@@ -24,7 +24,7 @@ pub fn draw_affect_controls(ui: &mut egui::Ui, state: &mut CharacterAffect) -> b
             ui.selectable_value(
                 &mut state.config.source,
                 AffectSource::UserMessageJev,
-                "Incoming message via Jev (extra call)",
+                "Incoming message via decision model (extra call)",
             );
         });
     if previous != state.config.source {
@@ -37,7 +37,7 @@ pub fn draw_affect_controls(ui: &mut egui::Ui, state: &mut CharacterAffect) -> b
             ui.label("Requests a hidden emotion block from this character's chat model. No extra provider calls.");
         }
         AffectSource::UserMessageJev => {
-            ui.label("One optional Jev call per incoming message, alongside chat. Uses the Scene chat decision connection. Appraises the character's reaction, not the user's mental state. Discrete VAD levels, 1.5-second deadline, no retries; unavailable or stale results do nothing.");
+            ui.small("One extra decision-model call per incoming message, alongside chat. Appraises the character's reaction, not your mental state. 1.5-second deadline, no retries; late or failed results do nothing.");
         }
     }
     ui.add_enabled_ui(state.config.enabled, |ui| {
