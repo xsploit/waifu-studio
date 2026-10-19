@@ -1,0 +1,448 @@
+{
+  "accuracy_all_attempts": 0.8888888888888888,
+  "correct": 48,
+  "errors": 0,
+  "evaluation": "synthetic memory triage smoke set v1",
+  "model": "perplexity/pplx-decider-v1.2",
+  "requests": 54,
+  "results": [
+    {
+      "actual": "preference",
+      "elapsed_ms": 658.406605,
+      "expected": "preference",
+      "passed": true,
+      "round": 1,
+      "scenario": "explicit preference"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 317.33505699999995,
+      "expected": "preference",
+      "passed": true,
+      "round": 1,
+      "scenario": "paraphrased preference"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 344.980569,
+      "expected": "fact",
+      "passed": true,
+      "round": 1,
+      "scenario": "durable user fact"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 337.75008499999996,
+      "expected": "fact",
+      "passed": false,
+      "round": 1,
+      "scenario": "negation preserved"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 325.071554,
+      "expected": "correction",
+      "passed": true,
+      "round": 1,
+      "scenario": "explicit correction"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 317.33499,
+      "expected": "correction",
+      "passed": true,
+      "round": 1,
+      "scenario": "changed preference"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 379.563112,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 1,
+      "scenario": "paraphrased duplicate"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 429.512353,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 1,
+      "scenario": "unchanged restriction"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 302.256748,
+      "expected": "preference",
+      "passed": true,
+      "round": 1,
+      "scenario": "unrelated existing record"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 322.828437,
+      "expected": "fact",
+      "passed": true,
+      "round": 1,
+      "scenario": "new fact differs from existing"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 297.697651,
+      "expected": "skip",
+      "passed": true,
+      "round": 1,
+      "scenario": "temporary state"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 367.86681999999996,
+      "expected": "skip",
+      "passed": true,
+      "round": 1,
+      "scenario": "ordinary question"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 302.838117,
+      "expected": "skip",
+      "passed": true,
+      "round": 1,
+      "scenario": "authored fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 306.815593,
+      "expected": "skip",
+      "passed": true,
+      "round": 1,
+      "scenario": "quoted third party"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 364.70121500000005,
+      "expected": "skip",
+      "passed": true,
+      "round": 1,
+      "scenario": "schema injection in fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 296.738809,
+      "expected": "abstain",
+      "passed": false,
+      "round": 1,
+      "scenario": "ambiguous referent"
+    },
+    {
+      "actual": "abstain",
+      "elapsed_ms": 337.80080499999997,
+      "expected": "abstain",
+      "passed": true,
+      "round": 1,
+      "scenario": "uncertain claim"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 1419.6410429999999,
+      "expected": "preference",
+      "passed": true,
+      "round": 1,
+      "scenario": "language variant"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 305.213903,
+      "expected": "preference",
+      "passed": true,
+      "round": 2,
+      "scenario": "paraphrased preference"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 412.12501499999996,
+      "expected": "fact",
+      "passed": true,
+      "round": 2,
+      "scenario": "durable user fact"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 326.587759,
+      "expected": "fact",
+      "passed": false,
+      "round": 2,
+      "scenario": "negation preserved"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 319.894287,
+      "expected": "correction",
+      "passed": true,
+      "round": 2,
+      "scenario": "explicit correction"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 509.952137,
+      "expected": "correction",
+      "passed": true,
+      "round": 2,
+      "scenario": "changed preference"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 3508.6746350000003,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 2,
+      "scenario": "paraphrased duplicate"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 292.024198,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 2,
+      "scenario": "unchanged restriction"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 346.510823,
+      "expected": "preference",
+      "passed": true,
+      "round": 2,
+      "scenario": "unrelated existing record"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 314.214483,
+      "expected": "fact",
+      "passed": true,
+      "round": 2,
+      "scenario": "new fact differs from existing"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 397.580342,
+      "expected": "skip",
+      "passed": true,
+      "round": 2,
+      "scenario": "temporary state"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 352.340323,
+      "expected": "skip",
+      "passed": true,
+      "round": 2,
+      "scenario": "ordinary question"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 331.60367,
+      "expected": "skip",
+      "passed": true,
+      "round": 2,
+      "scenario": "authored fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 6392.076046,
+      "expected": "skip",
+      "passed": true,
+      "round": 2,
+      "scenario": "quoted third party"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 377.664477,
+      "expected": "skip",
+      "passed": true,
+      "round": 2,
+      "scenario": "schema injection in fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 296.448458,
+      "expected": "abstain",
+      "passed": false,
+      "round": 2,
+      "scenario": "ambiguous referent"
+    },
+    {
+      "actual": "abstain",
+      "elapsed_ms": 310.276122,
+      "expected": "abstain",
+      "passed": true,
+      "round": 2,
+      "scenario": "uncertain claim"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 360.66999500000003,
+      "expected": "preference",
+      "passed": true,
+      "round": 2,
+      "scenario": "language variant"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 314.312251,
+      "expected": "preference",
+      "passed": true,
+      "round": 2,
+      "scenario": "explicit preference"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 295.308981,
+      "expected": "fact",
+      "passed": true,
+      "round": 3,
+      "scenario": "durable user fact"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 295.35547499999996,
+      "expected": "fact",
+      "passed": false,
+      "round": 3,
+      "scenario": "negation preserved"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 296.12516300000004,
+      "expected": "correction",
+      "passed": true,
+      "round": 3,
+      "scenario": "explicit correction"
+    },
+    {
+      "actual": "correction",
+      "elapsed_ms": 434.465783,
+      "expected": "correction",
+      "passed": true,
+      "round": 3,
+      "scenario": "changed preference"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 404.438218,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 3,
+      "scenario": "paraphrased duplicate"
+    },
+    {
+      "actual": "duplicate",
+      "elapsed_ms": 308.243495,
+      "expected": "duplicate",
+      "passed": true,
+      "round": 3,
+      "scenario": "unchanged restriction"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 297.002033,
+      "expected": "preference",
+      "passed": true,
+      "round": 3,
+      "scenario": "unrelated existing record"
+    },
+    {
+      "actual": "fact",
+      "elapsed_ms": 301.986074,
+      "expected": "fact",
+      "passed": true,
+      "round": 3,
+      "scenario": "new fact differs from existing"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 392.674017,
+      "expected": "skip",
+      "passed": true,
+      "round": 3,
+      "scenario": "temporary state"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 306.21468400000003,
+      "expected": "skip",
+      "passed": true,
+      "round": 3,
+      "scenario": "ordinary question"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 362.757947,
+      "expected": "skip",
+      "passed": true,
+      "round": 3,
+      "scenario": "authored fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 296.683101,
+      "expected": "skip",
+      "passed": true,
+      "round": 3,
+      "scenario": "quoted third party"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 304.054523,
+      "expected": "skip",
+      "passed": true,
+      "round": 3,
+      "scenario": "schema injection in fiction"
+    },
+    {
+      "actual": "skip",
+      "elapsed_ms": 303.502602,
+      "expected": "abstain",
+      "passed": false,
+      "round": 3,
+      "scenario": "ambiguous referent"
+    },
+    {
+      "actual": "abstain",
+      "elapsed_ms": 292.69557699999996,
+      "expected": "abstain",
+      "passed": true,
+      "round": 3,
+      "scenario": "uncertain claim"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 401.642803,
+      "expected": "preference",
+      "passed": true,
+      "round": 3,
+      "scenario": "language variant"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 298.12382199999996,
+      "expected": "preference",
+      "passed": true,
+      "round": 3,
+      "scenario": "explicit preference"
+    },
+    {
+      "actual": "preference",
+      "elapsed_ms": 307.237839,
+      "expected": "preference",
+      "passed": true,
+      "round": 3,
+      "scenario": "paraphrased preference"
+    }
+  ],
+  "scope": "typed decisions only; no memory writes, reflection generation, real user data, pricing or production acceptance",
+  "valid_response_latency_ms": {
+    "p50": 319.894287,
+    "p95": 1419.6410429999999
+  },
+  "valid_responses": 54
+}

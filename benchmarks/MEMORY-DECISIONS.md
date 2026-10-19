@@ -41,6 +41,23 @@ Compare other models only through an endpoint that supports this same typed eval
 
 This is encouraging for bounded triage: fast, consistent and conservative about fiction. It is still 18 hand-written cases. Token use and price were not measured.
 
+## Decision model comparison — 2026-10-18
+
+Same 18 cases × 3 rounds, same harness, Vercel's shared evaluation endpoint, app-saved key injected only into the process. Price is Vercel's listed input price per million tokens (output is free for all). Raw rows: `benchmarks/memory-decisions-<model>.json`.
+
+| Model | Correct | p50 / p95 ms | $/M input | Misses (each 3/3 rounds) |
+|---|---|---|---|---|
+| microsoft/microsoft-decision-1 | 54/54 | 353 / 551 | 0.042 | none |
+| typesafe-ai/jev | 51/54 | 217 / 292 | 0.042 | peanut negation → preference |
+| liquid/d1 | 51/54 | 340 / 1252 | 0.02 | peanut negation → preference |
+| openai/gpt-6-luna-decisions | 51/54 | 277 / 756 | 0.10 | peanut negation → preference |
+| liquid/d1-ultra | 51/54 | 426 / 1825 | 0.042 | ambiguous referent → skip |
+| perplexity/pplx-decider-v1.2 | 48/54 | 320 / 1420 | 0.02 | peanut negation; ambiguous referent → skip |
+| perplexity/pplx-decider-flash-v1.2 | 45/54 | 252 / 433 | 0.01 | peanut negation; ambiguous and uncertain → skip |
+| convaiinnovations/laya | 18/54 | 298 / 690 | 0 | 12 cases, including fiction → abstain and a third-party quote → fact |
+
+Every model answered identically in all three rounds, so this is effectively 18 data points per model, not 54. The peanut label is debatable. Missing an ambiguity is the more serious error: skipping it silently drops something the user may have meant, while abstaining leaves it for review. Laya is unsuitable. Decision-1 and Jev are the leading candidates: same price, Decision-1 had no misses, and Jev was fastest and most consistent in latency. A larger held-out set is needed before choosing between them.
+
 ## What would justify runtime integration
 
 Keep exact source quotes and source-turn IDs in Rust. A model decision must not invent evidence, establish truth, overwrite a record or accept its own suggestion. If pilot results are useful, the next runtime slice is an opt-in, bounded background candidate classifier that rechecks character/turn/source revisions before offering a draft for review. Correction recommendations must point to a still-current offered record and retain explicit acceptance. Network failures or abstention should leave memory unchanged.

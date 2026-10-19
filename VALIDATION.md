@@ -504,3 +504,7 @@ Added an explicit-run-only evaluation example and operating notes in `benchmarks
 ## Live Jev memory decision pilot — 2026-10-18
 
 Ran `evaluate_memory_decisions --run --model typesafe-ai/jev --rounds 3` with the existing app-saved gateway key injected only into that process environment. 51/54 correct, 0 errors, p50 217 ms / p95 292 ms (first request 3.6 s). The single, consistent miss was the peanut negation fixture (fact expected, preference returned). The output file was checked for credential leakage. No app data, memory ledger or settings were read or written. Pricing was not measured.
+
+## Decision model comparison — 2026-10-18
+
+Ran the same 3×18 memory decision set on seven more Vercel evaluation models. Results: Microsoft Decision-1 54/54; Jev, Liquid d1 and GPT-6 Luna Decisions 51/54; Liquid d1-ultra 51/54; Decider v1.2 48/54; Decider Flash 45/54; Laya 18/54. Zero transport errors. All models were deterministic across rounds. Each output file was checked for credential leakage. No app data or ledger was read or written.
