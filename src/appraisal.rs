@@ -221,13 +221,16 @@ impl AppraisalJob {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancelled.clone();
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let _permit = permit;
-            let result = run(&|| worker_cancel.load(Ordering::Acquire));
-            if !worker_cancel.load(Ordering::Acquire) {
-                let _ = tx.send(result);
-            }
-        });
+        std::thread::Builder::new()
+            .name("jev-appraisal".into())
+            .spawn(move || {
+                let _permit = permit;
+                let result = run(&|| worker_cancel.load(Ordering::Acquire));
+                if !worker_cancel.load(Ordering::Acquire) {
+                    let _ = tx.send(result);
+                }
+            })
+            .map_err(|_| "Could not start appraisal worker")?;
         Ok(Self {
             cancelled,
             receiver: Mutex::new(rx),

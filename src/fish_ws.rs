@@ -2480,4 +2480,82 @@ mod tests {
         );
         task.join().unwrap();
     }
+
+    #[test]
+    fn realistic_timestamp_mailbox_preserves_playback_and_terminal() {
+        for failed in [false, true] {
+            let mut state = FishWsState::default();
+            state.id = Some(9);
+            state.input = Some(Arc::new(Mutex::new(TextQueue::default())));
+            let generation = state.generation.load(Ordering::Acquire);
+            let mut audio = None;
+            crate::voice_stream::receive_wav(
+                std::io::Cursor::new(wav(32, false)),
+                state.generation.clone(),
+                generation,
+                Instant::now() + Duration::from_secs(2),
+                |voice| audio = Some(voice),
+            )
+            .unwrap();
+            publish(
+                &state.mailbox,
+                &state.generation,
+                generation,
+                LiveEvent::Playing {
+                    id: 9,
+                    audio: audio.unwrap(),
+                },
+            );
+            for index in 0..500 {
+                publish(
+                    &state.mailbox,
+                    &state.generation,
+                    generation,
+                    LiveEvent::Timing {
+                        id: 9,
+                        words: vec![WordTiming {
+                            text: format!("word{index}"),
+                            start: 0.0,
+                            end: 0.1,
+                        }],
+                    },
+                );
+            }
+            let terminal = if failed {
+                LiveEvent::Failed {
+                    id: 9,
+                    message: "provider failure".into(),
+                }
+            } else {
+                LiveEvent::Finished {
+                    id: 9,
+                    stats: LiveStats::default(),
+                }
+            };
+            publish(&state.mailbox, &state.generation, generation, terminal);
+            // One playback initialization, one coalesced timing snapshot,
+            // and one terminal: the eight-slot queue cannot overflow here.
+            assert_eq!(state.mailbox.lock().unwrap().len(), 3);
+            let events = state.poll();
+            assert!(matches!(&events[0], LiveEvent::Playing { .. }));
+            assert!(matches!(&events[1], LiveEvent::Timing { words, .. }
+                if words[0].text == "word499"));
+            assert!(matches!(
+                &events[2],
+                LiveEvent::Finished { .. } | LiveEvent::Failed { .. }
+            ));
+            assert_eq!(state.active_id(), None);
+            assert!(state.input.is_none());
+            publish(
+                &state.mailbox,
+                &state.generation,
+                generation.wrapping_sub(1),
+                LiveEvent::Failed {
+                    id: 8,
+                    message: "stale".into(),
+                },
+            );
+            assert!(state.poll().is_empty());
+        }
+    }
 }

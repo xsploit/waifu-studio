@@ -394,3 +394,14 @@ Automatic affect now offers mutually exclusive reply metadata (default) or incom
 The background adapter admits at most two workers globally, including cancelled blocking requests, with no queued retry. Results expire after 1.5 seconds and require matching turn, character, affect settings and decision settings. Cancellation cannot interrupt all blocking network/DNS work. Source changes also invalidate captured reply-metadata settings while hidden metadata remains filtered. Focused late results can update mood but do not replay body-motion decisions. Group speech is handed off before waiting for an outstanding appraisal; the serial scene job can remain busy briefly until that result expires.
 
 Offline checks: the integrated all-target suite passed 538 tests, strict Clippy passed, and local HTTP fixtures cover wire schema, offered choices, cancellation/admission, stale snapshots, source exclusivity and group/focused application. No live Jev/provider, GUI, GPU render, microphone, speaker onset or lip-sync acceptance. No fresh Opus/Fable review: delegated invocation hit the orchestration limit; a direct Claude CLI smoke request reached the service but reported the session limit.
+
+
+### Direct Claude Squad review and mailbox hypothesis — 2026-10-18
+
+Direct Opus 5.5 responded to a smoke request; Opus implementation investigation and Fable 5.1 source review then ran through the local Squad mailbox. See reviews/fable-appraisal-review.md for original findings and parent dispositions. Fable ran no tests. The late-appraisal body-motion omission follows the documented no-replay policy; failed provider results are safely discarded. Replaced appraisal thread spawn with Builder so thread creation failure returns a fixed error instead of panicking and drops the captured slot permit. OS exhaustion was not forced.
+
+Opus confirmed the historical Fish mailbox overflow hypothesis is unreachable with current producers: one Playing, coalesced Timing and one terminal require at most three entries. Parent removed the proposed runtime admission policy and synthetic duplicate-Playing fixtures, retaining a realistic regression across 500 timing updates, both terminal outcomes, cleanup and stale-generation rejection. No speech-stall fix is claimed.
+
+Parent announced sequential one-job, low-priority checks: appraisal tests 3/3 and Fish tests 19/19 passed. No full-suite rerun in this slice; the previous 538-test receipt remains historical. No live provider, GUI, microphone, GPU or physical audio check.
+
+Strict all-target Clippy, package formatting and diff whitespace also passed on the final source.
