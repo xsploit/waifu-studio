@@ -136,6 +136,11 @@ pub fn ui(
         egui::Slider::new(&mut state.config.trailing_silence_ms, 200..=5000)
             .text("Trailing silence ms"),
     );
+    ui.checkbox(
+        &mut state.config.trim_silence,
+        "Trim detected silence before upload",
+    );
+    ui.small("Optional: keep 200 ms before and after detected speech, preserving pauses inside it. VAD can miss quiet speech; leave this off to upload the entire recording. It does not shorten the silence needed to stop recording.");
     ui.horizontal(|ui| {
         if ui
             .add_enabled(

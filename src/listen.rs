@@ -97,6 +97,7 @@ pub struct ListenConfig {
     pub api_key_env: String,
     pub vad_threshold: f32,
     pub trailing_silence_ms: u32,
+    pub trim_silence: bool,
     pub auto_send: bool,
 }
 impl Default for ListenConfig {
@@ -114,6 +115,7 @@ impl Default for ListenConfig {
             api_key_env: "OPENAI_API_KEY".into(),
             vad_threshold: 0.015,
             trailing_silence_ms: 1200,
+            trim_silence: false,
             auto_send: false,
         }
     }
@@ -329,6 +331,8 @@ struct Recording {
     silence: usize,
     speech: bool,
     onset: usize,
+    speech_start: Option<usize>,
+    speech_end: Option<usize>,
     done: bool,
     neural: bool,
     energy: f64,
@@ -351,6 +355,8 @@ impl Recording {
             silence: 0,
             speech: false,
             onset: 0,
+            speech_start: None,
+            speech_end: None,
             done: false,
             neural: false,
             energy: 0.,
@@ -402,6 +408,11 @@ impl Recording {
     /// Require sustained onset before arming automatic endpointing. Once armed,
     /// a lower hold threshold avoids chattering on quiet syllables.
     fn activity(&mut self, onset: bool, hold: bool, frames: usize, minimum: usize) {
+        self.activity_at(onset, hold, frames, minimum, self.samples.len());
+    }
+    /// `end` is the analyzed frame's end, not the callback's current buffer
+    /// length: neural inference may lag behind audio capture.
+    fn activity_at(&mut self, onset: bool, hold: bool, frames: usize, minimum: usize, end: usize) {
         if !self.speech {
             self.onset = if onset {
                 self.onset.saturating_add(frames)
@@ -411,12 +422,32 @@ impl Recording {
             if self.onset >= minimum {
                 self.speech = true;
                 self.silence = 0;
+                self.speech_start = Some(end.saturating_sub(self.onset));
+                self.speech_end = Some(end);
             }
         } else if hold {
             self.silence = 0;
+            self.speech_end = Some(end);
         } else {
             self.silence = self.silence.saturating_add(frames);
         }
+    }
+    /// Trim only the outside of the confirmed speech span. Keep contextual
+    /// audio around its edges; uncertain/missing bounds preserve all samples.
+    fn take_samples(&mut self, trim: bool, analyzed_end: usize) -> Vec<i16> {
+        if trim
+            && self.samples.len().saturating_sub(analyzed_end) < 512
+            && let (Some(start), Some(end)) = (self.speech_start, self.speech_end)
+            && start < end
+            && end <= self.samples.len()
+        {
+            let padding = RATE / 5;
+            let start = start.saturating_sub(padding);
+            let end = end.saturating_add(padding).min(self.samples.len());
+            self.samples.truncate(end);
+            self.samples.drain(..start);
+        }
+        std::mem::take(&mut self.samples)
     }
 }
 fn neural_thresholds(value: f32) -> (f32, f32) {
@@ -542,7 +573,7 @@ fn capture(
             match result {
                 Ok(p) => {
                     let (onset, hold) = neural_thresholds(c.silero_threshold);
-                    d.activity(p >= onset, p >= hold, 512, 1024);
+                    d.activity_at(p >= onset, p >= hold, 512, 1024, processed);
                     if d.speech && d.silence >= d.silence_limit {
                         d.done = true;
                     }
@@ -582,7 +613,14 @@ fn capture(
     if !data.speech {
         return Err("No speech detected; adjust the selected VAD threshold and retry".into());
     }
-    Ok(std::mem::take(&mut data.samples))
+    let analyzed_end = if data.neural {
+        processed
+    } else {
+        data.samples.len()
+    };
+    // Inference failure or a backlog at manual Stop leaves the clip intact;
+    // unexamined audio may contain a final word.
+    Ok(data.take_samples(c.trim_silence && !silero_failed, analyzed_end))
 }
 fn wav(samples: &[i16]) -> Vec<u8> {
     let samples = &samples[..samples.len().min(MAX_SAMPLES)];
@@ -1186,5 +1224,52 @@ mod tests {
             assert!(hold > 0.0 && hold < onset);
         }
         assert_eq!(neural_thresholds(f32::NAN).0, 0.5);
+    }
+    #[test]
+    fn optional_trim_keeps_context_internal_pauses_and_original_default() {
+        let config: ListenConfig = serde_json::from_str("{}").unwrap();
+        assert!(!config.trim_silence);
+        let original: Vec<i16> = (0..RATE * 3).map(|i| (i % 1000) as i16).collect();
+        let make = || {
+            let mut recording = Recording::new(RATE as u32, 1, &config);
+            recording.samples = original.clone();
+            for end in [8160, 8320, 8480] {
+                recording.activity_at(true, true, 160, 480, end);
+            }
+            recording.activity_at(false, true, 160, 480, 20000);
+            recording.activity_at(false, false, 160, 480, 21000);
+            recording.activity_at(false, true, 160, 480, 25000);
+            recording
+        };
+        assert_eq!(make().take_samples(false, original.len()), original);
+        assert_eq!(
+            make().take_samples(true, original.len()),
+            original[4800..28200]
+        );
+        // A capture buffer ahead of neural inference must never lose its tail.
+        assert_eq!(make().take_samples(true, 25000), original);
+    }
+
+    #[test]
+    fn trim_uses_analyzed_frame_positions_and_preserves_unknown_bounds() {
+        let config = ListenConfig::default();
+        let original = vec![42; RATE];
+        let mut recording = Recording::new(RATE as u32, 1, &config);
+        recording.samples = original.clone();
+        assert_eq!(recording.take_samples(true, RATE), original);
+        recording.samples = original.clone();
+        // Neural inference analyzes an early frame while capture is far ahead.
+        recording.activity_at(true, true, 512, 1024, 512);
+        recording.activity_at(true, true, 512, 1024, 1024);
+        assert_eq!(recording.speech_start, Some(0));
+        assert_eq!(recording.speech_end, Some(1024));
+        assert_eq!(recording.take_samples(true, RATE), original[..4224]);
+        recording.samples = original.clone();
+        recording.speech_start = Some(RATE - 100);
+        recording.speech_end = Some(RATE);
+        assert_eq!(recording.take_samples(true, RATE), original[RATE - 3300..]);
+        recording.samples = original.clone();
+        recording.speech_end = Some(RATE + 1);
+        assert_eq!(recording.take_samples(true, RATE), original);
     }
 }
