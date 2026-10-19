@@ -261,6 +261,7 @@ fn run() -> Result<(), String> {
     listening.config = studio.library.listen.clone();
     let mut app = App::new();
     let mut plugins = DefaultPlugins
+        .set(runtime::task_pool_plugin())
         .set(AssetPlugin {
             file_path: ".".into(),
             meta_check: AssetMetaCheck::Never,

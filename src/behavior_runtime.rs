@@ -175,8 +175,15 @@ pub fn poll_behavior(
     );
     bridge.observe(&mut state.controller, frame);
     if let Some(id) = studio.library.selected {
-        let config = studio.library.scene.affect.clone();
-        studio.affect.entries.entry(id).or_default().config = config;
+        if studio
+            .affect
+            .entries
+            .get(&id)
+            .is_none_or(|entry| entry.config != studio.library.scene.affect)
+        {
+            let config = studio.library.scene.affect.clone();
+            studio.affect.entries.entry(id).or_default().config = config;
+        }
         if studio.affect.take_pending(id)
             && let Some(token) = bridge.owned
             && let Err(error) =

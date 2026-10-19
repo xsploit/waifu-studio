@@ -33,6 +33,38 @@ use waifu_studio::{
 
 pub struct StudioRuntimePlugin;
 
+/// Bound frame-worker overhead on high-core hosts. I/O, async computation and
+/// CPU affinity retain Bevy's policies; smaller hosts still use fewer workers.
+/// A metrics-only override retains the original policy as an experimental arm.
+pub fn task_pool_plugin() -> bevy::app::TaskPoolPlugin {
+    let requested = std::env::var("WAIFU_RUNTIME_COMPUTE_THREADS").ok();
+    bevy::app::TaskPoolPlugin {
+        task_pool_options: task_pool_policy(
+            std::env::var_os("WAIFU_RUNTIME_METRICS").is_some(),
+            requested.as_deref(),
+        ),
+    }
+}
+
+fn task_pool_policy(metrics: bool, requested: Option<&str>) -> bevy::app::TaskPoolOptions {
+    let defaults = bevy::app::TaskPoolOptions::default();
+    bevy::app::TaskPoolOptions {
+        compute: bevy::app::TaskPoolThreadAssignmentPolicy {
+            max_threads: compute_thread_probe(metrics, requested).unwrap_or(4),
+            ..defaults.compute
+        },
+        ..defaults
+    }
+}
+
+fn compute_thread_probe(metrics: bool, requested: Option<&str>) -> Option<usize> {
+    metrics
+        .then_some(requested)
+        .flatten()
+        .and_then(|value| value.parse().ok())
+        .filter(|threads| (1..=64).contains(threads))
+}
+
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DesktopWindowInput;
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -51,6 +83,11 @@ pub fn primary_window() -> Window {
             CompositeAlphaMode::PreMultiplied
         },
         resolution: (1280, 900).into(),
+        present_mode: if runtime_probe("WAIFU_RUNTIME_NO_VSYNC") {
+            bevy::window::PresentMode::AutoNoVsync
+        } else {
+            default()
+        },
         ..default()
     }
 }
@@ -133,33 +170,83 @@ fn reclaim_avatar_load_memory(
 
 /// Opt-in, content-free measurements for comparing builds at the same actual
 /// frame rate and focus state. Disabled during ordinary launches.
+#[derive(Default)]
+struct RuntimeSample {
+    start: Option<Instant>,
+    last: Option<Instant>,
+    frames: u64,
+    frame_ms: Vec<f64>,
+    focus: Option<bool>,
+    mixed_focus: bool,
+}
+
+fn frame_percentiles(samples: &mut [f64]) -> (f64, f64) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    samples.sort_unstable_by(f64::total_cmp);
+    let at = |percentile: f64| samples[((samples.len() - 1) as f64 * percentile).ceil() as usize];
+    (at(0.5), at(0.99))
+}
+
 fn log_runtime_metrics(
     windows: Query<&Window>,
     images: Res<Assets<Image>>,
     meshes: Res<Assets<Mesh>>,
-    mut sample: Local<Option<(Instant, u64)>>,
+    desktop: Res<DesktopSettings>,
+    winit: Res<WinitSettings>,
+    mut sample: Local<RuntimeSample>,
 ) {
     let now = Instant::now();
-    let Some((start, frames)) = sample.as_mut() else {
-        *sample = Some((now, 0));
+    let focused = windows.iter().any(|window| window.focused);
+    let Some(start) = sample.start else {
+        sample.start = Some(now);
+        sample.last = Some(now);
+        sample.focus = Some(focused);
         return;
     };
-    *frames += 1;
-    let elapsed = now.duration_since(*start).as_secs_f64();
+    sample.frames += 1;
+    if sample.focus != Some(focused) {
+        sample.mixed_focus = true;
+    }
+    if let Some(last) = sample.last
+        && sample.frame_ms.len() < 4096
+    {
+        sample
+            .frame_ms
+            .push(now.duration_since(last).as_secs_f64() * 1000.0);
+    }
+    sample.last = Some(now);
+    let elapsed = now.duration_since(start).as_secs_f64();
     if elapsed >= 10.0 {
         let image_bytes: usize = images
             .iter()
             .filter_map(|(_, image)| image.data.as_ref().map(Vec::len))
             .sum();
+        let (p50, p99) = frame_percentiles(&mut sample.frame_ms);
+        let (morph_logical, morph_unique) = waifu_studio::loading::morph_cpu_bytes(&meshes);
         info!(
-            "Runtime metrics: fps={:.1} focused={} image_cpu_mib={:.1} images={} meshes={}",
-            *frames as f64 / elapsed,
-            windows.iter().any(|window| window.focused),
+            "Runtime metrics: fps={:.1} focused={} image_cpu_mib={:.1} images={} meshes={} frame_ms_p50={:.2} frame_ms_p99={:.2} mixed_focus={} morph_logical_mib={:.2} morph_unique_mib={:.2} focused_cap={} loop={:?} present={:?} compute_threads={}",
+            sample.frames as f64 / elapsed,
+            focused,
             image_bytes as f64 / (1024.0 * 1024.0),
             images.len(),
             meshes.len(),
+            p50,
+            p99,
+            sample.mixed_focus,
+            morph_logical as f64 / (1024.0 * 1024.0),
+            morph_unique as f64 / (1024.0 * 1024.0),
+            desktop.focused_fps,
+            winit.update_mode(focused),
+            windows.iter().next().map(|window| window.present_mode),
+            bevy::tasks::ComputeTaskPool::get().thread_num(),
         );
-        *sample = Some((now, 0));
+        sample.start = Some(now);
+        sample.frames = 0;
+        sample.frame_ms.clear();
+        sample.focus = Some(focused);
+        sample.mixed_focus = false;
     }
 }
 
@@ -199,23 +286,43 @@ fn polling_rate(settings: &DesktopSettings, focused: bool, mode: ViewMode, activ
     }
 }
 
+fn cadence_mode(rate: u32, diagnostic_continuous: bool) -> UpdateMode {
+    if diagnostic_continuous {
+        // pace_frames still sleeps to the selected cap. This opt-in probe only
+        // separates event-loop timer wakeups from rendering/animation cost.
+        UpdateMode::Continuous
+    } else {
+        UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / rate as f64))
+    }
+}
+
+fn runtime_probe(name: &str) -> bool {
+    std::env::var_os("WAIFU_RUNTIME_METRICS").is_some()
+        && std::env::var(name).is_ok_and(|value| value == "1")
+}
+
 fn frame_cadence(
     studio: Res<Studio>,
     desktop: Res<DesktopSettings>,
     playing: Query<(), With<crate::studio::SpokenAudio>>,
     mut settings: ResMut<WinitSettings>,
+    mut probe: Local<Option<bool>>,
 ) {
     let active = studio.job.is_some() || studio.voice_busy || !playing.is_empty();
-    let focused = UpdateMode::reactive_low_power(Duration::from_secs_f64(
-        1.0 / polling_rate(&desktop, true, studio.mode, active) as f64,
-    ));
+    let diagnostic = *probe.get_or_insert_with(|| runtime_probe("WAIFU_RUNTIME_CONTINUOUS"));
+    let focused = cadence_mode(
+        polling_rate(&desktop, true, studio.mode, active),
+        diagnostic,
+    );
     if settings.focused_mode != focused {
         settings.focused_mode = focused;
     }
     // Overlay animation and spring physics keep ticking when clickthrough means
     // the main window cannot receive focus. Network/audio workers remain async.
-    let rate = polling_rate(&desktop, false, studio.mode, active) as f64;
-    let mode = UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / rate));
+    let mode = cadence_mode(
+        polling_rate(&desktop, false, studio.mode, active),
+        diagnostic,
+    );
     if settings.unfocused_mode != mode {
         settings.unfocused_mode = mode;
     }
@@ -1080,6 +1187,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compute_probe_requires_metrics_and_rejects_invalid_limits() {
+        assert_eq!(compute_thread_probe(false, Some("4")), None);
+        assert_eq!(compute_thread_probe(true, None), None);
+        for invalid in ["", "0", "65", "-1", "auto", "184467440737095516160"] {
+            assert_eq!(compute_thread_probe(true, Some(invalid)), None);
+        }
+        for (value, expected) in [("1", 1), ("4", 4), ("64", 64)] {
+            assert_eq!(compute_thread_probe(true, Some(value)), Some(expected));
+        }
+        let defaults = bevy::app::TaskPoolOptions::default();
+        for (metrics, value, expected) in [
+            (false, None, 4),
+            (false, Some("12"), 4),
+            (true, None, 4),
+            (true, Some("0"), 4),
+            (true, Some("12"), 12),
+        ] {
+            let policy = task_pool_policy(metrics, value);
+            assert_eq!(policy.compute.max_threads, expected);
+            assert_eq!(policy.compute.min_threads, defaults.compute.min_threads);
+            assert_eq!(policy.compute.percent, defaults.compute.percent);
+            assert_eq!(policy.io.min_threads, defaults.io.min_threads);
+            assert_eq!(policy.io.max_threads, defaults.io.max_threads);
+            assert_eq!(policy.io.percent, defaults.io.percent);
+            assert_eq!(
+                policy.async_compute.min_threads,
+                defaults.async_compute.min_threads
+            );
+            assert_eq!(
+                policy.async_compute.max_threads,
+                defaults.async_compute.max_threads
+            );
+            assert_eq!(policy.async_compute.percent, defaults.async_compute.percent);
+        }
+    }
+
+    #[test]
+    fn frame_percentiles_include_slow_tail_and_handle_short_samples() {
+        assert_eq!(frame_percentiles(&mut []), (0.0, 0.0));
+        assert_eq!(frame_percentiles(&mut [16.7]), (16.7, 16.7));
+        let mut samples = vec![16.7; 99];
+        samples.insert(0, 80.0);
+        assert_eq!(frame_percentiles(&mut samples), (16.7, 80.0));
+    }
+
+    #[test]
     fn active_turns_keep_fast_polling_and_idle_restores_power_caps() {
         let mut settings = DesktopSettings::default();
         settings.focused_fps = 30;
@@ -1094,6 +1247,20 @@ mod tests {
         assert_eq!(polling_rate(&settings, true, ViewMode::Studio, false), 30);
         settings.focused_fps = 144;
         assert_eq!(polling_rate(&settings, false, ViewMode::Desktop, true), 144);
+    }
+
+    #[test]
+    fn cadence_probe_changes_only_loop_policy_and_default_stays_reactive() {
+        assert_eq!(
+            cadence_mode(60, false),
+            UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / 60.0))
+        );
+        assert_eq!(
+            cadence_mode(15, false),
+            UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / 15.0))
+        );
+        assert_eq!(cadence_mode(60, true), UpdateMode::Continuous);
+        assert_eq!(cadence_mode(15, true), UpdateMode::Continuous);
     }
     #[test]
     fn idle_arm_relaxation_waits_for_both_original_bind_snapshots() {

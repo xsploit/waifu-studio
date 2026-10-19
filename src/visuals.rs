@@ -335,6 +335,7 @@ fn sync(
     mut commands: Commands,
     state: Res<VisualState>,
     mut previous: Local<Option<(VisualSettings, bool)>>,
+    mut previous_raw: Local<Option<(VisualSettings, bool)>>,
     cameras: Query<
         (
             Entity,
@@ -346,7 +347,18 @@ fn sync(
         With<VisualCamera>,
     >,
 ) {
+    // Resources can be touched by the UI every frame without a value change.
+    // Keep steady-state rendering free of settings clones and plan rebuilding,
+    // but still initialize cameras introduced after the settings last changed.
+    let unchanged = previous_raw.as_ref().is_some_and(|(settings, suppressed)| {
+        settings == &state.settings && *suppressed == state.suppressed
+    });
+    if unchanged && cameras.iter().all(|(_, baseline, ..)| baseline.is_some()) {
+        return;
+    }
     let current = (state.settings.clone().sanitized(), state.suppressed);
+    // Retain sanitized comparison too: non-finite raw fields never compare
+    // equal, but must not force identical camera effects to be reinserted.
     let changed = previous.as_ref() != Some(&current);
     let render = plan(&current.0, current.1);
     for (entity, baseline, hdr, tone, grading) in &cameras {
@@ -367,7 +379,7 @@ fn sync(
                 camera.insert(Hdr);
             }
             camera.insert((render.tone, render.grading.clone()));
-            let corrected = current.0.clone().sanitized();
+            let corrected = &current.0;
             if corrected.rgb_correction {
                 camera.insert(crate::color_correction::ColorCorrection {
                     power: Vec3::from_array(corrected.rgb_power).extend(0.),
@@ -406,6 +418,7 @@ fn sync(
             }
         }
     }
+    *previous_raw = Some((state.settings.clone(), state.suppressed));
     *previous = Some(current);
 }
 #[cfg(test)]
@@ -537,6 +550,51 @@ mod tests {
         assert_eq!(
             *app.world().entity(marked).get::<Tonemapping>().unwrap(),
             Tonemapping::Reinhard
+        );
+    }
+
+    #[test]
+    fn unchanged_settings_initialize_late_cameras_and_preserve_existing_components() {
+        let mut app = App::new();
+        app.add_plugins(VisualPlugin);
+        app.world_mut().resource_mut::<VisualState>().settings =
+            VisualSettings::preset(VisualPreset::Neon);
+        let first = app.world_mut().spawn(VisualCamera).id();
+        app.update();
+        app.world_mut().clear_trackers();
+        app.update();
+        assert!(
+            !app.world()
+                .entity(first)
+                .get_ref::<ColorGrading>()
+                .unwrap()
+                .is_changed()
+        );
+        let late = app.world_mut().spawn(VisualCamera).id();
+        app.update();
+        assert!(app.world().entity(late).contains::<Bloom>());
+        assert!(app.world().entity(late).contains::<Hdr>());
+        assert!(app.world().entity(late).contains::<Baseline>());
+        assert!(
+            !app.world()
+                .entity(first)
+                .get_ref::<ColorGrading>()
+                .unwrap()
+                .is_changed()
+        );
+        app.world_mut()
+            .resource_mut::<VisualState>()
+            .settings
+            .exposure = f32::NAN;
+        app.update();
+        app.world_mut().clear_trackers();
+        app.update();
+        assert!(
+            !app.world()
+                .entity(first)
+                .get_ref::<ColorGrading>()
+                .unwrap()
+                .is_changed()
         );
     }
 

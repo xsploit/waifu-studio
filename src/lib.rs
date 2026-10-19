@@ -34,6 +34,7 @@ pub mod fish_ws;
 pub mod gaze;
 mod material_expressions;
 pub mod metered_audio;
+mod morph_sharing;
 pub mod semantic_memory;
 pub mod speech_text;
 pub mod task_board;

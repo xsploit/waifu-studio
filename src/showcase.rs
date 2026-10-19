@@ -39,6 +39,9 @@ struct Shot {
     audio: PathBuf,
     environment: String,
     motion: Option<PathBuf>,
+    /// Optional existing character in the isolated capture profile. Uses the
+    /// ordinary selection/load path, including voice cancellation and cleanup.
+    character: Option<uuid::Uuid>,
 }
 fn screen(name: &str) -> Result<Tab, String> {
     match name {
@@ -74,6 +77,7 @@ pub(crate) struct Showcase {
     completed: Arc<AtomicUsize>,
     failed: Arc<AtomicBool>,
     started: Instant,
+    peak_audio: f32,
 }
 impl Showcase {
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
@@ -122,6 +126,7 @@ impl Showcase {
             completed: Arc::default(),
             failed: Arc::default(),
             started: Instant::now(),
+            peak_audio: 0.0,
         })
     }
     pub(crate) fn fps(&self) -> u32 {
@@ -139,6 +144,8 @@ pub(crate) fn record(
     mut animation: ResMut<AnimationState>,
     meter: Res<SpeechMeter>,
     envelope: Res<AudioEnvelope>,
+    meshes: Res<Assets<Mesh>>,
+    images: Res<Assets<Image>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if capture.failed.load(Ordering::Relaxed)
@@ -163,6 +170,16 @@ pub(crate) fn record(
     }
     if capture.active != Some(capture.shot) {
         let shot = &capture.plan.shots[capture.shot];
+        if let Some(character) = shot.character {
+            if !studio.library.characters.iter().any(|c| c.id == character) {
+                error!("Showcase character is absent from the isolated profile");
+                exit.write(AppExit::error());
+                return;
+            }
+            if studio.library.selected != Some(character) {
+                studio.select_character(character);
+            }
+        }
         studio.tab = screen(&shot.screen).expect("validated screen");
         studio.library.scene.environment = environment(&shot.environment).expect("validated room");
         studio.library.scene.room_view = true;
@@ -174,22 +191,29 @@ pub(crate) fn record(
             exit.write(AppExit::error());
             return;
         }
-        // Decode in-memory only, never open an audio output device.
-        let Ok(bytes) = std::fs::read(&shot.audio) else {
-            exit.write(AppExit::error());
-            return;
-        };
-        let decoded = meter
-            .buffered(AudioSource {
-                bytes: bytes.into(),
-            })
-            .decoder();
-        *capture.decoder.lock().unwrap() = Some(decoded);
+        *capture.decoder.lock().unwrap() = None;
+        meter.stop();
         capture.active = Some(capture.shot);
         capture.frame = 0;
+        capture.peak_audio = 0.0;
         capture.settle = if capture.shot == 0 { 60 } else { 12 };
     }
-    if avatar.status != LoadStatus::Ready {
+    if avatar.status != LoadStatus::Ready || studio.requested_model.is_some() {
+        return;
+    }
+    if capture.plan.shots[capture.shot].character.is_some()
+        && !studio
+            .library
+            .selected_character()
+            .is_some_and(|character| {
+                avatar
+                    .requested_path
+                    .as_deref()
+                    .is_some_and(|path| Path::new(path) == character.model)
+            })
+    {
+        // The old avatar remains visible while a replacement loads. Never
+        // mistake its Ready state for completion of the requested switch.
         return;
     }
     if capture.settle > 0 {
@@ -199,6 +223,32 @@ pub(crate) fn record(
     let Some(target) = &target.target else {
         return;
     };
+    if capture.frame == 0 {
+        // Selection queues the ordinary voice cancellation. Start this test
+        // source only after that cancellation and the avatar load have settled,
+        // so a stale stop cannot invalidate the new meter generation.
+        let Ok(bytes) = std::fs::read(&capture.plan.shots[capture.shot].audio) else {
+            exit.write(AppExit::error());
+            return;
+        };
+        *capture.decoder.lock().unwrap() = Some(
+            meter
+                .buffered(AudioSource {
+                    bytes: bytes.into(),
+                })
+                .decoder(),
+        );
+        let (logical, unique) = waifu_studio::loading::morph_cpu_bytes(&meshes);
+        info!(
+            "STUDIO_SHOWCASE_SHOT {} avatar={:?} meshes={} images={} morph_logical_mib={:.2} morph_unique_mib={:.2}",
+            capture.shot,
+            avatar.active,
+            meshes.len(),
+            images.len(),
+            logical as f64 / (1024.0 * 1024.0),
+            unique as f64 / (1024.0 * 1024.0),
+        );
+    }
     // Exact interleaved sample count per frame avoids clock drift at arbitrary rates.
     if let Some(decoder) = capture.decoder.lock().unwrap().as_mut() {
         let n = u64::from(decoder.sample_rate().get()) * u64::from(decoder.channels().get());
@@ -210,7 +260,9 @@ pub(crate) fn record(
             }
         }
     }
-    envelope.set(meter.level());
+    let level = meter.level();
+    capture.peak_audio = capture.peak_audio.max(level);
+    envelope.set(level);
     let path = capture
         .plan
         .frames_dir
@@ -242,6 +294,10 @@ pub(crate) fn record(
     capture.requested += 1;
     capture.frame += 1;
     if capture.frame >= capture.plan.shots[capture.shot].frames {
+        info!(
+            "STUDIO_SHOWCASE_SHOT_END {} peak_audio={:.4}",
+            capture.shot, capture.peak_audio,
+        );
         capture.shot += 1;
         capture.active = None;
     }

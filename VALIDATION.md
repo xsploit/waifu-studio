@@ -568,3 +568,38 @@ Final all-target serial suite: **588 passed** (477 lib + 100 bin + 6 integration
 Short real-process sample after load reclamation: **652 MiB RSS / 524 MiB PSS, 41.9% of one CPU core**, with **59.8 update FPS** reported in adjacent focused windows, normal affinity/allocator settings, 41 threads and no swap. Original debug startup sample was 1014 MiB RSS and 285.5% of one core, without FPS instrumentation. Image CPU storage in the final app was 11.2 MiB. A later NVIDIA process snapshot still reports 843 MiB VRAM; no VRAM reduction is claimed. CPU affinity/arena-limit experiments are not shipped defaults.
 
 No provider/model benchmark, synthesis, microphone or real motion acceptance was run. The screenshot tool returned an occluding browser rather than reliable avatar evidence, so it supplies no visual acceptance. No 200 MiB target, matched competing-engine result, long-run leak freedom or cross-platform efficiency claim is made. Method, experiments and remaining work: `reviews/runtime-efficiency.md`.
+
+
+## Feature-preserving efficiency follow-up — 2026-10-19
+
+Camera-effect synchronization skips unchanged frames while initializing late cameras and retaining sanitized comparison for non-finite input. Affect configuration is copied only when changed. All 589 offline all-target tests passed before adding opt-in frame-time instrumentation; afterward 12 runtime/behavior tests passed, strict all-target Clippy passed, and the release binary rebuilt successfully with one low-priority job (2m25s). The instrumentation adds p50/p99 wall-frame intervals and mixed-focus marking only when WAIFU_RUNTIME_METRICS is enabled. No FPS or visual-quality default was lowered.
+
+The earlier purported empty-stage memory baseline was invalid: startup automatically imported bundled Hikari. Explicitly disabling the bundle in a new test profile gave 387.5 MiB mapped RSS / 354.6 MiB PSS without profiling. Heaptrack identified 88.08 decimal MB of morph vectors live at capture termination; this is retained CPU data, not a proven leak. See reviews/memory-mapping-measurement.md and reviews/efficiency-followup.md. Arena-limit trials remain experimental; no allocator default has been changed. No new live speech/microphone or visual acceptance is claimed.
+
+## Shared CPU morph backing — 2026-10-19 verification checkpoint
+
+Vendored Bevy mesh 0.19.1 now retains immutable shared CPU morph backing, preserving existing Vec/slice APIs and data for later mesh derivation and device re-extraction. Event-driven byte-exact canonicalization merges duplicate buffers without Modified events or GPU re-upload. Weak cache entries do not retain morph allocations. The private reflection representation change is documented in `vendor/crates/bevy_mesh/WAIFU-PATCH.md`; whole-Mesh reflected cloning is tested. No shader, speech, animation-rate or quality default is reduced.
+
+Final sequential one-job checks: **595 tests passed** (483 lib + 101 bin + 6 integration + 2 + 3 examples), strict all-target Clippy clean, touched-source rustfmt and diff whitespace clean. Five morph regressions cover sharing and replacement isolation, collision-safe byte equality including signed zero/NaN payloads, weak release, extraction errors, reflection cloning, real asset events without spurious modifications, and re-sharing a later replacement. Release build succeeded in 12m17s. Opus 5.5 and Muse Wonder 1.0 read-only implementation reviews found no correctness defect, with review limitations and dispositions recorded in `reviews/`. Matched release runtime measurements and rendering checks remain pending at this checkpoint; predicted savings are not a measured result.
+
+
+## Efficiency verification refresh (2026-10-19)
+
+Current worktree: **596 all-target offline tests passed** (483 library + 102 binary + 6 integration + 2 + 3 example tests), serially with one low-priority Cargo job. This supersedes the 595-test source checkpoint above.
+
+Six alternating release launches measured an 83.92 MiB RSS/PSS reduction from immutable shared CPU morph backing, with both builds actually at 20 FPS. A separate native AutoNoVsync diagnostic reached 59.8 FPS with unchanged visual settings: RSS 576.37 MiB, PSS 447.96 MiB, CPU 30.41% of one core, logged frame p99 17.91/17.33 ms. The ordinary native FIFO trial remained at 20 FPS. These presentation probes are not a 60 FPS baseline-versus-patch comparison and do not change defaults. X11 failed surface configuration (opaque-only surface versus requested premultiplied alpha), so it has no performance result. See `reviews/efficiency-followup.md` for scope, raw-result paths and caveats.
+
+
+Final refresh checks: all-target strict Clippy, touched-source rustfmt and `git diff --check` passed after the 596-test run. Corrected offscreen showcase completed 60 frames at its configured capture cadence of 30 FPS; frame 30 was visually inspected. Avatar, clothing, face, outlines and furnished room render, with bundled body motion and recorded audio routed through mouth/meter processing. No missing room-art, rendering error or panic was logged. One Bevy startup warning reported missing render-world time; no live-provider, speaker or perceived lip-sync acceptance is implied. The normal app was restored. Capture cadence is separate from the native 59.8 FPS resource sample.
+
+
+## Final feature-preserving efficiency pass (2026-10-19)
+
+Current source passes **597 all-target offline tests** (483 lib + 103 bin + 6 integration + 2 + 3 examples), strict all-target Clippy, touched-source formatting and whitespace checks. Release rebuild succeeded. Normal compute maximum is four with unchanged I/O/async policies; a non-metrics runtime check confirms stray diagnostic overrides are ignored and four workers are created. Normal app restored and verified alive.
+
+Measured immutable morph saving: 83.92 MiB RSS/PSS at matched actual 20 FPS. Separate compute-policy comparisons at actual 59.8 FPS lower median CPU by 23.6% (single avatar) and 35.2% (four instances); four distinct VRMs plus room/motion sustain approximately 143 FPS with 29.8% lower median CPU. No visual settings, simulation cadence or FPS caps were lowered. Presentation defaults remain unchanged; native FIFO timing remains a separate known limitation of the test fixture.
+
+Post-change GPU checks switched through four distinct models three times per worker policy, rendering 690 frames total with body motion and nonzero recorded-audio meter output on every shot. Per-model mesh/image/morph counts match across repeated cycles and both policies; late-cycle Riko/Alicia frames inspected. No warnings or errors in these final captures. These are offline renderer/meter/ownership checks, not live provider, physical audio, pointer-hover, Windows, energy or long-duration RSS acceptance. Detailed results, reviewer dispositions and raw-result paths: `reviews/efficiency-followup.md`.
+
+
+Final shipped-presentation cross-check: six alternating 12/four-worker launches, native FIFO/reactive, both actual 20.0 FPS. Median CPU 10.91% → 8.75% of one core (19.8% relative decrease), lower in every pair. Asset/morph counts match; no additional worker-related RAM saving or frame-tail improvement claimed from this small native-mode set. Raw data: project `work/compute-fifo-controlled-results.json`. Normal app restored; no build or profiler ran during the comparison. Changes are uncommitted; receipts cover the current worktree.

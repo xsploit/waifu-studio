@@ -10,9 +10,14 @@ use bevy_vrm::{VrmPlugins, instance::VrmInstance, loader::Vrm};
 
 pub struct VrmLoaderPlugin;
 
+/// Content-free CPU morph allocation measurement for runtime diagnostics.
+pub fn morph_cpu_bytes(meshes: &Assets<Mesh>) -> (usize, usize) {
+    crate::morph_sharing::cpu_bytes(meshes)
+}
+
 impl Plugin for VrmLoaderPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(VrmPlugins)
+        app.add_plugins((VrmPlugins, crate::morph_sharing::MorphSharingPlugin))
             .init_resource::<AvatarLoadState>()
             .add_message::<LoadAvatar>()
             .add_message::<UnloadAvatar>()
