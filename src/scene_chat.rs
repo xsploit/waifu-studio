@@ -865,6 +865,16 @@ mod tests {
     fn scene_affect_is_recipient_scoped_and_rejects_changed_config() {
         let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice", "Bob"]);
         library.scene.affect.enabled = true;
+        // Bob explicitly opts out; automatic emotion is on by default.
+        library
+            .characters
+            .iter_mut()
+            .find(|c| c.id == ids[1])
+            .unwrap()
+            .scene
+            .get_or_insert_with(Default::default)
+            .affect
+            .enabled = false;
         let config = library.scene.affect.clone();
         let reply = ReplyAffect::parse(
             r#"{"emotion":"happy","valence":0.8,"arousal":0.5,"dominance":0.2}"#,
@@ -1515,6 +1525,15 @@ mod tests {
         ]);
         let (root, mut library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
         library.scene.affect.enabled = true;
+        library
+            .characters
+            .iter_mut()
+            .find(|c| c.id == ids[1])
+            .unwrap()
+            .scene
+            .get_or_insert_with(Default::default)
+            .affect
+            .enabled = false;
         library.scene.routine = crate::routines::RoutineConfig {
             enabled: true,
             share_with_chat: true,

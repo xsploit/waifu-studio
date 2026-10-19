@@ -92,7 +92,7 @@ pub struct ReplyMotionConfig {
 impl Default for ReplyMotionConfig {
     fn default() -> Self {
         Self {
-            mode: ReplyMotionMode::Off,
+            mode: ReplyMotionMode::AutoPlay,
             cooldown_seconds: 30,
             emotion_bindings: Vec::new(),
         }
@@ -467,9 +467,9 @@ pub fn find_models(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     #[test]
-    fn old_scenes_keep_automatic_reply_motion_disabled() {
+    fn scenes_default_to_automatic_reply_motion_and_keep_saved_choices() {
         let scene: SceneSettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(scene.reply_motion.mode, ReplyMotionMode::Off);
+        assert_eq!(scene.reply_motion.mode, ReplyMotionMode::AutoPlay);
         assert_eq!(scene.reply_motion.cooldown_seconds, 30);
         let scene: SceneSettings =
             serde_json::from_str(r#"{"reply_motion":{"mode":"auto_play","cooldown_seconds":45}}"#)
@@ -625,6 +625,7 @@ mod tests {
         let mut second = character("Second");
         second.voice = Some(VoiceConfig::preset(VoiceAdapter::FishLocal));
         second.voice.as_mut().unwrap().delivery = VoiceDelivery::Buffered;
+        second.voice.as_mut().unwrap().enabled = false;
         let first_id = first.id;
         library.characters = vec![first, second];
         library.selected = Some(first_id);

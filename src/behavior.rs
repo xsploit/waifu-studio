@@ -24,7 +24,7 @@ pub struct BehaviorConfig {
 impl Default for BehaviorConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             idle_expression: String::new(),
             thinking_expression: String::new(),
             speaking_expression: String::new(),
@@ -474,8 +474,11 @@ mod tests {
             before,
             c.weights_for(Some(id), &names, &BTreeMap::new(), "")
         );
-        c.select(Some(id), &BehaviorConfig::default(), &names)
-            .unwrap();
+        let off = BehaviorConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        c.select(Some(id), &off, &names).unwrap();
         assert!(!c.enabled());
         assert!(c.channels.is_empty());
         assert!(c.event(token, BehaviorEvent::SpeechStarted).is_err());

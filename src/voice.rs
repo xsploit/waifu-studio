@@ -59,7 +59,7 @@ pub struct VoiceConfig {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             adapter: VoiceAdapter::FishHosted,
             endpoint: "https://api.fish.audio/v1/tts".into(),
             model: "s2.1-pro-free".into(),
@@ -1240,9 +1240,9 @@ mod tests {
         }
     }
     #[test]
-    fn speech_presets_use_supported_transports_without_enabling_speech() {
+    fn speech_presets_use_supported_transports_and_speak_by_default() {
         let hosted = VoiceConfig::default();
-        assert!(!hosted.enabled);
+        assert!(hosted.enabled);
         assert_eq!(hosted.model, "s2.1-pro-free");
         assert_eq!(hosted.delivery, VoiceDelivery::LiveWebSocket);
         assert_eq!(hosted.latency, "balanced");
@@ -1254,7 +1254,7 @@ mod tests {
         for adapter in [VoiceAdapter::OpenAi, VoiceAdapter::Vercel] {
             let preset = VoiceConfig::preset(adapter);
             assert_eq!(preset.delivery, VoiceDelivery::Buffered);
-            assert!(!preset.enabled);
+            assert!(preset.enabled);
         }
     }
     #[test]

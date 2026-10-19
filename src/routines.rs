@@ -13,13 +13,23 @@ pub struct RoutineAnchor {
     pub minute: u16,
     pub activity: String,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RoutineConfig {
     pub enabled: bool,
     /// Share bounded fictional activity data only during an explicit chat turn.
     pub share_with_chat: bool,
     pub anchors: Vec<RoutineAnchor>,
+}
+/// On by default: the routine shows and comes up in chat; anchors start empty.
+impl Default for RoutineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            share_with_chat: true,
+            anchors: Vec::new(),
+        }
+    }
 }
 pub struct RoutineView<'a> {
     pub current: &'a RoutineAnchor,
@@ -153,7 +163,7 @@ mod tests {
         config.anchors.push(anchor(0, 0, "Duplicate"));
         assert!(config.chat_context_at(0, 30).is_none());
         let old: RoutineConfig = serde_json::from_str(r#"{"enabled":true,"anchors":[]}"#).unwrap();
-        assert!(!old.share_with_chat);
+        assert!(old.share_with_chat, "sharing defaults on");
     }
 
     #[test]
@@ -214,6 +224,6 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&edited).unwrap()).unwrap();
         assert_eq!(restored.routine, edited.routine);
         assert!(old.routine.anchors.is_empty());
-        assert!(!old.routine.enabled);
+        assert!(old.routine.enabled, "on by default");
     }
 }

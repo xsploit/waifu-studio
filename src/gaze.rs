@@ -65,7 +65,7 @@ impl Default for GazeConfig {
     fn default() -> Self {
         Self {
             target: GazeTarget::Ambient,
-            enabled: false,
+            enabled: true,
             intensity: 0.45,
             head_follow: 0.55,
             head_drift: 0.35,
@@ -1127,9 +1127,9 @@ mod tests {
     }
 
     #[test]
-    fn sparse_settings_default_off_and_bad_numbers_are_bounded() {
+    fn sparse_settings_default_on_and_bad_numbers_are_bounded() {
         let config: GazeConfig = serde_json::from_str("{}").unwrap();
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert_eq!(config.target, GazeTarget::Ambient);
         let invalid = GazeConfig {
             intensity: f32::NAN,

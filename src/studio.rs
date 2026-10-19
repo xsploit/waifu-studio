@@ -99,6 +99,7 @@ pub struct Studio {
     pub facts: waifu_studio::facts_memory::FactsMemoryState,
     /// Evaluation models advertised by the shared decision endpoint (UI dropdowns).
     pub decision_models: waifu_studio::model_catalog::ModelCatalog,
+    voice_key_hint_shown: bool,
     pub affect: waifu_studio::reply_affect::AffectLibrary,
     reply_filter: Option<waifu_studio::reply_affect::ReplyAffectFilter>,
     reply_affect_requested: bool,
@@ -173,6 +174,7 @@ impl Studio {
         let mut studio = Self {
             facts,
             decision_models: Default::default(),
+            voice_key_hint_shown: false,
             affect: Default::default(),
             reply_filter: None,
             reply_affect_requested: false,
@@ -509,6 +511,32 @@ impl Studio {
     fn begin_reply_speech(&mut self, id: Uuid) {
         self.stop_voice();
         self.reply_speech_job = None;
+        // Voice is on by default; without a hosted key, stay quiet and say so once.
+        let voice = &self.library.voice;
+        if voice.enabled
+            && matches!(
+                voice.adapter,
+                waifu_studio::voice::VoiceAdapter::FishHosted
+                    | waifu_studio::voice::VoiceAdapter::Vercel
+            )
+            && self.voice_key.is_empty()
+            && std::env::var_os(voice.api_key_env.trim()).is_none_or(|v| v.is_empty())
+            && reqwest::Url::parse(&voice.endpoint).is_ok_and(|url| {
+                !matches!(
+                    url.host_str(),
+                    Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+                )
+            })
+        {
+            if !self.voice_key_hint_shown {
+                self.voice_key_hint_shown = true;
+                self.notice = Some(format!(
+                    "Replies aren't spoken yet: add {} under Connections → Keys.",
+                    voice.api_key_env.trim()
+                ));
+            }
+            return;
+        }
         if self.library.voice.enabled && self.library.voice.delivery.is_websocket() {
             self.reply_speech_job = Some(id);
             self.queue_ws();
@@ -2554,6 +2582,8 @@ mod tests {
     fn websocket_reply_filters_tasks_and_stop_prevents_completed_reply_replay() {
         let (mut studio, directory) = studio();
         studio.library.voice.enabled = true;
+        // Hosted speech without any key is skipped quietly; give this session one.
+        studio.voice_key = "session-secret".into();
         studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
         let id = Uuid::new_v4();
         studio.begin_reply_speech(id);
@@ -2942,6 +2972,8 @@ mod tests {
     fn http_reply_failure_stops_reply_and_websocket_default_is_unchanged() {
         let (mut studio, directory) = studio();
         studio.library.voice.enabled = true;
+        // Hosted speech without any key is skipped quietly; give this session one.
+        studio.voice_key = "session-secret".into();
         // Default delivery is the live WebSocket and never uses HTTP chunking.
         studio.begin_reply_speech(Uuid::new_v4());
         assert!(studio.pending_ws.is_some() && studio.pending_http.is_none());

@@ -10,6 +10,8 @@ mod motion_library;
 mod personality_catalog;
 #[path = "settings_kit.rs"]
 mod settings_kit;
+#[path = "settings_pages.rs"]
+mod settings_pages;
 
 use crate::studio::{Studio, Tab, ViewMode};
 use bevy::prelude::*;
@@ -314,13 +316,14 @@ pub fn studio_ui(
         let settings_tab = studio.tab;
         let tab_key = format!("{settings_tab:?}");
         settings_page(&mut viewport_ui, |ui| {
-            if settings_tab == Tab::Memory {
-                settings_kit::column(ui, |ui| settings_header(ui, &mut studio));
-            } else {
-                settings_header(ui, &mut studio);
-            }
-            if matches!(settings_tab, Tab::Characters | Tab::Scene) {
+            if settings_tab == Tab::Scene {
                 crate::avatar_preview::dock(ui, &mut avatar_ui.preview);
+            }
+            if settings_tab == Tab::Characters {
+                settings_header(ui, &mut studio);
+                crate::avatar_preview::dock(ui, &mut avatar_ui.preview);
+            } else {
+                settings_kit::column(ui, |ui| settings_header(ui, &mut studio));
             }
             let mut content = |ui: &mut egui::Ui| match studio.tab {
                 Tab::Characters => {
@@ -332,128 +335,144 @@ pub fn studio_ui(
                         semantic.forget(id);
                     }
                 }
-                Tab::Scene => scene(
-                    ui,
-                    &mut studio,
-                    &mut animation,
-                    &mut desktop,
-                    &mut avatar_ui,
-                ),
-                Tab::SceneChat => {
-                    group(ui, "Decision model", |ui| {
-                        let before = studio.library.decision.clone();
-                        ui.small("Shared by recipient choice, motion suggestions and incoming-message emotions.");
-                        let studio = &mut *studio;
-                        decision_model_picker(
+                Tab::Scene => {
+                    settings_pages::scene(ui, &mut studio, &mut avatar_ui);
+                    settings_pages::advanced(ui, "scene", |ui| {
+                        scene(
                             ui,
-                            "decision_model",
-                            &mut studio.decision_models,
-                            &before,
-                            &mut studio.library.decision.model,
+                            &mut studio,
+                            &mut animation,
+                            &mut desktop,
+                            &mut avatar_ui,
+                        )
+                    });
+                }
+                Tab::SceneChat => {
+                    settings_pages::group_chat(
+                        ui,
+                        &mut studio,
+                        &mut avatar_ui.scene_chat,
+                        &mut avatar_ui.roster,
+                    );
+                    settings_pages::advanced(ui, "group_chat", |ui| {
+                        crate::scene_chat_controls::ui(
+                            ui,
+                            &mut avatar_ui.scene_chat,
+                            &studio.library,
+                            &avatar_ui.roster,
+                            &studio.library.decision,
                         );
-                        egui::CollapsingHeader::new("Connection")
-                            .id_salt("decision_connection")
-                            .show(ui, |ui| {
-                                let config = &mut studio.library.decision;
-                                field(ui, "Evaluation endpoint", &mut config.endpoint, "");
-                                field(
-                                    ui,
-                                    "Key environment variable",
-                                    &mut config.key_env,
-                                    "AI_GATEWAY_API_KEY",
-                                );
-                                caption(ui, "SESSION KEY (NOT SAVED)");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut config.session_key)
-                                        .password(true)
-                                        .desired_width(control_width(ui)),
-                                );
-                            });
+                        ui.separator();
+                        crate::scene_roster_controls::ui(
+                            ui,
+                            &mut avatar_ui.roster,
+                            &studio.library,
+                        );
+                    });
+                }
+                Tab::Connections => {
+                    settings_pages::connections(ui, &mut studio);
+                    settings_pages::advanced(ui, "connections", |ui| {
+                        connections(ui, &mut studio);
+                        anchored_section(ui, "Connections", "Decision model connection", "");
+                        let before = studio.library.decision.clone();
+                        let config = &mut studio.library.decision;
+                        field(ui, "Evaluation endpoint", &mut config.endpoint, "");
+                        field(
+                            ui,
+                            "Key environment variable",
+                            &mut config.key_env,
+                            "AI_GATEWAY_API_KEY",
+                        );
+                        caption(ui, "SESSION KEY (NOT SAVED)");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut config.session_key)
+                                .password(true)
+                                .desired_width(control_width(ui)),
+                        );
                         if before != studio.library.decision {
                             studio.save();
                         }
                     });
-                    crate::scene_chat_controls::ui(
-                        ui,
-                        &mut avatar_ui.scene_chat,
-                        &studio.library,
-                        &avatar_ui.roster,
-                        &studio.library.decision,
-                    );
                 }
-                Tab::Connections => connections(ui, &mut studio),
                 Tab::Voice => {
-                    anchored_section(
+                    let catalogs = &mut *avatar_ui.catalogs;
+                    settings_pages::voice(
                         ui,
-                        &tab_key,
-                        "Speech",
-                        "Give each character a voice, hosted or on your own machine.",
+                        &mut studio,
+                        &mut catalogs.tts,
+                        &mut catalogs.stt,
+                        &mut listening,
                     );
-                    voice_settings(ui, &mut studio, &mut avatar_ui.catalogs.tts);
-                    group(ui, "Live stream status", |ui| {
-                        crate::fish_live_controls::ui(ui, &mut fish);
-                        crate::fish_ws_controls::ui(ui, &mut ws);
-                    });
-                    anchored_section(
-                        ui,
-                        &tab_key,
-                        "Voice library",
-                        "Browse your own and public Fish voices, then assign one to this character.",
-                    );
-                    if studio.library.voice.adapter == VoiceAdapter::FishHosted {
-                        let loaded =
-                            egui::Id::new(("voice_library_loaded", studio.library.selected));
-                        if !ui
-                            .ctx()
-                            .data_mut(|d| d.get_temp::<bool>(loaded).unwrap_or(false))
-                        {
-                            ui.ctx().data_mut(|d| d.insert_temp(loaded, true));
-                            if let Err(error) = avatar_ui
-                                .voice_library
-                                .fetch(&studio.library.voice, Some(&studio.voice_key))
-                            {
-                                avatar_ui.voice_library.status = error;
-                            }
-                        }
-                        if let Some(id) = crate::voice_library_controls::ui(
+                    settings_pages::advanced(ui, "voice", |ui| {
+                        anchored_section(
                             ui,
-                            &mut avatar_ui.voice_library,
-                            &studio.library.voice,
-                            &studio.voice_key,
-                        ) {
-                            studio.library.voice.reference_id = id;
+                            &tab_key,
+                            "Speech",
+                            "Give each character a voice, hosted or on your own machine.",
+                        );
+                        voice_settings(ui, &mut studio, &mut avatar_ui.catalogs.tts);
+                        group(ui, "Live stream status", |ui| {
+                            crate::fish_live_controls::ui(ui, &mut fish);
+                            crate::fish_ws_controls::ui(ui, &mut ws);
+                        });
+                        anchored_section(
+                            ui,
+                            &tab_key,
+                            "Voice library",
+                            "Browse your own and public Fish voices, then assign one to this character.",
+                        );
+                        if studio.library.voice.adapter == VoiceAdapter::FishHosted {
+                            let loaded =
+                                egui::Id::new(("voice_library_loaded", studio.library.selected));
+                            if !ui
+                                .ctx()
+                                .data_mut(|d| d.get_temp::<bool>(loaded).unwrap_or(false))
+                            {
+                                ui.ctx().data_mut(|d| d.insert_temp(loaded, true));
+                                if let Err(error) = avatar_ui
+                                    .voice_library
+                                    .fetch(&studio.library.voice, Some(&studio.voice_key))
+                                {
+                                    avatar_ui.voice_library.status = error;
+                                }
+                            }
+                            if let Some(id) = crate::voice_library_controls::ui(
+                                ui,
+                                &mut avatar_ui.voice_library,
+                                &studio.library.voice,
+                                &studio.voice_key,
+                            ) {
+                                studio.library.voice.reference_id = id;
+                                studio.save();
+                            }
+                        } else {
+                            ui.label(
+                                "Select Fish Audio under Speech to browse and assign a Fish voice.",
+                            );
+                        }
+                        anchored_section(
+                            ui,
+                            &tab_key,
+                            "Voice design",
+                            "Paid Fish preview: generate candidate voices from a description.",
+                        );
+                        crate::voice_design_controls::ui(ui, &mut voice_design);
+                        anchored_section(ui, &tab_key, "Microphone", "Microphone & transcription.");
+                        crate::listen_controls::ui(
+                            ui,
+                            &mut listening,
+                            studio.library.selected,
+                            studio.composer.trim().is_empty(),
+                            &mut avatar_ui.catalogs.stt,
+                        );
+                        if ui.button("Save microphone settings").clicked() {
+                            studio.library.listen = listening.config.clone();
                             studio.save();
                         }
-                    } else {
-                        ui.label(
-                            "Select Fish Audio under Speech to browse and assign a Fish voice.",
-                        );
-                    }
-                    anchored_section(
-                        ui,
-                        &tab_key,
-                        "Voice design",
-                        "Paid Fish preview: generate candidate voices from a description.",
-                    );
-                    crate::voice_design_controls::ui(ui, &mut voice_design);
-                    anchored_section(ui, &tab_key, "Microphone", "Microphone & transcription.");
-                    crate::listen_controls::ui(
-                        ui,
-                        &mut listening,
-                        studio.library.selected,
-                        studio.composer.trim().is_empty(),
-                        &mut avatar_ui.catalogs.stt,
-                    );
-                    if ui.button("Save microphone settings").clicked() {
-                        studio.library.listen = listening.config.clone();
-                        studio.save();
-                    }
-                }
-                Tab::Memory => {
-                    settings_kit::column(ui, |ui| {
-                        memory_page::ui(ui, &mut studio, &mut memory, &mut semantic)
                     });
                 }
+                Tab::Memory => memory_page::ui(ui, &mut studio, &mut memory, &mut semantic),
                 Tab::Tools => {
                     crate::mcp_controls::ui(ui, &mut mcp);
                     if let Some(context) = mcp.take_context() {
@@ -500,7 +519,7 @@ pub fn studio_ui(
                     .id_salt(("settings_scroll", &tab_key))
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, content);
+                    .show(ui, |ui| settings_kit::column(ui, content));
             }
         });
     }
@@ -576,17 +595,14 @@ fn settings_title(tab: Tab) -> (&'static str, &'static str) {
             "Characters",
             "Choose a companion and customize their personality.",
         ),
-        Tab::Scene => (
-            "Scene & avatar",
-            "Motion, appearance, room and desktop companion settings.",
-        ),
+        Tab::Scene => ("Scene & avatar", "How your companion looks and moves."),
         Tab::Connections => (
             "Connections",
-            "Choose your provider, model and routing preferences.",
+            "Models and keys for everything the app talks to.",
         ),
         Tab::Voice => (
             "Voice & microphone",
-            "Speech, voice library, voice design and transcription.",
+            "How your companion sounds, and how you talk to them.",
         ),
         Tab::Memory => ("Memory", "What your companion remembers about you."),
         Tab::Tools => ("Assistant tools", "Connect tools and review their results."),
@@ -594,10 +610,7 @@ fn settings_title(tab: Tab) -> (&'static str, &'static str) {
             "Agent tasks",
             "Configure agents and review supervised work.",
         ),
-        Tab::SceneChat => (
-            "Group chat",
-            "Choose who is in the conversation and who replies.",
-        ),
+        Tab::SceneChat => ("Group chat", "Talk with several companions at once."),
         Tab::Chat => ("Conversation", "Talk with your companion."),
     }
 }
@@ -606,9 +619,6 @@ fn settings_header(ui: &mut egui::Ui, studio: &mut Studio) {
     let (title, description) = settings_title(studio.tab);
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            if studio.tab != Tab::Memory {
-                ui.label(RichText::new("SETTINGS").size(11.0).strong().color(MUTED));
-            }
             ui.label(RichText::new(title).size(30.0).strong());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
@@ -618,11 +628,6 @@ fn settings_header(ui: &mut egui::Ui, studio: &mut Studio) {
         });
     });
     ui.label(RichText::new(description).color(MUTED));
-    let sections = settings_sections(&studio.tab);
-    if !sections.is_empty() {
-        ui.add_space(6.0);
-        jump_bar(ui, &format!("{:?}", studio.tab), sections);
-    }
     if studio.error.is_some() || studio.notice.is_some() {
         ui.add_space(6.0);
         egui::Frame::new()
@@ -654,34 +659,8 @@ fn settings_header(ui: &mut egui::Ui, studio: &mut Studio) {
     ui.add_space(12.0);
 }
 
-/// Section headings shown in a tab, in page order, for the jump bar.
-fn settings_sections(tab: &Tab) -> &'static [&'static str] {
-    match tab {
-        Tab::Scene => &["Motion", "Avatar", "World", "Desktop"],
-        Tab::Voice => &["Speech", "Voice library", "Voice design", "Microphone"],
-        Tab::Connections => &["Models", "API & routing"],
-        _ => &[],
-    }
-}
-
 fn jump_target(tab_key: &str) -> egui::Id {
     egui::Id::new(("settings_jump", tab_key))
-}
-
-/// Page-anchor links: every section stays on one scrolling page, these only scroll to it.
-fn jump_bar(ui: &mut egui::Ui, tab_key: &str, sections: &[&str]) {
-    egui::ComboBox::from_id_salt(("settings_section", tab_key))
-        .selected_text("Jump to section…")
-        .width(280.0_f32.min(ui.available_width()))
-        .show_ui(ui, |ui| {
-            for title in sections {
-                if ui.selectable_label(false, *title).clicked() {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(jump_target(tab_key), (*title).to_owned());
-                    });
-                }
-            }
-        });
 }
 
 /// Large section heading; scrolls into view when its jump link was clicked.
@@ -3669,7 +3648,6 @@ mod composer_tests {
             assert!(viewport.height() > size.y - 150., "{viewport:?}");
             assert!(viewport.right() < screen.right());
         }
-        assert_eq!(settings_sections(&Tab::Scene)[0], "Motion");
     }
 
     #[test]
@@ -3868,7 +3846,10 @@ mod composer_tests {
         let ctx = egui::Context::default();
         style(&ctx);
         let mut auto = motion_decision::ReplyMotion::default();
-        let mut config = waifu_studio::data::ReplyMotionConfig::default();
+        let mut config = waifu_studio::data::ReplyMotionConfig {
+            mode: waifu_studio::data::ReplyMotionMode::Off,
+            ..Default::default()
+        };
         let mut frame = |events, suggester: &mut motion_decision::MotionSuggester| {
             let mut action = None;
             let output = render(&ctx, events, |ui| {
@@ -3944,7 +3925,10 @@ mod composer_tests {
         let entries = vec![entry("Wave"), entry("Idle"), entry("walk")];
         let ctx = egui::Context::default();
         style(&ctx);
-        let mut config = waifu_studio::data::ReplyMotionConfig::default();
+        let mut config = waifu_studio::data::ReplyMotionConfig {
+            mode: waifu_studio::data::ReplyMotionMode::Off,
+            ..Default::default()
+        };
         let frame = |events, config: &mut waifu_studio::data::ReplyMotionConfig| {
             render(&ctx, events, |ui| {
                 emotion_bindings(ui, config, &entries);

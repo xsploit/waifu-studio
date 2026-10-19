@@ -85,6 +85,9 @@ impl SttBackend {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ListenConfig {
+    /// Saves from before backends existed stored an OpenAI-compatible endpoint, so a
+    /// missing field keeps meaning that; brand-new configs use the gateway preset.
+    #[serde(default)]
     pub backend: SttBackend,
     pub language: String,
     pub silero_enabled: bool,
@@ -102,22 +105,25 @@ pub struct ListenConfig {
 }
 impl Default for ListenConfig {
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             backend: SttBackend::default(),
             language: String::new(),
             silero_enabled: false,
             silero_model: String::new(),
             silero_runtime: String::new(),
             silero_threshold: 0.5,
-            enabled: false,
-            endpoint: "https://api.openai.com/v1/audio/transcriptions".into(),
-            model: "whisper-1".into(),
-            api_key_env: "OPENAI_API_KEY".into(),
+            enabled: true,
+            endpoint: String::new(),
+            model: String::new(),
+            api_key_env: String::new(),
             vad_threshold: 0.015,
             trailing_silence_ms: 1200,
             trim_silence: false,
-            auto_send: false,
-        }
+            auto_send: true,
+        };
+        // Same gateway key as chat; OpenAI models are reached through it, not directly.
+        config.preset(SttBackend::VercelGateway);
+        config
     }
 }
 impl ListenConfig {
@@ -822,7 +828,7 @@ mod tests {
         state.tx.send((7, Ok("cancelled".into()))).unwrap();
         assert!(state.poll_transcript().is_none());
         let old: ListenConfig = serde_json::from_str("{}").unwrap();
-        assert!(!old.auto_send);
+        assert!(old.auto_send, "on by default");
     }
 
     #[test]

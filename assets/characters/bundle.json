@@ -18,7 +18,7 @@
       "sha256": "9bcc6aedeb4b19843faa3c753c7d7cc2fc7061bb07ddfea01260fcc501481b98",
       "voice": {
         "reference_id": "ee4867b6908d41e58ee7736ce4874622",
-        "enabled": false
+        "enabled": true
       }
     },
     {

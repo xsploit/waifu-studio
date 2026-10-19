@@ -61,6 +61,10 @@ impl Card<'_> {
             |ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
+                    if hint.is_empty() {
+                        // Line a lone title up with the control's text.
+                        ui.add_space(5.0);
+                    }
                     ui.label(RichText::new(title).size(14.0).color(TITLE));
                     if !hint.is_empty() {
                         ui.label(RichText::new(hint).size(12.0).color(HINT));

@@ -218,7 +218,7 @@ pub struct AffectConfig {
 impl Default for AffectConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             source: AffectSource::ReplyMetadata,
             influence: 0.45,
             half_life_seconds: 45.0,
@@ -581,7 +581,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        library.entries.insert(other, CharacterAffect::default());
+        let mut off = CharacterAffect::default();
+        off.config.enabled = false;
+        library.entries.insert(other, off);
         library
             .apply_reply(id, ReplyAffect::parse(JSON).unwrap())
             .unwrap();
