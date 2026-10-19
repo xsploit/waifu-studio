@@ -135,3 +135,6 @@ For interactive desktop testing, follow the applicable computer-use skill and be
 Preserve proxy routing and fail closed when a required route is missing. Never print credentials, proxy URLs, saved voice IDs or private conversations. Do not alter proxy environment variables to make a test pass. Keep live calls bounded and record cost/request scope; the user previously authorized bounded benchmarking, not unlimited spending or publication of private data. Do not kill unrelated applications or old processes based only on their names.
 
 Requested deliverable: a concise prioritized defect report, commands/results, evidence levels, and an explicit untested list. If no verified defects remain, say so without converting untested flows into accepted ones.
+
+
+Newest review queue (after the historical baseline above): optional automatic reflection (`automatic_reflection.rs` and settings/UI wiring), local WAV/MP3 preview, and structured generated reflection provenance in `facts_memory.rs`. Latest integrated full-suite receipt is562 tests; see newest VALIDATION sections. Specifically challenge accepting a draft after a source correction, stale accepted reflection recall, forgetting derived quotes, candidate-retention failures, and legacy unstructured-citation behavior. No fresh Fable review has passed for these slices.

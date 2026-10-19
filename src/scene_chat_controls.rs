@@ -92,9 +92,9 @@ pub fn ui(
                         } else { ui.weak("Notes disabled or unavailable."); }
                         ui.strong("Evidence ledger");
                         if let Some(trace) = &recall.facts {
-                            ui.small(format!("{} terms · {} bytes · {} unmatched · {} corrected · {} expired · {} over budget · {} over limit",
+                            ui.small(format!("{} terms · {} bytes · {} unmatched · {} corrected · {} expired · {} stale reflections · {} over budget · {} over limit",
                                 trace.query_terms, trace.bytes_inserted, trace.unmatched, trace.superseded,
-                                trace.expired, trace.over_budget, trace.over_limit));
+                                trace.expired, trace.stale_reflections, trace.over_budget, trace.over_limit));
                             for hit in &trace.hits {
                                 ui.label(format!("{} · {:?} · score {} · {} · {:?}",
                                     &hit.record.to_string()[..8], hit.kind, hit.score,

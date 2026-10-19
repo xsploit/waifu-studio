@@ -103,6 +103,9 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             ui.push_id((character_scope, record.id), |ui| {
                 ui.group(|ui| {
                     ui.label(format!("{:?} · {}", record.kind, record.id));
+                    if !state.reflection_is_current(&record) {
+                        ui.weak("Excluded from recall: cited evidence changed, expired or was removed, or this older reflection has unverifiable citations. Review the current evidence and create a new draft.");
+                    }
                     ui.label(format!(
                         "Source: {} · turn: {:?}",
                         record.source, record.turn_id
@@ -262,8 +265,8 @@ fn recall_inspector(ui: &mut egui::Ui, state: &FactsMemoryState) {
                 trace.query_terms, trace.bytes_inserted, trace.over_budget, trace.over_limit
             ));
             ui.weak(format!(
-                "Excluded: {} superseded by corrections · {} expired · {} unmatched",
-                trace.superseded, trace.expired, trace.unmatched
+                "Excluded: {} superseded by corrections · {} expired · {} stale reflections · {} unmatched",
+                trace.superseded, trace.expired, trace.stale_reflections, trace.unmatched
             ));
             if trace.hits.is_empty() {
                 ui.weak("No matching records.");

@@ -39,6 +39,75 @@ const PENDING_FILE: &str = "candidates.jsonl";
 /// user turn, so they have no turn id; every other pending candidate must have one.
 pub const REFLECTION_SOURCE: &str = "reflection draft from accepted records (review required)";
 const REVIEWED_REFLECTION_SOURCE: &str = "reflection draft, reviewed";
+/// Structured generated citations live inside the existing evidence string, keeping
+/// the ledger schema unchanged. The revision is a change detector, not a signature.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReflectionEvidence {
+    version: u8,
+    sources: Vec<(Uuid, u64, String)>,
+}
+fn text_revision(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |h, byte| {
+        (h ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    })
+}
+fn reflection_evidence(cited: &[(Uuid, String)]) -> Result<String, String> {
+    let mut data = ReflectionEvidence {
+        version: 1,
+        sources: cited
+            .iter()
+            .map(|(id, text)| (*id, text_revision(text), text.chars().take(500).collect()))
+            .collect(),
+    };
+    loop {
+        let encoded =
+            serde_json::to_string(&data).map_err(|_| "Cannot quote reflection evidence")?;
+        if encoded.chars().count() <= 1000 {
+            return Ok(encoded);
+        }
+        let longest = data
+            .sources
+            .iter_mut()
+            .max_by_key(|(_, _, quote)| quote.len())
+            .ok_or("Cannot quote reflection evidence")?;
+        if longest.2.pop().is_none() {
+            return Err("Cannot quote reflection evidence".into());
+        }
+    }
+}
+fn current_reflection_evidence(record: &MemoryRecord, records: &[MemoryRecord], at: u64) -> bool {
+    if record.kind != RecordKind::Reflection
+        || !matches!(
+            record.source.as_str(),
+            REFLECTION_SOURCE | REVIEWED_REFLECTION_SOURCE
+        )
+    {
+        return true;
+    }
+    let Ok(evidence) = serde_json::from_str::<ReflectionEvidence>(&record.evidence) else {
+        return false;
+    };
+    if evidence.version != 1
+        || evidence.sources.is_empty()
+        || evidence.sources.len() > reflection::MAX_CITED
+    {
+        return false;
+    }
+    let superseded: HashSet<_> = records.iter().filter_map(|r| r.supersedes).collect();
+    let mut seen = HashSet::new();
+    evidence.sources.iter().all(|(id, revision, _)| {
+        seen.insert(*id)
+            && records.iter().any(|r| {
+                r.id == *id
+                    && r.kind != RecordKind::Reflection
+                    && !superseded.contains(id)
+                    && r.expires_at.is_none_or(|t| t > at)
+                    && text_revision(&r.text) == *revision
+            })
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordKind {
     Fact,
@@ -219,6 +288,9 @@ impl FactsMemoryState {
     pub fn has_character(&self) -> bool {
         self.selected.is_some()
     }
+    pub fn reflection_is_current(&self, record: &MemoryRecord) -> bool {
+        current_reflection_evidence(record, &self.records, now())
+    }
     pub fn records(&self) -> &[MemoryRecord] {
         &self.records
     }
@@ -349,6 +421,12 @@ impl FactsMemoryState {
                 }
                 if let Some(pending) = pending {
                     self.restore_pending(pending);
+                }
+                let before = self.candidates.len();
+                self.candidates
+                    .retain(|c| current_reflection_evidence(c, &self.records, now()));
+                if self.candidates.len() != before {
+                    self.queue_pending();
                 }
             }
             Err(e) => {
@@ -623,6 +701,9 @@ impl FactsMemoryState {
             .find(|r| r.id == id)
             .cloned()
             .ok_or("Candidate no longer exists")?;
+        if !current_reflection_evidence(&r, &self.records, now()) {
+            return Err("Reflection draft is stale: cited evidence changed or is legacy; dismiss and redraft".into());
+        }
         let pending = r.clone();
         r.expires_at = None;
         if r.kind == RecordKind::Reflection {
@@ -681,15 +762,7 @@ impl FactsMemoryState {
         {
             return Err("Duplicate reflection".into());
         }
-        let per = (1000 - cited.len() * 42) / cited.len();
-        let evidence = cited
-            .iter()
-            .map(|(id, t)| {
-                let quoted: String = t.chars().take(per).collect();
-                format!("{id}: {quoted}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let evidence = reflection_evidence(cited)?;
         let created_at = now;
         let id = Uuid::new_v4();
         self.candidates.push(MemoryRecord {
@@ -784,6 +857,28 @@ impl FactsMemoryState {
                 .iter()
                 .find(|r| r.id == current)
                 .and_then(|r| r.supersedes);
+        }
+        let mut derived_removed = HashSet::new();
+        loop {
+            let before = removed.len();
+            for record in &d.records {
+                let derived = matches!(
+                    record.source.as_str(),
+                    REFLECTION_SOURCE | REVIEWED_REFLECTION_SOURCE
+                ) && serde_json::from_str::<ReflectionEvidence>(&record.evidence)
+                    .is_ok_and(|e| e.sources.iter().any(|(id, _, _)| removed.contains(id)));
+                if derived
+                    || record
+                        .supersedes
+                        .is_some_and(|parent| derived_removed.contains(&parent))
+                {
+                    removed.insert(record.id);
+                    derived_removed.insert(record.id);
+                }
+            }
+            if removed.len() == before {
+                break;
+            }
         }
         d.records.retain(|r| !removed.contains(&r.id));
         for r in &mut d.records {
@@ -890,6 +985,8 @@ pub struct FactsRecallTrace {
     pub hits: Vec<FactsRecallHit>,
     /// Replaced by a correction; excluded before matching.
     pub superseded: usize,
+    /// Generated interpretations whose cited source is no longer current.
+    pub stale_reflections: usize,
     /// Past `expires_at`; excluded before matching.
     pub expired: usize,
     /// Current records sharing no query term.
@@ -934,6 +1031,7 @@ fn recall_traced(
         query_terms: words.len(),
         hits: Vec::new(),
         superseded: 0,
+        stale_reflections: 0,
         expired: 0,
         unmatched: 0,
         over_budget: 0,
@@ -945,6 +1043,9 @@ fn recall_traced(
         .filter(|r| {
             if superseded.contains(&r.id) {
                 trace.superseded += 1;
+                false
+            } else if !current_reflection_evidence(r, records, now()) {
+                trace.stale_reflections += 1;
                 false
             } else if r.expires_at.is_none_or(|t| t > now()) {
                 true
@@ -2118,6 +2219,113 @@ mod tests {
         assert_eq!(s.failed_pending_elsewhere(), 0);
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn generated_reflections_follow_corrections_expiry_and_forgetting() {
+        let root = temp_root("reflection-corrections");
+        let id = Uuid::new_v4();
+        let mut state = suggesting(&root, id, true);
+        state
+            .add_record(
+                RecordKind::Fact,
+                "Owns a red bike".into(),
+                "Synthetic statement".into(),
+            )
+            .unwrap();
+        settle(&mut state);
+        let original = state.records[0].clone();
+        let pending = state
+            .add_reflection_candidate(
+                id,
+                state.generation(),
+                "Enjoys cycling",
+                &[(original.id, original.text.clone())],
+            )
+            .unwrap();
+        settle(&mut state);
+        // Check again at acceptance, even without a ledger event in between.
+        state.records[0].text = "Owns a blue bike".into();
+        assert!(
+            state
+                .accept_candidate(pending)
+                .unwrap_err()
+                .contains("stale")
+        );
+        state.records[0].text = original.text.clone();
+        state
+            .correct_record(
+                original.id,
+                "Owns a blue bike".into(),
+                "Explicit correction".into(),
+            )
+            .unwrap();
+        settle(&mut state);
+        assert!(
+            state.candidates.is_empty(),
+            "stale pending drafts are removed after source correction"
+        );
+        let corrected = state
+            .records
+            .iter()
+            .find(|r| r.supersedes == Some(original.id))
+            .unwrap()
+            .clone();
+        let draft = state
+            .add_reflection_candidate(
+                id,
+                state.generation(),
+                "Enjoys cycling",
+                &[(corrected.id, corrected.text.clone())],
+            )
+            .unwrap();
+        state.accept_candidate(draft).unwrap();
+        settle(&mut state);
+        assert!(state.context("cycling").is_some());
+        state.set_expiry(corrected.id, Some(0)).unwrap();
+        settle(&mut state);
+        assert!(state.context("cycling").is_none());
+        assert_eq!(state.latest_trace().unwrap().stale_reflections, 1);
+        state.forget(corrected.id).unwrap();
+        settle(&mut state);
+        assert!(
+            state.records.is_empty(),
+            "forget removes quoted generated reflections too"
+        );
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reflection_citation_encoding_is_bounded_and_legacy_generated_text_is_not_recalled() {
+        let cited: Vec<_> = (0..6)
+            .map(|_| (Uuid::new_v4(), "\n\"\\".repeat(300)))
+            .collect();
+        let encoded = reflection_evidence(&cited).unwrap();
+        assert!(encoded.chars().count() <= 1000);
+        let parsed: ReflectionEvidence = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(parsed.sources.len(), 6);
+        for ((_, hash, _), (_, original)) in parsed.sources.iter().zip(&cited) {
+            assert_eq!(*hash, text_revision(original));
+        }
+        let legacy = MemoryRecord {
+            id: Uuid::new_v4(),
+            kind: RecordKind::Reflection,
+            text: "Enjoys cycling".into(),
+            turn_id: None,
+            source: REVIEWED_REFLECTION_SOURCE.into(),
+            evidence: "legacy free text citations".into(),
+            created_at: now(),
+            expires_at: None,
+            supersedes: None,
+        };
+        assert!(!current_reflection_evidence(&legacy, &[], now()));
+        let mut manual = legacy;
+        manual.source = "explicit inspector entry".into();
+        assert!(
+            current_reflection_evidence(&manual, &[], now()),
+            "manual interpretations retain explicit authoring semantics"
+        );
+    }
+
     #[test]
     fn reflection_candidates_use_their_own_provenance_and_header() {
         let root = temp_root("reflection-pending");

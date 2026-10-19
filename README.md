@@ -75,6 +75,7 @@ Use the included character library or import your own models. Bring your own API
 - Explicit per-character notes, plus an opt-in **evidence ledger** for facts and preferences with corrections and expiry.
 - Optional semantic lookup over your notes through an embeddings endpoint.
 - Optional **automatic reflection drafts** are off by default. In Memory, copy/review the reflection connection, then enable automatic sending for that character. After 3 new accepted records (configurable 1–12), it may request one cited draft with a minimum 30-minute attempt cooldown (configurable 10–1440). It pauses while a reflection awaits review; nothing is promoted to recalled memory without acceptance. Runs only for the selected character while the app is open, with no startup catch-up. Session keys are not saved; pending drafts survive restart only when candidate retention is enabled. No autonomous diary or outreach.
+- Generated reflections keep structured citations. Changed/expired/forgotten sources block acceptance and recall; source corrections remove stale pending drafts. Forgetting removes linked generated reflections too. Older generated reflections without verifiable citations remain inspectable but are excluded from recall; request a fresh draft.
 - Manual MCP (Streamable HTTP) tool calls with review before execution.
 - Reviewed coding-agent tasks for Codex CLI, Claude Code, Pi or a custom executable, run locally or over SSH.
 - A bounded, explicitly started task loop and a multi-agent task board.
