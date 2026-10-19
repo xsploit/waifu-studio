@@ -1,6 +1,9 @@
 //! Reversible, avatar-private material previews. Imported source assets stay
 //! immutable; tuning restores each instance's captured values when switched off.
-use crate::visuals::{MaterialTuning, VisualState};
+use crate::{
+    material_expressions::{MaterialExpressionBinds, MaterialExpressionFrame, MaterialValues},
+    visuals::{MaterialTuning, VisualState},
+};
 use bevy::{asset::UntypedAssetId, prelude::*, render::render_resource::Face};
 use bevy_shader_mtoon::{MtoonMaterial, OutlineMaterial, OutlineSync, VrmOutlineMode};
 use std::{
@@ -43,6 +46,10 @@ pub struct ExcludeShaderPreview;
 struct Variants(Arc<VariantHandles>);
 
 struct VariantHandles {
+    root: Entity,
+    material_binds: Option<MaterialExpressionBinds>,
+    expression_toon_original: MaterialValues,
+    expression_standard_original: MaterialValues,
     toon: Handle<MtoonMaterial>,
     lit: Handle<StandardMaterial>,
     unlit: Handle<StandardMaterial>,
@@ -186,6 +193,7 @@ impl Plugin for ShaderPreviewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShaderSettings>()
             .init_resource::<VariantCache>()
+            .init_resource::<MaterialExpressionFrame>()
             .add_systems(
                 Update,
                 (
@@ -198,8 +206,14 @@ impl Plugin for ShaderPreviewPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_outlines
-                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+                (
+                    apply_material_expressions
+                        .after(crate::expressions::ExpressionSystems)
+                        .before(bevy::app::AnimationSystems),
+                    update_outlines
+                        .after(apply_material_expressions)
+                        .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+                ),
             );
     }
 }
@@ -248,6 +262,7 @@ fn prepare_variants(
             Entity,
             Option<&MeshMaterial3d<MtoonMaterial>>,
             Option<&MeshMaterial3d<StandardMaterial>>,
+            Option<&MaterialExpressionBinds>,
         ),
         (
             With<Mesh3d>,
@@ -262,7 +277,7 @@ fn prepare_variants(
     mut standards: ResMut<Assets<StandardMaterial>>,
     mut cache: ResMut<VariantCache>,
 ) {
-    for (entity, toon, standard) in &query {
+    for (entity, toon, standard, material_binds) in &query {
         let Some(root) = parents
             .iter_ancestors(entity)
             .find(|ancestor| roots.contains(*ancestor))
@@ -300,6 +315,21 @@ fn prepare_variants(
         } else {
             continue;
         };
+        // VRM0's raw vector properties include authored rim values the loader
+        // omits. Seed only the private copies, before capturing any baselines.
+        if let Some(binds) = material_binds {
+            let mut material = toons.get_mut(&toon).unwrap();
+            let mut values = MaterialValues::read_toon(&material);
+            values.seed_authored(binds);
+            values.write_toon(&mut material);
+            let mut material = standards.get_mut(&lit).unwrap();
+            let mut values = MaterialValues::read_standard(&material);
+            values.seed_authored(binds);
+            values.write_standard(&mut material);
+        }
+        let expression_toon_original = MaterialValues::read_toon(toons.get(&toon).unwrap());
+        let expression_standard_original =
+            MaterialValues::read_standard(standards.get(&lit).unwrap());
         let lit_material = standards.get(&lit).unwrap().clone();
         let lit_original = PbrValues::read(&lit_material);
         let mut unlit = lit_material;
@@ -309,6 +339,10 @@ fn prepare_variants(
             continue;
         };
         let handles = Arc::new(VariantHandles {
+            root,
+            material_binds: material_binds.cloned(),
+            expression_toon_original,
+            expression_standard_original,
             toon,
             lit,
             unlit,
@@ -411,13 +445,103 @@ fn apply_material_tuning(
     *applied = Some(tuning);
 }
 
+/// Recompose from captured originals each frame, after facial weights. Tuning
+/// supplies the baseline; authored expression deltas sit above shade/rim/outline
+/// overrides, while map strengths scale both authored emission/matcap and deltas.
+/// This also restores roots absent from the frame without retaining dead roots.
+fn apply_material_expressions(
+    visuals: Option<Res<VisualState>>,
+    frame: Res<MaterialExpressionFrame>,
+    all: Query<&Variants>,
+    mut toons: ResMut<Assets<MtoonMaterial>>,
+    mut standards: ResMut<Assets<StandardMaterial>>,
+) {
+    let tuning = visuals
+        .map(|v| v.settings.material.clone().sanitized())
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    for variants in &all {
+        let handles = &variants.0;
+        let Some(binds) = &handles.material_binds else {
+            continue;
+        };
+        if !seen.insert(Arc::as_ptr(handles)) {
+            continue;
+        }
+        let tuned = ToonValues::target(&tuning, &handles.toon_original);
+        let mut toon = handles.expression_toon_original;
+        toon.shade = tuned.shade;
+        toon.rim = tuned.rim;
+        toon.outline = tuned.outline;
+        toon.matcap = tuned.matcap;
+        toon.emission = tuned.emissive;
+        toon.overlay(
+            &handles.expression_toon_original,
+            binds,
+            frame.0.get(&handles.root),
+            tuning.matcap_strength,
+            tuning.emission_strength,
+        );
+        // UV binds have no representation in vendored MToon.
+        toon.uv = bevy::math::Affine2::IDENTITY;
+        if toons
+            .get(&handles.toon)
+            .is_some_and(|m| MaterialValues::read_toon(m) != toon)
+            && let Some(mut material) = toons.get_mut(&handles.toon)
+        {
+            toon.write_toon(&mut material);
+        }
+        let mut standard = handles.expression_standard_original;
+        // Color and emission have matching semantics in all three appearances.
+        standard.color = toon.color;
+        standard.emission = toon.emission;
+        // Only the StandardMaterial UV field is additional to the common
+        // color/emission overlay already composed on Toon above.
+        let mut uv = handles.expression_standard_original;
+        uv.overlay(
+            &handles.expression_standard_original,
+            binds,
+            frame.0.get(&handles.root),
+            tuning.matcap_strength,
+            tuning.emission_strength,
+        );
+        standard.uv = uv.uv;
+        for handle in [&handles.lit, &handles.unlit] {
+            if standards
+                .get(handle)
+                .is_some_and(|m| MaterialValues::read_standard(m) != standard)
+                && let Some(mut material) = standards.get_mut(handle)
+            {
+                standard.write_standard(&mut material);
+            }
+        }
+    }
+}
+
 fn update_outlines(
     settings: Res<ShaderSettings>,
-    parents: Query<(), With<Variants>>,
-    mut outlines: Query<(&ChildOf, &mut Visibility), With<MeshMaterial3d<OutlineMaterial>>>,
+    parents: Query<&Variants>,
+    toons: Res<Assets<MtoonMaterial>>,
+    mut materials: Option<ResMut<Assets<OutlineMaterial>>>,
+    mut outlines: Query<(&ChildOf, &mut Visibility, &MeshMaterial3d<OutlineMaterial>)>,
 ) {
-    for (parent, mut visibility) in &mut outlines {
-        if parents.contains(parent.parent()) {
+    for (parent, mut visibility, handle) in &mut outlines {
+        if let Ok(variants) = parents.get(parent.parent()) {
+            // Vendored outline synchronization runs in Update. Mirror parameters
+            // here so a PostUpdate expression has no one-frame outline lag.
+            if let (Some(materials), Some(toon)) = (materials.as_mut(), toons.get(&variants.0.toon))
+                && let Some(mut outline) = materials.get_mut(&handle.0)
+            {
+                if outline.color != toon.outline_color {
+                    outline.color = toon.outline_color;
+                }
+                if outline.width != toon.outline_width {
+                    outline.width = toon.outline_width;
+                }
+                if outline.mode != toon.outline_mode {
+                    outline.mode = toon.outline_mode;
+                }
+            }
             let desired = if settings.outlines && settings.mode == ShaderMode::Toon {
                 Visibility::Inherited
             } else {
@@ -433,6 +557,170 @@ fn update_outlines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vrm0_authored_rim_is_seeded_and_restored_without_touching_imported_assets() {
+        use crate::material_expressions::{
+            MaterialBind, MaterialProperty, ResolvedMaterialWeights,
+        };
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .add_plugins(ShaderPreviewPlugin);
+        let original = MtoonMaterial::default();
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .add(original.clone());
+        let root = app.world_mut().spawn(ShaderPreview).id();
+        let binds = MaterialExpressionBinds {
+            binds: vec![MaterialBind {
+                expression: 0,
+                property: MaterialProperty::Rim,
+                target: [0.9, 0.4, 0.1, 1.],
+                authored: Some([0.1, 0.2, 0.3, 1.]),
+                rgba: true,
+            }],
+            ..default()
+        };
+        let mesh = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(source.clone()),
+                binds,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<MaterialExpressionFrame>()
+            .0
+            .insert(
+                root,
+                ResolvedMaterialWeights {
+                    manual: vec![0.5],
+                    ..default()
+                },
+            );
+        app.update();
+        let handle = app.world().get::<Variants>(mesh).unwrap().0.toon.clone();
+        let read = |app: &App| {
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&handle)
+                .unwrap()
+                .parametric_rim_color
+                .to_linear()
+        };
+        assert!((read(&app).red - 0.5).abs() < 1e-6);
+        app.world_mut()
+            .resource_mut::<MaterialExpressionFrame>()
+            .0
+            .clear();
+        app.update();
+        assert_eq!(read(&app), LinearRgba::new(0.1, 0.2, 0.3, 1.));
+        assert_eq!(
+            app.world().resource::<Assets<MtoonMaterial>>().get(&source),
+            Some(&original)
+        );
+    }
+    #[test]
+    fn standard_import_expression_variants_restore_authored_uv_and_remain_private() {
+        use crate::material_expressions::{
+            MaterialBind, MaterialProperty, ResolvedMaterialWeights,
+        };
+        use bevy::math::Affine2;
+        let mut app = App::new();
+        app.insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .add_plugins(ShaderPreviewPlugin);
+        let original = StandardMaterial {
+            base_color: Color::linear_rgb(0.2, 0.4, 0.6),
+            emissive: LinearRgba::rgb(0.1, 0.2, 0.3),
+            uv_transform: Affine2::from_scale_angle_translation(
+                Vec2::new(2., 3.),
+                0.,
+                Vec2::new(0.1, 0.2),
+            ),
+            ..default()
+        };
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(original.clone());
+        let root = app.world_mut().spawn(ShaderPreview).id();
+        let binds = MaterialExpressionBinds {
+            binds: vec![
+                MaterialBind {
+                    expression: 0,
+                    property: MaterialProperty::Color,
+                    target: [1., 0., 0., 1.],
+                    authored: None,
+                    rgba: true,
+                },
+                MaterialBind {
+                    expression: 0,
+                    property: MaterialProperty::Uv,
+                    target: [4., 5., 0.3, 0.4],
+                    authored: None,
+                    rgba: true,
+                },
+            ],
+            ..default()
+        };
+        let mesh = app
+            .world_mut()
+            .spawn((
+                ChildOf(root),
+                Mesh3d(Handle::default()),
+                MeshMaterial3d(source.clone()),
+                binds,
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<MaterialExpressionFrame>()
+            .0
+            .insert(
+                root,
+                ResolvedMaterialWeights {
+                    manual: vec![0.5],
+                    ..default()
+                },
+            );
+        app.update();
+        let handles = app.world().get::<Variants>(mesh).unwrap().0.clone();
+        for handle in [&handles.lit, &handles.unlit] {
+            let m = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap();
+            assert!((m.base_color.to_linear().red - 0.6).abs() < 1e-6);
+            assert_eq!(m.uv_transform.matrix2.x_axis.x, 3.);
+            assert_eq!(m.uv_transform.matrix2.y_axis.y, 4.);
+            assert!((m.uv_transform.translation.x - 0.2).abs() < 1e-6);
+        }
+        app.world_mut()
+            .resource_mut::<MaterialExpressionFrame>()
+            .0
+            .clear();
+        app.update();
+        for handle in [&handles.lit, &handles.unlit] {
+            let m = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap();
+            assert_eq!(m.base_color, original.base_color);
+            assert_eq!(m.uv_transform, original.uv_transform);
+        }
+        let source_now = app
+            .world()
+            .resource::<Assets<StandardMaterial>>()
+            .get(&source)
+            .unwrap();
+        assert_eq!(source_now.base_color, original.base_color);
+        assert_eq!(source_now.uv_transform, original.uv_transform);
+    }
     #[test]
     fn avatar_variants_are_private_and_new_instances_do_not_compound_tuning() {
         let mut app = App::new();

@@ -1,7 +1,12 @@
-//! Morph expressions are decoded by a glTF loader hook, never on the frame thread.
+//! Morph and material expressions are decoded by a glTF loader hook, never on the frame thread.
 //! VRM 0 binds mesh indices; VRM 1 binds node indices. The hook resolves this
 //! distinction before the scene is instantiated and caches each visible avatar.
-use crate::loading::AvatarLoadState;
+use crate::{
+    loading::AvatarLoadState,
+    material_expressions::{
+        MaterialExpressionBinds, MaterialExpressionFrame, ParsedMaterials, ResolvedMaterialWeights,
+    },
+};
 use bevy::{
     asset::LoadContext,
     gltf::{
@@ -159,6 +164,7 @@ struct ExpressionNode {
 #[reflect(Component, Clone)]
 struct ExpressionCatalog {
     expressions: Vec<ExpressionMeta>,
+    material_issues: Vec<String>,
 }
 #[derive(Clone)]
 struct ParsedBind {
@@ -169,6 +175,7 @@ struct ParsedBind {
 struct ExpressionHandler {
     expressions: Vec<ExpressionMeta>,
     binds: Vec<ParsedBind>,
+    materials: ParsedMaterials,
 }
 
 fn canonical_preset(name: &str) -> &str {
@@ -295,7 +302,21 @@ impl ExpressionHandler {
                 }
             }
         }
-        if self.binds.len() > first {
+        self.materials
+            .parse_expression(gltf, expression, value, vrm0, MAX_BINDS);
+        let material_requested = [
+            "materialValues",
+            "materialColorBinds",
+            "textureTransformBinds",
+        ]
+        .iter()
+        .any(|key| {
+            value
+                .get(*key)
+                .and_then(Value::as_array)
+                .is_some_and(|v| !v.is_empty())
+        });
+        if self.binds.len() > first || material_requested {
             self.expressions.push(ExpressionMeta {
                 name: name.to_owned(),
                 binary: value
@@ -332,6 +353,19 @@ impl GltfExtensionHandler for ExpressionHandler {
             entity.insert(ExpressionNode { binds });
         }
     }
+    fn on_spawn_mesh_and_material(
+        &mut self,
+        _: &mut LoadContext<'_>,
+        _: &gltf::Primitive,
+        _: &gltf::Mesh,
+        material: &gltf::Material,
+        entity: &mut EntityWorldMut,
+        _: &str,
+    ) {
+        if let Some(binds) = material.index().and_then(|i| self.materials.binds.get(&i)) {
+            entity.insert(binds.clone());
+        }
+    }
     fn on_scene_completed(
         &mut self,
         _: &mut LoadContext<'_>,
@@ -343,6 +377,7 @@ impl GltfExtensionHandler for ExpressionHandler {
         // scenes, so they do not trigger repeated searches for VRM metadata.
         world.entity_mut(root).insert(ExpressionCatalog {
             expressions: self.expressions.clone(),
+            material_issues: self.materials.issues.iter().cloned().collect(),
         });
     }
 }
@@ -358,8 +393,10 @@ impl Plugin for ExpressionsPlugin {
             .init_resource::<AudioEnvelope>()
             .init_resource::<FacialRuntime>()
             .init_resource::<SpeechTarget>()
+            .init_resource::<MaterialExpressionFrame>()
             .register_type::<ExpressionNode>()
             .register_type::<ExpressionCatalog>()
+            .register_type::<MaterialExpressionBinds>()
             .configure_sets(
                 PostUpdate,
                 ExpressionSystems.before(bevy::app::AnimationSystems),
@@ -579,6 +616,43 @@ fn compose(weights: &mut [f32], node: &CachedNode, expression_weights: &[f32]) {
         }
     }
 }
+fn behavior_protected(expression: &ExpressionMeta, config: &FacialConfig) -> bool {
+    crate::behavior::reserved_expression(&expression.name)
+        || expression.name == config.mouth_expression
+        || expression.name == config.selected_expression
+        || config
+            .weights
+            .get(&expression.name)
+            .is_some_and(|weight| unit(*weight) > 0.0)
+        || expression.blink_override != 0
+        || expression.mouth_override != 0
+        || expression.look_override != 0
+}
+fn material_weights(
+    expressions: &[ExpressionMeta],
+    config: &FacialConfig,
+    manual: &[f32],
+    automatic: &BTreeMap<String, f32>,
+) -> ResolvedMaterialWeights {
+    ResolvedMaterialWeights {
+        manual: manual.to_vec(),
+        automatic: expressions
+            .iter()
+            .map(|e| {
+                let value = unit(automatic.get(&e.name).copied().unwrap_or(0.0));
+                if e.binary {
+                    if value >= 0.5 { 1.0 } else { 0.0 }
+                } else {
+                    value
+                }
+            })
+            .collect(),
+        protected: expressions
+            .iter()
+            .map(|e| behavior_protected(e, config))
+            .collect(),
+    }
+}
 /// Behavior is an additional contribution only on channels whose morph indices
 /// do not belong to blink, mouth, look, overrides, or a manual expression.
 fn compose_behavior(
@@ -591,18 +665,7 @@ fn compose_behavior(
     if automatic.is_empty() {
         return;
     }
-    let protected = |expression: &ExpressionMeta| {
-        crate::behavior::reserved_expression(&expression.name)
-            || expression.name == config.mouth_expression
-            || expression.name == config.selected_expression
-            || config
-                .weights
-                .get(&expression.name)
-                .is_some_and(|weight| unit(*weight) > 0.0)
-            || expression.blink_override != 0
-            || expression.mouth_override != 0
-            || expression.look_override != 0
-    };
+    let protected = |expression: &ExpressionMeta| behavior_protected(expression, config);
     let protected_indices: std::collections::BTreeSet<usize> = node
         .binds
         .iter()
@@ -718,7 +781,11 @@ fn update_expressions(
     members: Query<(Entity, &SceneMemberFacial)>,
     speech: Option<Res<SpeechTarget>>,
     mut extras: Local<BTreeMap<Entity, FacialRuntime>>,
+    mut material_frame: Option<ResMut<MaterialExpressionFrame>>,
 ) {
+    if let Some(frame) = material_frame.as_mut() {
+        frame.0.clear();
+    }
     // Restore departing occupants before any newly focused root captures its baseline.
     extras.retain(|root, cache| {
         let retain = Some(*root) != avatar.active && members.get(*root).is_ok();
@@ -765,7 +832,7 @@ fn update_expressions(
             envelope.silence();
         }
         state.available.clear();
-        state.status = "No morph expressions in this model".into();
+        state.status = "No VRM expressions in this model".into();
     }
     // The loader promotes active only after WorldInstanceReady. Also tolerate
     // a caller setting active before its scene arrives: retry a bounded number
@@ -782,7 +849,14 @@ fn update_expressions(
             runtime.bindings_ready = true;
             runtime.expressions = catalog.expressions.clone();
             state.available = runtime.expressions.iter().map(|e| e.name.clone()).collect();
-            state.status = format!("{} morph expressions", state.available.len());
+            state.status = format!(
+                "{} VRM expression definitions (morph/material)",
+                state.available.len()
+            );
+            if !catalog.material_issues.is_empty() {
+                state.status.push_str(". Limitations: ");
+                state.status.push_str(&catalog.material_issues.join("; "));
+            }
             for (entity, node) in &nodes {
                 if !under_root(entity, root, &parents) {
                     continue;
@@ -852,6 +926,12 @@ fn update_expressions(
             )
         })
         .unwrap_or_default();
+    if let (Some(frame), Some(root)) = (material_frame.as_mut(), avatar.active) {
+        frame.0.insert(
+            root,
+            material_weights(&runtime.expressions, &state.config, &values, &automatic),
+        );
+    }
     for node in &runtime.nodes {
         if let Ok(mut morph) = morphs.get_mut(node.entity) {
             compose(morph.weights_mut(), node, &values);
@@ -919,6 +999,17 @@ fn update_expressions(
                 .and_then(|state| state.weights())
                 .map(|weights| weights.map(|value| unit(value * gain))),
         );
+        if let Some(frame) = material_frame.as_mut() {
+            frame.0.insert(
+                root,
+                material_weights(
+                    &cache.expressions,
+                    &member.config,
+                    &values,
+                    &BTreeMap::new(),
+                ),
+            );
+        }
         for node in &cache.nodes {
             if let Ok(mut morph) = morphs.get_mut(node.entity) {
                 compose(morph.weights_mut(), node, &values);
@@ -938,6 +1029,430 @@ fn update_expressions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn material_fixture(expressions: Value, vrm0: bool) -> gltf::Gltf {
+        let extension = if vrm0 {
+            serde_json::json!({"VRM": {"blendShapeMaster": {"blendShapeGroups": expressions},
+                "materialProperties": [{"name":"face", "vectorProperties": {"_Color":[0.5,0.5,0.5,1.0], "_RimColor":[0.1,0.2,0.3,1.0]}}]}})
+        } else {
+            serde_json::json!({"VRMC_vrm": {"expressions": {"custom": expressions}}})
+        };
+        let json = serde_json::json!({"asset":{"version":"2.0"}, "extensions":extension,
+            "materials":[{"name":"face", "pbrMetallicRoughness":{"baseColorTexture":{"index":0,
+                "extensions":{"KHR_texture_transform":{"scale":[2.0,3.0],"offset":[0.1,0.2]}}}}}],
+            "textures":[{"source":0}], "images":[{"uri":"offline-fixture.png"}]});
+        gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(&json).unwrap()).unwrap()
+    }
+    fn all_material_binds() -> Value {
+        serde_json::json!({"tint": {
+            "materialColorBinds": [
+                {"material":0,"type":"color","targetValue":[0.9,0.3,0.1,0.4]},
+                {"material":0,"type":"emissionColor","targetValue":[0.9,0.3,0.1,1.0]},
+                {"material":0,"type":"shadeColor","targetValue":[0.9,0.3,0.1,1.0]},
+                {"material":0,"type":"matcapColor","targetValue":[0.9,0.3,0.1,1.0]},
+                {"material":0,"type":"rimColor","targetValue":[0.9,0.3,0.1,1.0]},
+                {"material":0,"type":"outlineColor","targetValue":[0.9,0.3,0.1,1.0]}],
+            "textureTransformBinds":[{"material":0,"scale":[4.0,5.0],"offset":[0.3,0.4]}]},
+            "other": {"materialColorBinds":[{"material":0,"type":"color","targetValue":[0.1,0.9,0.7,0.8]}]}})
+    }
+    #[test]
+    fn parser_retains_material_only_expressions_and_reports_unsupported_properties() {
+        let parsed = ExpressionHandler::parse(&material_fixture(all_material_binds(), false));
+        assert_eq!(parsed.expressions.len(), 2);
+        assert!(parsed.binds.is_empty());
+        assert_eq!(parsed.materials.count(), 8);
+        assert_eq!(
+            parsed.materials.binds.keys().copied().collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(
+            parsed.materials.binds[&0].authored_uv,
+            Some([2., 3., 0.1, 0.2])
+        );
+        assert!(
+            parsed
+                .materials
+                .issues
+                .iter()
+                .any(|s| s.contains("Toon has no UV"))
+        );
+        let zero = ExpressionHandler::parse(&material_fixture(
+            serde_json::json!([
+                {"presetName":"joy","materialValues":[
+                    {"materialName":"face","propertyName":"_Color","targetValue":[1.0,0.0,0.0,1.0]},
+                    {"materialName":"face","propertyName":"_RimColor","targetValue":[1.0,0.0,0.0,1.0]},
+                    {"materialName":"face","propertyName":"_MainTex_ST","targetValue":[1.0,1.0,0.0,0.0]},
+                    {"materialName":"face","propertyName":"_Metallic","targetValue":[0.5]}]}
+            ]),
+            true,
+        ));
+        assert_eq!(zero.expressions[0].name, "happy");
+        assert_eq!(zero.materials.count(), 2);
+        assert_eq!(
+            zero.materials.binds[&0].binds[1].authored,
+            Some([0.1, 0.2, 0.3, 1.])
+        );
+        assert!(
+            zero.materials
+                .issues
+                .iter()
+                .any(|s| s.contains("_MainTex_ST"))
+        );
+        assert!(
+            zero.materials
+                .issues
+                .iter()
+                .any(|s| s.contains("_Metallic"))
+        );
+    }
+    #[test]
+    fn malformed_ambiguous_and_unsupported_material_binds_have_explicit_status() {
+        let mut json = serde_json::json!({"asset":{"version":"2.0"},
+        "materials":[{"name":"duplicate"},{"name":"duplicate"}],
+        "extensions":{"VRM":{"blendShapeMaster":{"blendShapeGroups":[{"name":"ambiguous","materialValues":[
+            {"materialName":"duplicate","propertyName":"_Color","targetValue":[1.,0.,0.,1.]}
+        ]}]}}}});
+        let parse = |json: &Value| {
+            ExpressionHandler::parse(
+                &gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(json).unwrap())
+                    .unwrap(),
+            )
+        };
+        let ambiguous = parse(&json);
+        assert_eq!(ambiguous.materials.count(), 0);
+        assert_eq!(ambiguous.expressions.len(), 1);
+        assert!(
+            ambiguous
+                .materials
+                .issues
+                .iter()
+                .any(|s| s.contains("ambiguous"))
+        );
+        json["extensions"] = serde_json::json!({"VRMC_vrm":{"expressions":{"custom":{"invalid":{
+            "materialColorBinds":[
+                {"material":99,"type":"color","targetValue":[1.,0.,0.,1.]},
+                {"material":0,"type":"color","targetValue":[1.,0.,0.]},
+                {"material":0,"type":"futureType","targetValue":[1.,0.,0.,1.]}],
+            "textureTransformBinds":[{"material":0,"scale":[1.]}]
+        }}}}});
+        let malformed = parse(&json);
+        assert_eq!(malformed.materials.count(), 0);
+        assert_eq!(malformed.materials.issues.len(), 4);
+        assert!(
+            malformed
+                .materials
+                .issues
+                .iter()
+                .any(|s| s.contains("futureType"))
+        );
+        json["materials"][0]["pbrMetallicRoughness"] = serde_json::json!({"baseColorTexture":{"index":0,
+            "extensions":{"KHR_texture_transform":{"rotation":0.5}}}});
+        json["textures"] = serde_json::json!([{"source":0}]);
+        json["images"] = serde_json::json!([{"uri":"fixture.png"}]);
+        json["extensions"] = serde_json::json!({"VRMC_vrm":{"expressions":{"custom":{"uv":{
+            "textureTransformBinds":[{"material":0,"scale":[2.,3.]}]
+        }}}}});
+        let rotated = parse(&json);
+        assert_eq!(rotated.materials.count(), 0);
+        assert!(
+            rotated
+                .materials
+                .issues
+                .iter()
+                .any(|s| s.contains("unrotated"))
+        );
+        json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"] =
+            serde_json::json!({"texCoord":1});
+        let uv1 = parse(&json);
+        assert_eq!(uv1.materials.count(), 0);
+        assert!(uv1.materials.issues.iter().any(|s| s.contains("UV0")));
+    }
+    #[test]
+    fn vrm1_emission_targets_preserve_authored_emission_strength() {
+        let json = serde_json::json!({"asset":{"version":"2.0"},
+        "materials":[{"extensions":{"KHR_materials_emissive_strength":{"emissiveStrength":3.0}}}],
+        "extensions":{"VRMC_vrm":{"expressions":{"preset":{"happy":{"materialColorBinds":[
+            {"material":0,"type":"emissionColor","targetValue":[0.2,0.4,0.6,1.]}
+        ]}}}}}});
+        let parsed = ExpressionHandler::parse(
+            &gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(&json).unwrap())
+                .unwrap(),
+        );
+        let target = parsed.materials.binds[&0].binds[0].target;
+        for (actual, expected) in target.into_iter().zip([0.6, 1.2, 1.8, 1.]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+    #[test]
+    fn material_only_binary_and_override_channels_use_the_shared_weight_rules() {
+        let parsed = ExpressionHandler::parse(&material_fixture(
+            serde_json::json!({
+                "happy":{"isBinary":true,"overrideBlink":"block","overrideMouth":"blend","overrideLookAt":"block",
+                    "materialColorBinds":[{"material":0,"type":"color","targetValue":[1.,0.,0.,1.]}]},
+                "blink":{"materialColorBinds":[{"material":0,"type":"color","targetValue":[1.,1.,1.,1.]}]},
+                "aa":{"materialColorBinds":[{"material":0,"type":"emissionColor","targetValue":[1.,1.,1.,1.]}]},
+                "lookUp":{"materialColorBinds":[{"material":0,"type":"rimColor","targetValue":[1.,1.,1.,1.]}]}
+            }),
+            false,
+        ));
+        let config = FacialConfig {
+            selected_expression: "happy".into(),
+            expression_weight: 0.6,
+            weights: BTreeMap::from([("lookUp".into(), 1.)]),
+            ..default()
+        };
+        let values = expression_weights(&parsed.expressions, &config, 1., 0.8, None);
+        for (meta, value) in parsed.expressions.iter().zip(values) {
+            assert_eq!(
+                value,
+                if meta.name == "happy" { 1. } else { 0. },
+                "{}",
+                meta.name
+            );
+        }
+    }
+    #[test]
+    fn material_only_expressions_reach_private_variants_scene_members_and_restore() {
+        use crate::shaders::{ShaderMode, ShaderPreview, ShaderPreviewPlugin, ShaderSettings};
+        use bevy_shader_mtoon::MtoonMaterial;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Assets::<MtoonMaterial>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .insert_resource(Assets::<bevy_shader_mtoon::OutlineMaterial>::default())
+            .init_resource::<AvatarLoadState>()
+            .init_resource::<crate::visuals::VisualState>()
+            .add_plugins((ExpressionsPlugin, ShaderPreviewPlugin));
+        let original = MtoonMaterial {
+            base_color: Color::linear_rgba(0.5, 0.5, 0.5, 1.),
+            emissive_factor: Color::linear_rgb(0.1, 0.2, 0.3),
+            shade_factor: Color::linear_rgb(0.2, 0.3, 0.4),
+            matcap_factor: Vec3::new(0.2, 0.3, 0.4),
+            parametric_rim_color: Color::linear_rgb(0.3, 0.4, 0.5),
+            outline_color: Color::linear_rgb(0.1, 0.2, 0.3),
+            ..default()
+        };
+        let source = app
+            .world_mut()
+            .resource_mut::<Assets<MtoonMaterial>>()
+            .add(original.clone());
+        let parsed = ExpressionHandler::parse(&material_fixture(all_material_binds(), false));
+        let mut occupants = Vec::new();
+        for character in [1, 2] {
+            let root = app
+                .world_mut()
+                .spawn((
+                    ShaderPreview,
+                    SceneMemberFacial {
+                        character: Uuid::from_u128(character),
+                        config: FacialConfig {
+                            weights: BTreeMap::from([("tint".into(), 0.25)]),
+                            auto_blink: false,
+                            ..default()
+                        },
+                    },
+                    ExpressionCatalog {
+                        expressions: parsed.expressions.clone(),
+                        material_issues: parsed.materials.issues.iter().cloned().collect(),
+                    },
+                ))
+                .id();
+            let mesh = app
+                .world_mut()
+                .spawn((
+                    ChildOf(root),
+                    Mesh3d(Handle::default()),
+                    MeshMaterial3d(source.clone()),
+                    parsed.materials.binds[&0].clone(),
+                ))
+                .id();
+            occupants.push((root, mesh));
+        }
+        let (first, mesh) = occupants[0];
+        let (second, other_mesh) = occupants[1];
+        let outline_handle = app
+            .world_mut()
+            .resource_mut::<Assets<bevy_shader_mtoon::OutlineMaterial>>()
+            .add(bevy_shader_mtoon::OutlineMaterial {
+                color: original.outline_color,
+                width: original.outline_width,
+                mode: original.outline_mode,
+            });
+        let outline = app
+            .world_mut()
+            .spawn((
+                ChildOf(mesh),
+                MeshMaterial3d(outline_handle.clone()),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(first);
+        app.world_mut().resource_mut::<FacialState>().config = FacialConfig {
+            weights: BTreeMap::from([("tint".into(), 0.5), ("other".into(), 0.25)]),
+            auto_blink: false,
+            ..default()
+        };
+        let color = |app: &App, mesh| {
+            if let Some(handle) = app.world().get::<MeshMaterial3d<MtoonMaterial>>(mesh) {
+                app.world()
+                    .resource::<Assets<MtoonMaterial>>()
+                    .get(&handle.0)
+                    .unwrap()
+                    .base_color
+            } else {
+                let handle = app
+                    .world()
+                    .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                    .unwrap();
+                app.world()
+                    .resource::<Assets<StandardMaterial>>()
+                    .get(&handle.0)
+                    .unwrap()
+                    .base_color
+            }
+            .to_linear()
+            .to_f32_array()
+        };
+        let close = |actual: [f32; 4], expected: [f32; 4]| {
+            for (a, e) in actual.into_iter().zip(expected) {
+                assert!((a - e).abs() < 1e-5, "{actual:?} != {expected:?}");
+            }
+        };
+        for _ in 0..3 {
+            app.update();
+            close(color(&app, mesh), [0.6, 0.5, 0.35, 0.65]);
+        }
+        close(color(&app, other_mesh), [0.6, 0.45, 0.4, 0.85]);
+        let outline_color = app
+            .world()
+            .resource::<Assets<bevy_shader_mtoon::OutlineMaterial>>()
+            .get(&outline_handle)
+            .unwrap()
+            .color
+            .to_linear();
+        assert!((outline_color.red - 0.5).abs() < 1e-5);
+        assert_eq!(outline_color.alpha, 1.);
+        assert!(
+            app.world()
+                .resource::<FacialState>()
+                .status
+                .contains("Toon has no UV")
+        );
+        let first_handle = app
+            .world()
+            .get::<MeshMaterial3d<MtoonMaterial>>(mesh)
+            .unwrap()
+            .0
+            .clone();
+        let other_handle = app
+            .world()
+            .get::<MeshMaterial3d<MtoonMaterial>>(other_mesh)
+            .unwrap()
+            .0
+            .clone();
+        assert_ne!(first_handle, other_handle);
+        {
+            let mut visuals = app
+                .world_mut()
+                .resource_mut::<crate::visuals::VisualState>();
+            visuals.settings.material.matcap_strength = 2.;
+            visuals.settings.material.emission_strength = 3.;
+            visuals.settings.material.mtoon = true;
+        }
+        app.update();
+        let toon = app
+            .world()
+            .resource::<Assets<MtoonMaterial>>()
+            .get(&first_handle)
+            .unwrap();
+        assert!((toon.emissive_factor.to_linear().red - 1.5).abs() < 1e-5);
+        assert!((toon.matcap_factor.x - 1.1).abs() < 1e-5);
+        // Tuning's shade baseline changes without swallowing the authored delta.
+        let baseline = Color::srgb_from_array(
+            app.world()
+                .resource::<crate::visuals::VisualState>()
+                .settings
+                .material
+                .shade_color,
+        )
+        .to_linear()
+        .red;
+        assert!((toon.shade_factor.to_linear().red - (baseline + 0.35)).abs() < 1e-5);
+        for mode in [ShaderMode::Lit, ShaderMode::Unlit] {
+            app.world_mut().resource_mut::<ShaderSettings>().mode = mode;
+            app.update();
+            close(color(&app, mesh), [0.6, 0.5, 0.35, 0.65]);
+            let handle = &app
+                .world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .unwrap()
+                .0;
+            let standard = app
+                .world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap();
+            assert!((standard.emissive.red - 1.5).abs() < 1e-5);
+            assert_eq!(standard.uv_transform.matrix2.x_axis.x, 3.);
+            assert_eq!(
+                app.world().get::<Visibility>(outline),
+                Some(&Visibility::Hidden)
+            );
+            assert!((standard.uv_transform.translation.x - 0.2).abs() < 1e-5);
+        }
+        app.world_mut()
+            .resource_mut::<FacialState>()
+            .config
+            .weights
+            .clear();
+        app.world_mut()
+            .resource_mut::<crate::visuals::VisualState>()
+            .settings
+            .material = default();
+        app.world_mut().resource_mut::<ShaderSettings>().mode = ShaderMode::Toon;
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&first_handle),
+            Some(&original)
+        );
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(second);
+        app.update();
+        close(color(&app, mesh), [0.6, 0.45, 0.4, 0.85]);
+        assert_eq!(
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&other_handle),
+            Some(&original)
+        );
+        app.world_mut()
+            .entity_mut(first)
+            .remove::<SceneMemberFacial>();
+        app.world_mut()
+            .entity_mut(second)
+            .remove::<SceneMemberFacial>();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = None;
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Assets<MtoonMaterial>>()
+                .get(&first_handle),
+            Some(&original)
+        );
+        assert_eq!(
+            app.world().resource::<Assets<MtoonMaterial>>().get(&source),
+            Some(&original)
+        );
+        app.world_mut().despawn(first);
+        app.world_mut().despawn(second);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<MaterialExpressionFrame>()
+                .0
+                .is_empty()
+        );
+    }
     #[test]
     fn ww4_blink_has_fast_cosine_close_hold_and_slower_open() {
         let close = BLINK_CLOSE_SECONDS;
@@ -1039,6 +1554,7 @@ mod tests {
             .spawn((
                 SceneMemberFacial { character, config },
                 ExpressionCatalog {
+                    material_issues: vec![],
                     expressions: vec![
                         ExpressionMeta {
                             name: "aa".into(),
@@ -1446,6 +1962,7 @@ mod tests {
                     config: FacialConfig::default(),
                 },
                 ExpressionCatalog {
+                    material_issues: vec![],
                     expressions: vec![
                         ExpressionMeta {
                             name: "aa".into(),
@@ -1737,6 +2254,7 @@ mod tests {
         app.update();
         assert!(!app.world().resource::<FacialRuntime>().bindings_ready);
         app.world_mut().entity_mut(root).insert(ExpressionCatalog {
+            material_issues: vec![],
             expressions: vec![ExpressionMeta {
                 name: "happy".into(),
                 ..default()
@@ -1798,6 +2316,7 @@ mod tests {
         app.world_mut().spawn((
             ChildOf(root),
             ExpressionCatalog {
+                material_issues: vec![],
                 expressions: vec![ExpressionMeta {
                     name: "happy".into(),
                     ..default()

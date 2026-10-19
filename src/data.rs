@@ -102,6 +102,7 @@ impl Default for ReplyMotionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSettings {
+    pub routine: crate::routines::RoutineConfig,
     pub reply_motion: ReplyMotionConfig,
     pub gaze: crate::gaze::GazeConfig,
     pub affect: crate::reply_affect::AffectConfig,
@@ -122,6 +123,7 @@ pub struct SceneSettings {
 impl Default for SceneSettings {
     fn default() -> Self {
         Self {
+            routine: Default::default(),
             reply_motion: Default::default(),
             gaze: Default::default(),
             affect: Default::default(),
@@ -537,6 +539,16 @@ mod tests {
         library.characters = vec![first, second];
         assert!(library.select_character(first_id));
         library.scene.shader = 1;
+        library.scene.routine.enabled = true;
+        library
+            .scene
+            .routine
+            .anchors
+            .push(crate::routines::RoutineAnchor {
+                day: 2,
+                minute: 600,
+                activity: "Drawing".into(),
+            });
         library.scene.facial.mouth_gain = 3.5;
         library.scene.visemes.enabled = true;
         library.scene.visemes.profile_path = Some("calibration-a.json".into());
@@ -550,6 +562,7 @@ mod tests {
         library.provider = 2;
         assert!(library.select_character(second_id));
         library.scene.shader = 2;
+        library.scene.routine = Default::default();
         library.scene.facial.mouth_gain = 1.25;
         library.scene.visemes = Default::default();
         library.scene.behavior.enabled = false;
@@ -558,6 +571,8 @@ mod tests {
         library.provider = 1;
         assert!(library.select_character(first_id));
         assert_eq!(library.scene.shader, 1);
+        assert!(library.scene.routine.enabled);
+        assert_eq!(library.scene.routine.anchors[0].activity, "Drawing");
         assert_eq!(library.scene.facial.mouth_gain, 3.5);
         assert!(library.scene.visemes.enabled && library.scene.behavior.enabled);
         assert_eq!(
@@ -573,6 +588,10 @@ mod tests {
         assert_eq!(library.provider, 2);
         assert!(library.select_character(second_id));
         assert_eq!(library.scene.shader, 2);
+        assert_eq!(
+            library.scene.routine,
+            crate::routines::RoutineConfig::default()
+        );
         assert_eq!(library.scene.facial.mouth_gain, 1.25);
         assert!(!library.scene.visemes.enabled && !library.scene.behavior.enabled);
         assert!(library.scene.visemes.profile_path.is_none());

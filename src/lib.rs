@@ -32,6 +32,7 @@ pub mod expressions;
 pub mod fish_live;
 pub mod fish_ws;
 pub mod gaze;
+mod material_expressions;
 pub mod metered_audio;
 pub mod semantic_memory;
 pub mod speech_text;
@@ -63,3 +64,5 @@ pub mod vercel_speech;
 pub mod reply_speech;
 
 mod recall_terms;
+
+pub mod routines;

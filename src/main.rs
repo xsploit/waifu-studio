@@ -19,6 +19,7 @@ mod memory_controls;
 mod offscreen;
 mod orchestration;
 mod provider_controls;
+mod routine_controls;
 mod runtime;
 mod scene_chat_controls;
 mod scene_roster_controls;

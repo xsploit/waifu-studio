@@ -1074,6 +1074,11 @@ fn scene(
             studio.save();
         }
     });
+    group(ui, "Fictional routine", |ui| {
+        if crate::routine_controls::ui(ui, &mut studio.library.scene.routine) {
+            studio.save();
+        }
+    });
     group(ui, "Reply emotion & mood", |ui| {
         if let Some(id) = studio.library.selected {
             let config = studio.library.scene.affect.clone();

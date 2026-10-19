@@ -42,7 +42,7 @@ Do not use `cargo fmt --all`, which also touches vendored code. Existing target 
 
 Independent Muse review observed **503 passing tests** (406 library, 90 application/controller/UI, 6 integration, 1 benchmark) on its documented moving tree: `88cfbfc` plus `7f5ef9f` and material-isolation work subsequently committed as `cc1e0b2`. Preserve that scope caveat; see `reviews/muse-independent-review.md`.
 
-Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark tests and strict all-target Clippy. The hosted HTTP/Low trial preset passed all 16 voice tests, strict Clippy and package formatting. The complete suite has not been rerun after these additions. These are dated receipts, not a fresh run by this document's reader.
+Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark tests and strict all-target Clippy. The hosted HTTP/Low trial preset passed all 16 voice tests, strict Clippy and package formatting. The next integrated run passed 522 tests (423 library, 91 application/controller/UI, 6 integration, 2 benchmark), including material expressions, local fictional routines and bounded SSE cancellation admission. These are dated receipts, not a fresh run by this document's reader.
 
 ## Priority test matrix
 
