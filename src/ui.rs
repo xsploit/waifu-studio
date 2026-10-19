@@ -492,13 +492,15 @@ pub fn studio_ui(
                 Tab::Tasks => {
                     settings_pages::tasks(ui, &mut studio);
                     settings_pages::advanced(ui, "tasks", |ui| {
-                        crate::orchestration::ui(
-                            ui,
-                            &mut orchestration,
-                            &mut studio,
-                            &mut agents,
-                            &mut memory,
-                        );
+                        group(ui, "Task loop", |ui| {
+                            crate::orchestration::ui(
+                                ui,
+                                &mut orchestration,
+                                &mut studio,
+                                &mut agents,
+                                &mut memory,
+                            );
+                        });
                         agent_tasks(ui, &mut studio, &mut agents, &mut board);
                         ui.separator();
                         group(ui, "Task board", |ui| {
@@ -1026,7 +1028,9 @@ fn scene(
         "Motion",
         "Pick a motion from your library, or import a BVH, VRMA or FBX file.",
     );
-    animation_controls(ui, studio, animation);
+    kit::card(ui, |c| {
+        c.block(|ui| animation_controls(ui, studio, animation));
+    });
 
     anchored_section(
         ui,
@@ -1034,22 +1038,22 @@ fn scene(
         "Avatar",
         "Shading, face, lip-sync and behavior for this character.",
     );
-    kit::row(ui, "Model shading", "", |ui| {
-        egui::ComboBox::from_id_salt("shader")
-            .selected_text(match studio.library.scene.shader {
-                1 => "Lit / PBR",
-                2 => "Unlit",
-                _ => "MToon / Anime",
-            })
-            .width(control_width(ui))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut studio.library.scene.shader, 0, "MToon / Anime");
-                ui.selectable_value(&mut studio.library.scene.shader, 1, "Lit / PBR");
-                ui.selectable_value(&mut studio.library.scene.shader, 2, "Unlit");
-            });
-    });
     kit::card(ui, |c| {
         let ui = &mut *c.ui;
+        kit::row(ui, "Model shading", "", |ui| {
+            egui::ComboBox::from_id_salt("shader")
+                .selected_text(match studio.library.scene.shader {
+                    1 => "Lit / PBR",
+                    2 => "Unlit",
+                    _ => "MToon / Anime",
+                })
+                .width(control_width(ui))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut studio.library.scene.shader, 0, "MToon / Anime");
+                    ui.selectable_value(&mut studio.library.scene.shader, 1, "Lit / PBR");
+                    ui.selectable_value(&mut studio.library.scene.shader, 2, "Unlit");
+                });
+        });
         kit::toggle_row(
             ui,
             "Character outlines",
@@ -1981,15 +1985,17 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
         .get(previous)
         .map(|p| p.name.as_str())
         .unwrap_or("Choose a connection");
-    kit::row(ui, "Connection", "", |ui| {
-        egui::ComboBox::from_id_salt("settings_connection")
-            .selected_text(selected_name)
-            .width(control_width(ui))
-            .show_ui(ui, |ui| {
-                for (index, provider) in studio.library.providers.iter().enumerate() {
-                    ui.selectable_value(&mut studio.library.provider, index, &provider.name);
-                }
-            });
+    kit::card(ui, |card| {
+        card.row("Connection", "", |ui| {
+            egui::ComboBox::from_id_salt("settings_connection")
+                .selected_text(selected_name)
+                .width(control_width(ui))
+                .show_ui(ui, |ui| {
+                    for (index, provider) in studio.library.providers.iter().enumerate() {
+                        ui.selectable_value(&mut studio.library.provider, index, &provider.name);
+                    }
+                });
+        });
     });
     if previous != studio.library.provider {
         studio.connected = false;
@@ -2002,7 +2008,7 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
         "Models",
         "Search the live catalog for your selected provider.",
     );
-    {
+    group(ui, "Model selection", |ui| {
         studio.ensure_models();
         model_discovery_status(ui, studio);
         let models = studio
@@ -2053,14 +2059,14 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
                 studio.save();
             }
         });
-    }
+    });
     anchored_section(
         ui,
         KEY,
         "API & routing",
         "Endpoint, key source, creativity and upstream routing.",
     );
-    {
+    group(ui, "Connection details", |ui| {
         crate::provider_controls::ui(ui, studio);
         let index = studio.library.provider;
         if let Some(provider) = studio.library.providers.get_mut(index) {
@@ -2092,7 +2098,7 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
         if ui.button("Save connection").clicked() {
             studio.save();
         }
-    }
+    });
 }
 
 fn voice_settings(
@@ -3367,16 +3373,19 @@ fn agent_tasks(
 ) {
     use waifu_studio::{agents::AgentProvider, delegation::Provider};
     let mut save = false;
-    if let Some(character) = studio.library.selected_character_mut() {
-        save = kit::toggle_row(
-            ui,
-            "Let this character propose agent tasks",
-            "Proposals still require review before running.",
-            &mut character.delegation.enabled,
-        )
-        .changed();
-        ui.small(character.delegation.opt_in_message());
-    }
+    kit::card(ui, |card| {
+        let ui = &mut *card.ui;
+        if let Some(character) = studio.library.selected_character_mut() {
+            save = kit::toggle_row(
+                ui,
+                "Let this character propose agent tasks",
+                "Proposals still require review before running.",
+                &mut character.delegation.enabled,
+            )
+            .changed();
+            ui.small(character.delegation.opt_in_message());
+        }
+    });
     if save {
         studio.proposals.clear();
         studio.save();

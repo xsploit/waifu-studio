@@ -125,7 +125,26 @@ pub fn toggle_row(
     hint: &str,
     value: &mut bool,
 ) -> egui::Response {
-    row(ui, title.as_ref(), hint, |ui| toggle(ui, value))
+    let start = ui.next_widget_position();
+    let mut response = row(ui, title.as_ref(), hint, |ui| toggle(ui, value));
+    let label_rect = egui::Rect::from_min_max(
+        start,
+        egui::pos2((response.rect.left() - 6.0).max(start.x), ui.cursor().top()),
+    );
+    let label = ui.interact(label_rect, response.id.with("label"), egui::Sense::click());
+    label.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            ui.is_enabled(),
+            *value,
+            title.as_ref(),
+        )
+    });
+    if label.clicked() {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response.union(label)
 }
 
 /// Row with a slider on the right; pass the slider without `.text(...)`.
