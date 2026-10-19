@@ -316,16 +316,11 @@ pub fn studio_ui(
         let settings_tab = studio.tab;
         let tab_key = format!("{settings_tab:?}");
         settings_page(&mut viewport_ui, |ui| {
-            if settings_tab == Tab::Scene {
+            if matches!(settings_tab, Tab::Characters | Tab::Scene) {
                 crate::avatar_preview::dock(ui, &mut avatar_ui.preview);
             }
-            if settings_tab == Tab::Characters {
-                settings_header(ui, &mut studio);
-                crate::avatar_preview::dock(ui, &mut avatar_ui.preview);
-            } else {
-                settings_kit::column(ui, |ui| settings_header(ui, &mut studio));
-            }
-            let mut content = |ui: &mut egui::Ui| match studio.tab {
+            settings_kit::column(ui, |ui| settings_header(ui, &mut studio));
+            let content = |ui: &mut egui::Ui| match studio.tab {
                 Tab::Characters => {
                     let previous = studio.library.selected;
                     characters(ui, &mut studio);
@@ -474,7 +469,7 @@ pub fn studio_ui(
                 }
                 Tab::Memory => memory_page::ui(ui, &mut studio, &mut memory, &mut semantic),
                 Tab::Tools => {
-                    crate::mcp_controls::ui(ui, &mut mcp);
+                    settings_pages::tools(ui, &mut mcp);
                     if let Some(context) = mcp.take_context() {
                         if studio.composer.len() + context.len() <= 32_000 {
                             if !studio.composer.is_empty() {
@@ -490,37 +485,35 @@ pub fn studio_ui(
                     }
                 }
                 Tab::Tasks => {
-                    crate::orchestration::ui(
-                        ui,
-                        &mut orchestration,
-                        &mut studio,
-                        &mut agents,
-                        &mut memory,
-                    );
-                    agent_tasks(ui, &mut studio, &mut agents, &mut board);
-                    ui.separator();
-                    crate::task_board_controls::ui(ui, &mut board, &agents);
-                    let available = 32_000usize.saturating_sub(
-                        studio.composer.len() + usize::from(!studio.composer.is_empty()),
-                    );
-                    if let Some(context) = board.try_take_context(available) {
-                        append_context(&mut studio, &context);
-                    } else if board.peek_context_len().is_some() {
-                        ui.label("Result is ready. Shorten the draft to make room; the staged result is retained.");
-                    }
+                    settings_pages::tasks(ui, &mut studio);
+                    settings_pages::advanced(ui, "tasks", |ui| {
+                        crate::orchestration::ui(
+                            ui,
+                            &mut orchestration,
+                            &mut studio,
+                            &mut agents,
+                            &mut memory,
+                        );
+                        agent_tasks(ui, &mut studio, &mut agents, &mut board);
+                        ui.separator();
+                        crate::task_board_controls::ui(ui, &mut board, &agents);
+                        let available = 32_000usize.saturating_sub(
+                            studio.composer.len() + usize::from(!studio.composer.is_empty()),
+                        );
+                        if let Some(context) = board.try_take_context(available) {
+                            append_context(&mut studio, &context);
+                        } else if board.peek_context_len().is_some() {
+                            ui.label("Result is ready. Shorten the draft to make room; the staged result is retained.");
+                        }
+                    });
                 }
                 Tab::Chat => {}
             };
-            if settings_tab == Tab::Characters {
-                // The browser and editor have independent full-height scrolling.
-                content(ui);
-            } else {
-                egui::ScrollArea::vertical()
-                    .id_salt(("settings_scroll", &tab_key))
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| settings_kit::column(ui, content));
-            }
+            egui::ScrollArea::vertical()
+                .id_salt(("settings_scroll", &tab_key))
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show(ui, |ui| settings_kit::column(ui, content));
         });
     }
 
@@ -710,39 +703,42 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
 }
 
 fn characters(ui: &mut egui::Ui, studio: &mut Studio) {
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("+ Import model").clicked() {
-            studio.open_models();
-        }
-        if ui.button("Scan folder").clicked() {
-            studio.scan_folder();
-        }
-        ui.label(
-            RichText::new(format!("{} companions", studio.library.characters.len()))
-                .small()
-                .color(MUTED),
+    settings_kit::section(ui, "Companion");
+    settings_kit::card(ui, |c| {
+        let current = studio
+            .library
+            .selected_character()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Choose…".into());
+        let count = studio.library.characters.len();
+        c.row(
+            "Talking with",
+            &format!("{count} companions in your library."),
+            |ui| {
+                egui::ComboBox::from_id_salt("settings_character")
+                    .selected_text(current)
+                    .height(400.0)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(320.0);
+                        character_list(ui, studio);
+                    });
+            },
+        );
+        c.row(
+            "Add a companion",
+            "Import a VRM model, or scan a folder of them.",
+            |ui| {
+                if ui.button("Scan folder").clicked() {
+                    studio.scan_folder();
+                }
+                if ui.button("Import…").clicked() {
+                    studio.open_models();
+                }
+            },
         );
     });
-    ui.add_space(12.0);
-    caption(ui, "COMPANION");
-    let current = studio
-        .library
-        .selected_character()
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| "Choose a companion…".into());
-    egui::ComboBox::from_id_salt("settings_character")
-        .selected_text(current)
-        .height(400.0)
-        .width(ui.available_width())
-        .show_ui(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            character_list(ui, studio);
-        });
-    ui.add_space(12.0);
-    egui::ScrollArea::vertical()
-        .id_salt("character_editor_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| character_editor(ui, studio));
+    character_editor(ui, studio);
 }
 
 fn character_list(ui: &mut egui::Ui, studio: &mut Studio) {
@@ -846,118 +842,155 @@ fn character_editor(ui: &mut egui::Ui, studio: &mut Studio) {
             ));
         }
 
-        ui.heading("Edit companion");
-        ui.add_space(8.0);
-        field(
-            ui,
-            "CHARACTER NAME",
-            &mut character.name,
-            "Your character's name",
-        );
-
-        caption(ui, "ORIGINAL WEBWAIFU4 PERSONALITY");
-        let current = personality_catalog::by_prompt(&character.persona);
-        let selected_text = match current {
-            Some(original) => original.name.to_owned(),
-            None if character.persona.trim().is_empty() => "None".to_owned(),
-            None => "Custom (your own text)".to_owned(),
-        };
-        let pending_id = egui::Id::new(("pending_personality", character.id));
-        let mut chosen = None;
-        egui::ComboBox::from_id_salt(("original_personality", character.id))
-            .selected_text(selected_text)
-            .width(control_width(ui))
-            .show_ui(ui, |ui| {
-                for original in &personality_catalog::ORIGINALS {
-                    let mut label = RichText::new(original.name).strong();
-                    if suggested.is_some_and(|s| s.id == original.id) {
-                        label = RichText::new(format!("{} · matches this model", original.name))
-                            .strong();
-                    }
-                    let picked = ui
-                        .selectable_label(current.is_some_and(|c| c.id == original.id), label)
-                        .on_hover_text(original.description)
-                        .clicked();
-                    ui.label(RichText::new(original.description).small().color(MUTED));
-                    ui.add_space(4.0);
-                    if picked {
-                        chosen = Some(original);
-                    }
-                }
+        settings_kit::section(ui, "Personality");
+        let name = character.name.clone();
+        settings_kit::card(ui, |c| {
+            c.row("Name", "", |ui| {
+                save |= ui
+                    .add(egui::TextEdit::singleline(&mut character.name).desired_width(240.0))
+                    .lost_focus();
             });
-        if let Some(original) = chosen {
-            if apply_original(&mut character.persona, original, false) {
-                save = true;
-            } else {
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(pending_id, original.id.to_owned()));
-            }
-        }
-        if let Some(pending) = ui.ctx().data(|d| d.get_temp::<String>(pending_id))
-            && let Some(original) = personality_catalog::ORIGINALS
-                .iter()
-                .find(|p| p.id == pending)
-        {
-            ui.horizontal_wrapped(|ui| {
-                ui.colored_label(
-                    ACCENT,
-                    format!(
-                        "This replaces your custom personality with {}.",
-                        original.name
-                    ),
-                );
-                if ui.button("Use original").clicked() {
-                    apply_original(&mut character.persona, original, true);
+            let current = personality_catalog::by_prompt(&character.persona);
+            let selected_text = match current {
+                Some(original) => original.name.to_owned(),
+                None if character.persona.trim().is_empty() => "None".to_owned(),
+                None => "Your own".to_owned(),
+            };
+            let hint = current.or(suggested).map_or(
+                "Pick a ready-made personality, or write your own below.",
+                |o| o.description,
+            );
+            let pending_id = egui::Id::new(("pending_personality", character.id));
+            let mut chosen = None;
+            c.row("Starting personality", hint, |ui| {
+                egui::ComboBox::from_id_salt(("original_personality", character.id))
+                    .selected_text(selected_text)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        for original in &personality_catalog::ORIGINALS {
+                            let mut label = RichText::new(original.name).strong();
+                            if suggested.is_some_and(|s| s.id == original.id) {
+                                label = RichText::new(format!(
+                                    "{} · matches this model",
+                                    original.name
+                                ))
+                                .strong();
+                            }
+                            let picked = ui
+                                .selectable_label(
+                                    current.is_some_and(|c| c.id == original.id),
+                                    label,
+                                )
+                                .on_hover_text(original.description)
+                                .clicked();
+                            ui.label(RichText::new(original.description).small().color(MUTED));
+                            ui.add_space(4.0);
+                            if picked {
+                                chosen = Some(original);
+                            }
+                        }
+                    });
+            });
+            if let Some(original) = chosen {
+                if apply_original(&mut character.persona, original, false) {
                     save = true;
-                    ui.ctx().data_mut(|d| d.remove::<String>(pending_id));
+                } else {
+                    c.ui.ctx()
+                        .data_mut(|d| d.insert_temp(pending_id, original.id.to_owned()));
                 }
-                if ui.button("Keep mine").clicked() {
-                    ui.ctx().data_mut(|d| d.remove::<String>(pending_id));
-                }
+            }
+            if let Some(pending) = c.ui.ctx().data(|d| d.get_temp::<String>(pending_id))
+                && let Some(original) = personality_catalog::ORIGINALS
+                    .iter()
+                    .find(|p| p.id == pending)
+            {
+                c.row(
+                    &format!("Replace your text with {}?", original.name),
+                    "Your own personality text would be overwritten.",
+                    |ui| {
+                        if ui.button("Keep mine").clicked() {
+                            ui.ctx().data_mut(|d| d.remove::<String>(pending_id));
+                        }
+                        if ui.button("Replace").clicked() {
+                            apply_original(&mut character.persona, original, true);
+                            save = true;
+                            ui.ctx().data_mut(|d| d.remove::<String>(pending_id));
+                        }
+                    },
+                );
+            }
+            c.block(|ui| {
+                ui.label(RichText::new("How they talk and behave").size(14.0));
+                save |= ui
+                    .add(
+                        egui::TextEdit::multiline(&mut character.persona)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(10)
+                            .hint_text("How should this character speak and behave?"),
+                    )
+                    .lost_focus();
             });
-        }
-        if let Some(original) = current.or(suggested) {
-            ui.label(RichText::new(original.description).color(MUTED));
-        }
-
-        caption(ui, "PERSONALITY & INSTRUCTIONS");
-        ui.add(
-            egui::TextEdit::multiline(&mut character.persona)
-                .desired_width(f32::INFINITY)
-                .desired_rows(12)
-                .hint_text("How should this character speak and behave?"),
-        );
-        caption(ui, "FIRST GREETING");
-        ui.add(
-            egui::TextEdit::multiline(&mut character.greeting)
-                .desired_width(f32::INFINITY)
-                .desired_rows(3)
-                .hint_text("A greeting for a fresh conversation"),
-        );
-        caption(ui, "MODEL FILE");
-        ui.label(
-            RichText::new(
-                character
-                    .model
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-            )
-            .color(MUTED),
-        )
-        .on_hover_text(character.model.display().to_string());
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Save character").clicked() {
-                save = true;
-            }
-            if ui.button("Duplicate profile").on_hover_text("Create a new character profile using this model, appearance, personality, and voice").clicked() {
-                action = Some(Studio::duplicate_character);
-            }
-            if ui.button("Remove profile").on_hover_text("Remove this profile from your library. Your original model file stays on disk.").clicked() {
-                action = Some(Studio::remove_character);
-            }
+            c.block(|ui| {
+                ui.label(RichText::new("First greeting").size(14.0));
+                save |= ui
+                    .add(
+                        egui::TextEdit::multiline(&mut character.greeting)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(2)
+                            .hint_text("Optional: what they say when a new chat starts"),
+                    )
+                    .lost_focus();
+            });
         });
+        settings_kit::section(ui, "Profile");
+        let model = character
+            .model
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let confirm_id = egui::Id::new(("confirm_remove_profile", character.id));
+        let mut confirm = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(confirm_id))
+            .unwrap_or(false);
+        settings_kit::card(ui, |c| {
+            c.row("Model file", &model, |_| {});
+            c.row(
+                "Duplicate",
+                "A new profile with the same model, look and voice.",
+                |ui| {
+                    if ui.button("Duplicate").clicked() {
+                        action = Some(Studio::duplicate_character);
+                    }
+                },
+            );
+            c.row(
+                &format!("Remove {name}"),
+                "Takes the profile out of your library. The model file stays on disk.",
+                |ui| {
+                    if confirm {
+                        if ui.button("Cancel").clicked() {
+                            confirm = false;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Remove").color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(184, 88, 96)),
+                            )
+                            .clicked()
+                        {
+                            confirm = false;
+                            action = Some(Studio::remove_character);
+                        }
+                    } else if ui.button("Remove…").clicked() {
+                        confirm = true;
+                    }
+                },
+            );
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(confirm_id, confirm));
     }
     if notice.is_some() {
         studio.notice = notice;
@@ -3755,18 +3788,15 @@ mod composer_tests {
         render(&ctx, vec![], |ui| character_editor(ui, &mut studio));
         let output = render(&ctx, vec![], |ui| character_editor(ui, &mut studio));
         assert_eq!(persona(&studio, hikari_id), "my own text");
-        let pos = text_rect(&output, "Custom (your own text)").center();
+        let pos = text_rect(&output, "Your own").center();
         render(&ctx, click(pos), |ui| character_editor(ui, &mut studio));
         let output = render(&ctx, vec![], |ui| character_editor(ui, &mut studio));
         let pos = text_rect(&output, "Neuro-sama").center();
         render(&ctx, click(pos), |ui| character_editor(ui, &mut studio));
         let output = render(&ctx, vec![], |ui| character_editor(ui, &mut studio));
         assert_eq!(persona(&studio, hikari_id), "my own text");
-        text_rect(
-            &output,
-            "This replaces your custom personality with Neuro-sama.",
-        );
-        let pos = text_rect(&output, "Use original").center();
+        text_rect(&output, "Replace your text with Neuro-sama?");
+        let pos = text_rect(&output, "Replace").center();
         render(&ctx, click(pos), |ui| character_editor(ui, &mut studio));
         assert_eq!(
             persona(&studio, hikari_id),

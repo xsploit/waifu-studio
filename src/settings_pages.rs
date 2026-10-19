@@ -609,3 +609,82 @@ pub(super) fn group_chat(
         });
     });
 }
+
+pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState) {
+    let busy = mcp.is_busy();
+    kit::section(ui, "Tool server");
+    kit::card(ui, |c| {
+        c.row(
+            "Server address",
+            "An MCP server reachable over HTTP.",
+            |ui| {
+                ui.add_enabled_ui(!busy, |ui| {
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut mcp.endpoint).desired_width(240.0))
+                        .changed()
+                    {
+                        mcp.disarm();
+                    }
+                });
+            },
+        );
+        c.row(
+            "Access token",
+            "Optional. Kept for this session only.",
+            |ui| {
+                ui.add_enabled(
+                    !busy,
+                    egui::TextEdit::singleline(&mut mcp.session_token)
+                        .password(true)
+                        .desired_width(240.0),
+                );
+            },
+        );
+        let status = mcp.status.clone();
+        c.row("Tools", &status, |ui| {
+            if busy {
+                if ui.button("Cancel").clicked() {
+                    mcp.cancel();
+                }
+                ui.spinner();
+            } else if ui.button("Load tools").clicked() {
+                mcp.list_tools();
+            }
+        });
+    });
+    if !mcp.tools.is_empty() {
+        kit::section(ui, "Run a tool");
+        kit::card(ui, |c| c.block(|ui| crate::mcp_controls::tools_ui(ui, mcp)));
+    }
+}
+
+pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
+    let proposals = studio.proposals.len();
+    kit::section(ui, "Agent tasks");
+    kit::card(ui, |c| {
+        if let Some(character) = studio.library.selected_character_mut() {
+            let name = character.name.clone();
+            if c.row(
+                &format!("Let {name} suggest coding tasks"),
+                "Suggestions wait for your review before any agent runs.",
+                |ui| kit::toggle(ui, &mut character.delegation.enabled),
+            )
+            .changed()
+            {
+                studio.proposals.clear();
+                studio.save();
+            }
+        }
+        c.row(
+            "Suggested tasks",
+            if proposals == 0 {
+                "Nothing waiting."
+            } else {
+                "Review them under Advanced."
+            },
+            |ui| {
+                ui.label(proposals.to_string());
+            },
+        );
+    });
+}

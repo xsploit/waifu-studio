@@ -3,39 +3,9 @@
 use bevy_egui::egui;
 use waifu_studio::mcp::McpState;
 
-pub fn ui(ui: &mut egui::Ui, state: &mut McpState) {
-    ui.heading("MCP tools");
-    ui.label("Streamable HTTP only; no local commands are launched.");
+/// Tool list, arguments, review and execution for an already listed server.
+pub fn tools_ui(ui: &mut egui::Ui, state: &mut McpState) {
     let busy = state.is_busy();
-    ui.add_enabled_ui(!busy, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Endpoint");
-            if ui.text_edit_singleline(&mut state.endpoint).changed() {
-                state.disarm();
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Session token");
-            ui.add(egui::TextEdit::singleline(&mut state.session_token).password(true))
-                .on_hover_text("Optional bearer token, kept in memory for this session only");
-        });
-    });
-    ui.horizontal(|ui| {
-        if ui
-            .add_enabled(!busy, egui::Button::new("List tools"))
-            .clicked()
-        {
-            state.list_tools();
-        }
-        if busy && ui.button("Cancel").clicked() {
-            state.cancel();
-        }
-    });
-    ui.label(&state.status);
-    if state.tools.is_empty() {
-        return;
-    }
-    ui.separator();
     let mut picked = None;
     egui::ScrollArea::vertical()
         .id_salt("mcp_tools")
