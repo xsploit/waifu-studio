@@ -367,7 +367,13 @@ fn desktop_windows(
             }
         } else {
             studio.click_through = false;
-            cursor.hit_test = true;
+            cursor.hit_test = pointer.as_deref().copied().unwrap_or_default().hit_test(
+                false,
+                false,
+                grab.as_ref().is_some_and(|grab| grab.active),
+                menu.as_ref().is_some_and(|menu| menu.is_open()),
+                Instant::now(),
+            );
         }
     } else {
         state.controls_dismissed = false;

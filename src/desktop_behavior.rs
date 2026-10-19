@@ -115,11 +115,10 @@ impl DesktopPointerHit {
         menu_open: bool,
         now: Instant,
     ) -> bool {
-        if !recovery_ready {
-            return true;
-        }
         if manual_pass {
-            return false;
+            // Full passthrough needs a separate recovery window. Automatic
+            // margin passthrough can recover from the global cursor itself.
+            return !recovery_ready;
         }
         if dragging || menu_open {
             return true;
@@ -779,6 +778,21 @@ mod tests {
             sampled_at: Some(now),
         };
         assert!(!margin.hit_test(false, true, false, false, now));
+        assert!(
+            !margin.hit_test(false, false, false, false, now),
+            "Fresh global tracking recovers automatic hover without controls"
+        );
+        assert!(
+            DesktopPointerHit {
+                avatar_hit: true,
+                ..margin
+            }
+            .hit_test(false, false, false, false, now)
+        );
+        assert!(
+            margin.hit_test(false, false, false, false, now + Duration::from_secs(1)),
+            "Losing global tracking restores input even without controls"
+        );
         assert!(
             DesktopPointerHit {
                 avatar_hit: true,

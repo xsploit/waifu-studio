@@ -63,6 +63,7 @@ pub fn style(ctx: &egui::Context) {
 
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct AvatarUi<'w, 's> {
+    desktop_grab: Option<Res<'w, crate::desktop_behavior::DesktopGrab>>,
     playing: Query<'w, 's, (), With<crate::studio::SpokenAudio>>,
     capture: Option<Res<'w, crate::offscreen::OffscreenCapture>>,
     gaze: ResMut<'w, waifu_studio::gaze::GazeState>,
@@ -102,6 +103,13 @@ pub fn studio_ui(
     if avatar_ui.capture.as_ref().is_some_and(|capture| capture.1) {
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("capture-advanced"), true));
     }
+    let desktop_pose_owned = matches!(studio.mode, ViewMode::Desktop)
+        && (!desktop.automatic_motions
+            || desktop.sitting
+            || avatar_ui
+                .desktop_grab
+                .as_ref()
+                .is_some_and(|grab| grab.active));
     // Runs on every frame and view, not only the Scene page, so a completed
     // reply is noticed wherever the user is.
     reply_motion_frame(
@@ -109,17 +117,22 @@ pub fn studio_ui(
         &mut studio,
         &mut animation,
         load.active.map(|entity| entity.to_bits()),
+        desktop_pose_owned,
     );
+    if desktop_pose_owned {
+        lock(&companion_shared(ctx)).suspend();
+    } else {
+        companion_motion_frame(
+            ctx,
+            &studio,
+            &mut animation,
+            load.active.map(|entity| entity.to_bits()),
+            !avatar_ui.playing.is_empty(),
+        );
+    }
     if matches!(studio.mode, ViewMode::Desktop) {
         return;
     }
-    companion_motion_frame(
-        ctx,
-        &studio,
-        &mut animation,
-        load.active.map(|entity| entity.to_bits()),
-        !avatar_ui.playing.is_empty(),
-    );
     if !ctx.data_mut(|d| {
         d.get_temp::<bool>(egui::Id::new("studio_styled"))
             .unwrap_or(false)
@@ -1592,9 +1605,15 @@ fn reply_motion_frame(
     studio: &mut Studio,
     animation: &mut AnimationState,
     avatar: Option<u64>,
+    desktop_pose_owned: bool,
 ) {
     use waifu_studio::data::ReplyMotionMode;
-    let config = studio.library.scene.reply_motion.clone();
+    let mut config = studio.library.scene.reply_motion.clone();
+    if desktop_pose_owned {
+        // Still consume the reply ID, but do not request a motion or replay it
+        // later after the user releases the avatar or stands up.
+        config.mode = ReplyMotionMode::Off;
+    }
     let (shared, auto) = motion_shared(ctx);
     let mut suggester = lock(&shared);
     let mut auto = lock(&auto);
@@ -1644,7 +1663,10 @@ fn reply_motion_frame(
         |suggester, request| suggester.start(&decision, request),
     );
     if let Some(motion_decision::AutoAction::Play(path)) = action {
-        if animation.loading {
+        if desktop_pose_owned {
+            auto.note =
+                Some("Skipped reply motion while desktop drag or seating owns the body".into());
+        } else if animation.loading {
             auto.note = Some("Skipped auto-play while a motion was loading".into());
         } else if let Err(error) = animation.load_one_shot(path) {
             auto.note = Some(error);

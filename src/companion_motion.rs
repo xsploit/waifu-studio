@@ -55,6 +55,13 @@ pub fn playlist(entries: &[MotionEntry], configured: &[PathBuf], talking: bool) 
         .collect()
 }
 impl CompanionAnimator {
+    /// Dragging and seating own the body until released; retain the user's
+    /// pause choice and cached clips, but choose the current role on return.
+    pub fn suspend(&mut self) {
+        self.current = None;
+        self.next = None;
+        self.speech_started = false;
+    }
     pub fn manual_override(&mut self) {
         self.paused = true;
         self.note = Some("Paused by manual motion controls".into());
@@ -174,6 +181,64 @@ mod tests {
             format: "BVH",
         })
         .collect()
+    }
+    #[test]
+    fn desktop_pose_release_reselects_speech_role_without_clearing_manual_pause() {
+        let now = Instant::now();
+        let config = CompanionMotionConfig::default();
+        let entries = entries();
+        let owner = Some((uuid::Uuid::new_v4(), 42));
+        let mut animator = CompanionAnimator::default();
+        let idle = animator
+            .frame(now, &config, owner, false, false, false, None, &entries)
+            .unwrap();
+        animator.suspend();
+        let talking = animator
+            .frame(
+                now,
+                &config,
+                owner,
+                true,
+                false,
+                false,
+                Some(Path::new("idle-sitting.vrma")),
+                &entries,
+            )
+            .unwrap();
+        assert!(talking.to_string_lossy().contains("talking"));
+        animator.manual_override();
+        animator.suspend();
+        assert!(
+            animator
+                .frame(
+                    now,
+                    &config,
+                    owner,
+                    false,
+                    false,
+                    false,
+                    Some(&idle),
+                    &entries
+                )
+                .is_none()
+        );
+        animator.resume();
+        assert!(
+            animator
+                .frame(
+                    now,
+                    &config,
+                    owner,
+                    false,
+                    false,
+                    false,
+                    Some(Path::new("grabbed.vrma")),
+                    &entries
+                )
+                .unwrap()
+                .to_string_lossy()
+                .contains("idle")
+        );
     }
     #[test]
     fn playlists_preserve_scanned_choices_and_reject_seated_or_missing() {

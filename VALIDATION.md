@@ -545,3 +545,8 @@ Added an icons-only navigation rail with existing hover tooltips, local configur
 ## Desktop controls and contact seating — 2026-10-18
 
 Compared the local Homunculus drag/screen/sitting source: seating is chosen at drag end within an 80-pixel edge band. Closing auxiliary desktop controls now dismisses them without returning to Studio or respawning them; the avatar stays interactive, and explicit Return to studio still restores its window. Sit requests now require nearby surface contact rather than finding a distant surface below the avatar. Drag-drop seating and support tracking remain. All 45 desktop tests passed serially, including controls-close recovery, explicit Studio restoration, distant-seat rejection and contact seating. Strict all-target Clippy and binary build passed with one low-priority Cargo job. Real compositor drag/drop acceptance remains open.
+
+
+## Homunculus + Mate source integration audit — 2026-10-18
+
+Verified both upstream HEADs and saved the feature/licensing inventory in `reviews/companion-upstream-integration.md`. Standing desktop avatars now use local idle/talking playlists; drag/sit suspend them and suppress reply-body decisions without later replay. Automatic transparent-margin passthrough can recover via fresh global cursor tracking even after dismissing controls; stale geometry restores interaction. Forced passthrough still requires separate recovery. 583 offline tests passed; after the final decision guard, 99 binary tests passed again. Strict all-target Clippy, touched-file rustfmt, whitespace checks and binary build passed. The updated app was relaunched; live compositor/audio acceptance remains open. No Mate source/assets copied, no new benchmarks or live provider calls.

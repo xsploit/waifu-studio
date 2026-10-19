@@ -56,3 +56,8 @@ Its body/appraisal state influences model prompts, while explicit action/gesture
 ## Local MToon UV extension
 
 The vendored Bevy 0.19 MToon material and WGSL uniform now carry a shared affine mesh-UV transform. Base color/alpha, normal, shade, shade shift, emission and rim-multiply samples use it through the existing helper; matcap remains in view space. The native expression path composes unrotated VRM1 UV0 scale/offset deltas on private material variants. This is an independently authored local extension, not general Unity shader compatibility or per-texture/UV1 support. `examples/render_mtoon_uv.rs` renders a procedural stripe fixture and checks red/blue GPU pixel samples before accepting its capture.
+
+
+## Homunculus and Mate integration audit — 2026-10-18
+
+Both exact requested upstream HEADs were verified against GitHub: Homunculus `30d11a5ad72f97f405117086839acd0ea87e1c49`, shinyflvre/Mate-Engine `2c5ea6b8f4cf5e1773a0816b46d9267cda5174d4`. The [source-by-source integration inventory](reviews/companion-upstream-integration.md) records implemented behavior, remaining features and priorities. Desktop standing now shares our local idle/talking playlists, with drag/sit priority; fresh global cursor tracking can restore automatic margin click-through without the controls window. No Mate source or assets were copied. Its Pro v2.1 and separate asset restrictions remain relevant; Unity/Win32 implementations are behavior references, not portable Rust dependencies.

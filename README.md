@@ -206,7 +206,7 @@ The recorded **Fish Pro → DeepSeek → Drama3** adapter sequence measured1623m
 **Avatar and motion**
 
 - Spring colliders work on joints only: no cloth, mesh collision or self-collision.
-- Material-only expressions are not supported.
+- Material-expression colors and shared unrotated UV0 transforms are supported; rotated/UV1 transforms remain unsupported.
 - Different exporters and rest poses may need extra retargeting calibration.
 - GLB/glTF models without VRM humanoid data get no retargeting.
 
