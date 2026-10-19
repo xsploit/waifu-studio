@@ -603,3 +603,11 @@ Post-change GPU checks switched through four distinct models three times per wor
 
 
 Final shipped-presentation cross-check: six alternating 12/four-worker launches, native FIFO/reactive, both actual 20.0 FPS. Median CPU 10.91% → 8.75% of one core (19.8% relative decrease), lower in every pair. Asset/morph counts match; no additional worker-related RAM saving or frame-tail improvement claimed from this small native-mode set. Raw data: project `work/compute-fifo-controlled-results.json`. Normal app restored; no build or profiler ran during the comparison. Changes are uncommitted; receipts cover the current worktree.
+
+## Emotion-first motion and settings camera fix — 2026-10-19
+
+Reply emotions with no explicit binding now play scanned clips named after them (whole-word match, CC0 prefix stripped; e.g. joy*/happy* for Happy). All 19 non-neutral emotions find 1-8 clips in the local WebWaifu4 library. New scenes default to "Match emotion" body motion and incoming-message appraisal, so the emotion is known while the reply streams; the mapped motion now starts on appraisal and the same chat job is ignored at completion. Existing priority then plays the talking playlist while speech continues and idle afterwards. Saved affect configs without a source keep reply metadata.
+
+Camera: settings pages draw on egui's background layer, which egui does not report as pointer-captured, so scrolling a settings page zoomed the hidden scene camera out (and drags rotated it). Camera mouse input is now limited to the conversation view and desktop mode.
+
+593 tests (one new), strict Clippy and formatting passed. No live provider, audio or visual playback acceptance.

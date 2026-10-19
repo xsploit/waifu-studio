@@ -1642,6 +1642,27 @@ fn reply_motion_frame(
             text,
             affect: motion_decision::job_affect(studio.completed_affect, *id, character.id),
         }),
+        // Appraisal arrives while the reply is still streaming: start the
+        // emotion motion now so it plays before the talking loop takes over.
+        // The same job ID is then ignored when the full reply completes.
+        _ if config.mode == ReplyMotionMode::EmotionMapped => {
+            match (studio.appraised_affect, character) {
+                (Some((id, owner, emotion)), Some(character))
+                    if owner == character.id
+                        && studio.job.as_ref().is_some_and(|job| job.id == id) =>
+                {
+                    Some(motion_decision::CompletedReply {
+                        id,
+                        character: character.id,
+                        character_name: &character.name,
+                        avatar,
+                        text: "",
+                        affect: Some(emotion),
+                    })
+                }
+                _ => None,
+            }
+        }
         _ => None,
     };
     let decision = studio.library.decision.clone();

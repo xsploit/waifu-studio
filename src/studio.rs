@@ -106,7 +106,8 @@ pub struct Studio {
     reply_affect_requested: bool,
     reply_affect_config: Option<waifu_studio::reply_affect::AffectConfig>,
     appraisal: Option<PendingAppraisal>,
-    appraised_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
+    /// Incoming-message appraisal for (chat job, character), known before the reply ends.
+    pub appraised_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
     pub appraisal_status: String,
     pub completed_chat: Option<(Uuid, Result<String, String>)>,
     /// (job, character, emotion) parsed from that job's opt-in affect block.
@@ -1966,6 +1967,8 @@ mod tests {
             studio.library.voice.enabled = true;
             studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
             studio.library.scene.affect.enabled = true;
+            studio.library.scene.affect.source =
+                waifu_studio::reply_affect::AffectSource::ReplyMetadata;
             studio.library.scene.behavior.enabled = true;
             studio.affect.entries.entry(character).or_default().config =
                 studio.library.scene.affect.clone();

@@ -842,6 +842,7 @@ mod tests {
         let (url, provider) = gated_server(vec![vec![(FIRST.into(), None)]]);
         let (root, mut library, roster, ids) = voiced_scene(url, &["Alice"]);
         library.scene.affect.enabled = true;
+        library.scene.affect.source = crate::reply_affect::AffectSource::ReplyMetadata;
         library.scene.affect.source = crate::reply_affect::AffectSource::UserMessageJev;
         library.decision.endpoint = endpoint;
         let mut chat = SceneChat::new(root.clone());
@@ -865,6 +866,7 @@ mod tests {
     fn scene_affect_is_recipient_scoped_and_rejects_changed_config() {
         let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice", "Bob"]);
         library.scene.affect.enabled = true;
+        library.scene.affect.source = crate::reply_affect::AffectSource::ReplyMetadata;
         // Bob explicitly opts out; automatic emotion is on by default.
         library
             .characters
@@ -1525,6 +1527,7 @@ mod tests {
         ]);
         let (root, mut library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
         library.scene.affect.enabled = true;
+        library.scene.affect.source = crate::reply_affect::AffectSource::ReplyMetadata;
         library
             .characters
             .iter_mut()

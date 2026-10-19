@@ -440,13 +440,73 @@ pub fn job_affect(
         .map(|(_, _, emotion)| emotion)
 }
 
+/// File-name words (GoEmotions-style clip names) that express each reply emotion.
+fn emotion_words(emotion: AffectEmotion) -> &'static [&'static str] {
+    use AffectEmotion as E;
+    match emotion {
+        E::Neutral => &[],
+        E::Happy => &["joy", "happy"],
+        E::Sad => &["sadness", "grief", "disappointment", "remorse"],
+        E::Angry => &["anger"],
+        E::Relaxed => &["relief"],
+        E::Surprised => &["surprise"],
+        E::Amused => &["amusement"],
+        E::Excited => &["excitement", "excited"],
+        E::Curious => &["curiosity"],
+        E::Confused => &["confusion"],
+        E::Thinking => &["realization", "thinking", "think"],
+        E::Annoyed => &["annoyance", "disapproval", "disaproval"],
+        E::Embarrassed => &["embarrassment"],
+        E::Grateful => &["gratitude"],
+        E::Optimistic => &["optimism", "approval"],
+        E::Proud => &["pride", "admiration"],
+        E::Nervous => &["nervousness", "nervousnes"],
+        E::Caring => &["caring", "love"],
+        E::Fear => &["fear"],
+        E::Disgust => &["disgust"],
+    }
+}
+
+/// Scanned clips whose file name names this emotion, e.g. `joy2.bvh` for Happy.
+/// Used only when the user has bound nothing to the emotion.
+pub fn matching_motions(emotion: AffectEmotion, entries: &[MotionEntry]) -> Vec<PathBuf> {
+    let words = emotion_words(emotion);
+    let mut paths: Vec<PathBuf> = entries
+        .iter()
+        .filter(|entry| entry.auto_playable())
+        .filter(|entry| {
+            let stem = entry
+                .path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            let stem = stem.strip_prefix("cc0animation").unwrap_or(&stem);
+            stem.split(|c: char| !c.is_ascii_alphabetic())
+                .any(|word| words.contains(&word))
+        })
+        .map(|entry| entry.path.clone())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 /// Distinct bound paths in user selection order, restricted to auto-playable
-/// entries in the current scan. Missing, duplicate and locomotion paths cannot play.
+/// entries in the current scan. Missing, duplicate and locomotion paths cannot
+/// play. With no binding for the emotion, clips named after it are used.
 pub fn bound_motions(
     config: &waifu_studio::data::ReplyMotionConfig,
     emotion: AffectEmotion,
     entries: &[MotionEntry],
 ) -> Vec<PathBuf> {
+    if !config
+        .emotion_bindings
+        .iter()
+        .any(|binding| binding.emotion == emotion)
+    {
+        return matching_motions(emotion, entries);
+    }
     let mut paths = Vec::new();
     for binding in config
         .emotion_bindings
@@ -922,6 +982,57 @@ mod tests {
             .unwrap();
         wait(&mut suggester, Some(character), &entries);
         assert!(matches!(suggester.status(), SuggestStatus::Failed(_)));
+    }
+
+    #[test]
+    fn unbound_emotions_use_clips_named_after_them() {
+        let entries: Vec<MotionEntry> = [
+            "joy.bvh",
+            "joy3.bvh",
+            "sadness2.bvh",
+            "CC0animationhappy01.vrma",
+            "enjoyment.bvh",
+            "sit_idle.bvh",
+            "action_walk.bvh",
+            "neutral.bvh",
+        ]
+        .into_iter()
+        .map(|name| MotionEntry {
+            group: "lib".into(),
+            label: name.into(),
+            path: PathBuf::from(format!("/lib/{name}")),
+            format: "BVH",
+        })
+        .collect();
+        let config = waifu_studio::data::ReplyMotionConfig::default();
+        let happy = bound_motions(&config, AffectEmotion::Happy, &entries);
+        // Whole words only ("enjoyment" is not "joy"); Sachi's CC0 prefix is stripped.
+        assert_eq!(
+            happy,
+            [
+                PathBuf::from("/lib/CC0animationhappy01.vrma"),
+                PathBuf::from("/lib/joy.bvh"),
+                PathBuf::from("/lib/joy3.bvh")
+            ]
+        );
+        assert_eq!(
+            bound_motions(&config, AffectEmotion::Sad, &entries),
+            [PathBuf::from("/lib/sadness2.bvh")]
+        );
+        assert!(bound_motions(&config, AffectEmotion::Neutral, &entries).is_empty());
+        // An explicit binding replaces the name match for that emotion only.
+        let mut bound = config.clone();
+        bound
+            .emotion_bindings
+            .push(waifu_studio::data::EmotionMotionBinding {
+                emotion: AffectEmotion::Happy,
+                path: PathBuf::from("/lib/sadness2.bvh"),
+            });
+        assert_eq!(
+            bound_motions(&bound, AffectEmotion::Happy, &entries),
+            [PathBuf::from("/lib/sadness2.bvh")]
+        );
+        assert_eq!(bound_motions(&bound, AffectEmotion::Sad, &entries).len(), 1);
     }
 
     mod reply_motion {

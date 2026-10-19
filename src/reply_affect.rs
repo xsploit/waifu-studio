@@ -211,6 +211,9 @@ pub enum AffectSource {
 #[serde(default, deny_unknown_fields)]
 pub struct AffectConfig {
     pub enabled: bool,
+    /// Saves without a source predate appraisal and keep reply metadata; new
+    /// configs appraise the incoming message so emotion is known before speech.
+    #[serde(default)]
     pub source: AffectSource,
     pub influence: f64,
     pub half_life_seconds: f64,
@@ -219,7 +222,7 @@ impl Default for AffectConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            source: AffectSource::ReplyMetadata,
+            source: AffectSource::UserMessageJev,
             influence: 0.45,
             half_life_seconds: 45.0,
         }

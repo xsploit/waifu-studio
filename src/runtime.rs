@@ -941,7 +941,12 @@ fn camera_controls(
                 orbit.pitch = 0.04;
             }
         }
-        if window.focused && !pointer_captured && !studio.click_through {
+        // Settings pages draw on egui's background layer, which egui does not
+        // report as pointer-captured; scrolling them must not zoom the hidden
+        // scene camera. Only the conversation view steers the camera.
+        let scene_visible =
+            studio.mode == ViewMode::Desktop || studio.tab == crate::studio::Tab::Chat;
+        if window.focused && !pointer_captured && !studio.click_through && scene_visible {
             if studio.mode == ViewMode::Studio && buttons.pressed(MouseButton::Left) {
                 orbit.yaw -= motion.delta.x * 0.006;
                 orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(-1.35, 1.35);
