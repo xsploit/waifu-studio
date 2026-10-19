@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::Read,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
@@ -512,6 +512,23 @@ fn validate_request(config: &VoiceConfig, text: &str) -> Result<(), String> {
     Ok(())
 }
 const MAX_AUDIO: u64 = 32 * 1024 * 1024;
+/// Clone one credential-free client so successive chunks reuse proxy/TLS
+/// connections. Authorization remains scoped to each individual request.
+pub(crate) fn speech_client() -> Result<reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(90))
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .pool_max_idle_per_host(2)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| "Could not initialize speech HTTP client".into())
+        })
+        .clone()
+}
 fn synthesize(
     config: &VoiceConfig,
     text: &str,
@@ -651,12 +668,7 @@ fn prepare_response(
     if cancelled() {
         return Err("Speech cancelled".into());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "Could not initialize speech HTTP client")?;
+    let client = speech_client()?;
     let mut request = client.post(url).json(&body);
     if let Some(key) = key {
         request = request.bearer_auth(key);
@@ -709,6 +721,70 @@ mod tests {
         net::TcpListener,
         time::Instant,
     };
+    #[test]
+    fn consecutive_chunks_reuse_tcp_without_reusing_authorization() {
+        fn read_request(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut bytes = Vec::new();
+            loop {
+                let mut buf = [0; 4096];
+                let n = stream.read(&mut buf)?;
+                if n == 0 {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|x| x == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..end]);
+                    let length = header
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|n| n.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        return Ok(String::from_utf8(bytes).unwrap());
+                    }
+                }
+            }
+        }
+        fn respond(stream: &mut std::net::TcpStream) {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nRIFF").unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/tts", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let first = read_request(&mut socket).unwrap();
+            respond(&mut socket);
+            let (second, reused) = match read_request(&mut socket) {
+                Ok(request) => (request, true),
+                Err(_) => {
+                    let (other, _) = listener.accept().unwrap();
+                    socket = other;
+                    (read_request(&mut socket).unwrap(), false)
+                }
+            };
+            respond(&mut socket);
+            (first, second, reused)
+        });
+        let config = VoiceConfig {
+            adapter: VoiceAdapter::FishLocal,
+            endpoint,
+            ..Default::default()
+        };
+        synthesize(&config, "First phrase", Some("first-test-key"), || false).unwrap();
+        synthesize(&config, "Second phrase", Some("second-test-key"), || false).unwrap();
+        let (first, second, reused) = server.join().unwrap();
+        assert!(
+            reused,
+            "Successive speech chunks must share a TCP connection"
+        );
+        assert!(first.contains("Bearer first-test-key"));
+        assert!(second.contains("Bearer second-test-key"));
+        assert!(!second.contains("first-test-key"));
+    }
     fn server(status: u16, mime: &str, bytes: &[u8]) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1/tts", listener.local_addr().unwrap());

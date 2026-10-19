@@ -14,7 +14,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 
 const MAX_EVENT: usize = 2 * 1024 * 1024;
@@ -389,12 +388,7 @@ fn run(
         body["reference_id"] = request.config.reference_id.trim().into();
     }
     // Do not use no_proxy(): normal reqwest routing honors the user's proxy configuration.
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(90))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "Could not initialize Fish streaming client")?;
+    let client = crate::voice::speech_client()?;
     let response = client
         .post(request.url)
         .bearer_auth(request.key)
@@ -730,7 +724,7 @@ mod tests {
         io::{Cursor, Write},
         net::{TcpListener, TcpStream},
         sync::mpsc,
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     fn wav(samples: usize, unknown: bool) -> Vec<u8> {

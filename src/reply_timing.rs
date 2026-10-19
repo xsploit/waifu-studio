@@ -15,9 +15,12 @@ pub enum Stage {
     Consumed,
     Layout,
     Returned,
+    SpeechConnect,
+    SpeechQueued,
+    AudioQueued,
 }
 impl Stage {
-    pub const ALL: [(Self, &'static str); 8] = [
+    pub const ALL: [(Self, &'static str); 11] = [
         (Self::Prepared, "Request prepared"),
         (Self::Worker, "Worker started"),
         (Self::Request, "HTTP send started"),
@@ -26,11 +29,14 @@ impl Stage {
         (Self::Consumed, "First text consumed"),
         (Self::Layout, "First text laid out"),
         (Self::Returned, "Send handler returned"),
+        (Self::SpeechConnect, "Speech connection queued (WebSocket)"),
+        (Self::SpeechQueued, "First speech text queued"),
+        (Self::AudioQueued, "First audio queued for playback"),
     ];
 }
 struct Data {
     started: Instant,
-    stages: [Option<Duration>; 8],
+    stages: [Option<Duration>; 11],
     history_save: Option<Duration>,
     cancelled: bool,
 }
@@ -40,7 +46,7 @@ impl ReplyTiming {
     pub fn new(started: Instant) -> Self {
         Self(Arc::new(Mutex::new(Data {
             started,
-            stages: [None; 8],
+            stages: [None; 11],
             history_save: None,
             cancelled: false,
         })))
@@ -66,7 +72,7 @@ impl ReplyTiming {
             data.cancelled = true;
         }
     }
-    pub fn snapshot(&self) -> Option<([Option<Duration>; 8], Option<Duration>, bool)> {
+    pub fn snapshot(&self) -> Option<([Option<Duration>; 11], Option<Duration>, bool)> {
         self.0
             .lock()
             .ok()

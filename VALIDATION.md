@@ -550,3 +550,10 @@ Compared the local Homunculus drag/screen/sitting source: seating is chosen at d
 ## Homunculus + Mate source integration audit — 2026-10-18
 
 Verified both upstream HEADs and saved the feature/licensing inventory in `reviews/companion-upstream-integration.md`. Standing desktop avatars now use local idle/talking playlists; drag/sit suspend them and suppress reply-body decisions without later replay. Automatic transparent-margin passthrough can recover via fresh global cursor tracking even after dismissing controls; stale geometry restores interaction. Forced passthrough still requires separate recovery. 583 offline tests passed; after the final decision guard, 99 binary tests passed again. Strict all-target Clippy, touched-file rustfmt, whitespace checks and binary build passed. The updated app was relaunched; live compositor/audio acceptance remains open. No Mate source/assets copied, no new benchmarks or live provider calls.
+
+
+## Fish speech startup pipeline — 2026-10-19
+
+Compared recovered WebWaifu4 and Fish documentation; see `reviews/fish-startup-fix.md`. Shared credential-free HTTP clients now reuse connections, reply WebSockets connect while text is generated, first HTTP/SSE phrases can leave earlier, and WAV playback readiness uses 40 ms of PCM rather than 180 ms. Composer timing now separates speech connection, first text queued and first audio queued (not physical speaker onset). Saved provider, transport, voice, reference and speed settings are preserved.
+
+Serial full all-target suite: **587 passed** (476 lib + 100 bin + 6 integration + 2 + 3 example tests). Strict all-target Clippy, touched-file rustfmt, diff whitespace and normal binary build passed, using one low-priority Cargo job. New offline tests cover HTTP connection reuse with per-request authorization, early WAV readiness, first-phrase grouping and WebSocket connection before reply text. No new paid benchmarks or live synthesis. Actual audible latency and underrun resilience remain unverified.

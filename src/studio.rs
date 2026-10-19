@@ -482,12 +482,10 @@ impl Studio {
         if request.id != self.voice_id {
             return;
         }
-        if !request.opened && request.text.trim().is_empty() {
-            if request.finished {
-                self.voice_busy = false;
-            } else {
-                self.pending_ws = Some(request);
-            }
+        // Connect as soon as the reply starts, in parallel with chat generation.
+        // No text/flush is sent until the speech filters have produced content.
+        if !request.opened && request.finished && request.text.trim().is_empty() {
+            self.voice_busy = false;
             return;
         }
         let result = (|| {
@@ -495,10 +493,12 @@ impl Studio {
                 ws.timestamps = request.config.delivery
                     == waifu_studio::voice::VoiceDelivery::TimestampWebSocket;
                 ws.open(request.id, &request.config, request.key.take())?;
+                self.mark_reply_speech(Stage::SpeechConnect);
                 request.opened = true;
             }
             if !request.text.is_empty() {
                 ws.push_text(&request.text)?;
+                self.mark_reply_speech(Stage::SpeechQueued);
                 request.text.clear();
             }
             if request.finished {
@@ -611,7 +611,11 @@ impl Studio {
     /// and returns the next ready clip or stream once nothing else is playing.
     fn pump_http(&mut self, playing: bool) -> Option<VoiceEvent> {
         let request = self.pending_http.as_mut()?;
+        let before = request.outstanding();
         let result = request.pump(&mut self.voice.lock().unwrap(), playing);
+        if request.outstanding() > before {
+            self.mark_reply_speech(Stage::SpeechQueued);
+        }
         match result {
             Err(error) => {
                 self.stop_voice();
@@ -625,6 +629,13 @@ impl Studio {
                 }
                 next
             }
+        }
+    }
+    fn mark_reply_speech(&self, stage: Stage) {
+        if self.reply_speech_job.is_some()
+            && let Some(timing) = &self.reply_timing
+        {
+            timing.mark(stage);
         }
     }
     /// Routes a current worker event; returns events that should play now.
@@ -1456,6 +1467,7 @@ pub fn poll_voice(
         }
         match event {
             LiveEvent::Playing { audio: source, .. } => {
+                studio.mark_reply_speech(Stage::AudioQueued);
                 commands.spawn((
                     SpokenAudio,
                     AudioPlayer::<waifu_studio::metered_audio::MeteredSpeech>(
@@ -1568,6 +1580,7 @@ fn play_voice_event(
             play_clip(commands, studio, audio, meter, visemes, clip)
         }
         VoiceEvent::Streaming { audio: source, .. } => {
+            studio.mark_reply_speech(Stage::AudioQueued);
             commands.spawn((
                 SpokenAudio,
                 AudioPlayer::<waifu_studio::metered_audio::MeteredSpeech>(
@@ -1612,6 +1625,7 @@ fn play_clip(
         return false;
     }
     let handle = audio.add(meter.buffered_with_visemes(source, visemes.begin_speech()));
+    studio.mark_reply_speech(Stage::AudioQueued);
     commands.spawn((
         SpokenAudio,
         AudioPlayer::<waifu_studio::metered_audio::MeteredSpeech>(handle),
@@ -2626,6 +2640,59 @@ mod tests {
         assert!(studio.finish_reply_speech(id));
         assert!(!studio.finish_reply_speech(Uuid::new_v4()));
         assert!(!studio.voice_busy);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn websocket_connects_before_reply_text_and_cancel_discards_it() {
+        use std::{net::TcpListener, sync::mpsc, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/v1/tts", listener.local_addr().unwrap());
+        let (connected_tx, connected_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((socket, _)) => {
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut socket = tungstenite::accept(socket).unwrap();
+                        // Only a start event may be sent before the first text.
+                        let start = socket.read().unwrap();
+                        assert!(start.is_binary());
+                        connected_tx.send(()).unwrap();
+                        let _ = socket.read(); // cancelled connection closes
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "No early WebSocket connection"
+                        );
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        });
+        let (mut studio, directory) = studio();
+        studio.library.voice.enabled = true;
+        studio.library.voice.endpoint = endpoint;
+        studio.library.voice.direction.clear();
+        studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
+        studio.voice_key = "test-session-key".into();
+        studio.begin_reply_speech(Uuid::new_v4());
+        assert!(studio.pending_ws.as_ref().unwrap().text.is_empty());
+        let mut ws = waifu_studio::fish_ws::FishWsState::default();
+        ws.enabled = true;
+        studio.pump_ws(&mut ws);
+        connected_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(studio.pending_ws.as_ref().unwrap().opened);
+        studio.stop_voice();
+        ws.cancel();
+        server.join().unwrap();
+        assert!(studio.pending_ws.is_none());
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]

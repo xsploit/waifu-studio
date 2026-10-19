@@ -16,6 +16,9 @@ pub(crate) const NETWORK_BUDGET: Duration = Duration::from_secs(90);
 pub(crate) const STALL_LIMIT: Duration = Duration::from_secs(10);
 /// Absolute wall-clock cap for one stream, playback waits included.
 pub(crate) const ABSOLUTE_CAP: Duration = Duration::from_secs(20 * 60);
+/// A small media cushion for the audio callback, not a wall-clock sleep.
+/// Start before the former 180 ms gate while retaining two 20 ms audio periods.
+const STARTUP_BUFFER_MS: usize = 40;
 
 /// Shared time budget for one streaming speech worker. The WAV parser, SSE and
 /// WebSocket readers all check the same budget; only `StreamingVoice::push`
@@ -373,7 +376,7 @@ pub(crate) fn receive_wav<R: Read>(
     receive_wav_with_budget(reader, generation, expected, &budget, ready)
 }
 
-/// Callback fires once after 180 ms of PCM is buffered, or at EOF for short clips.
+/// Callback fires once after 40 ms of PCM is buffered, or at EOF for short clips.
 /// Only standard little-endian RIFF PCM16 / IEEE float32 are accepted.
 pub(crate) fn receive_wav_with_budget<R: Read>(
     reader: R,
@@ -484,7 +487,9 @@ pub(crate) fn receive_wav_with_budget<R: Read>(
             total += samples.len();
             audio.push(&samples, budget)?;
             carry.drain(..usable);
-            if !emitted && audio.buffered() >= rate as usize * channels as usize * 180 / 1000 {
+            if !emitted
+                && audio.buffered() >= rate as usize * channels as usize * STARTUP_BUFFER_MS / 1000
+            {
                 ready(audio.clone());
                 emitted = true;
             }
@@ -511,6 +516,51 @@ pub(crate) fn receive_wav_with_budget<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn starts_with_small_pcm_cushion_before_later_network_audio_arrives() {
+        struct Gated {
+            bytes: std::io::Cursor<Vec<u8>>,
+            ready: Arc<AtomicBool>,
+        }
+        impl Read for Gated {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                // Header + 40 ms mono PCM16 at 8 kHz. The remainder models a
+                // later network packet: startup must happen before reading it.
+                let boundary = 44 + 320 * 2;
+                let pos = self.bytes.position() as usize;
+                if pos >= boundary {
+                    assert!(self.ready.load(Ordering::Acquire));
+                }
+                let limit = if pos < boundary {
+                    out.len().min(boundary - pos)
+                } else {
+                    out.len()
+                };
+                self.bytes.read(&mut out[..limit])
+            }
+        }
+        let mut bytes = wav();
+        bytes.truncate(44);
+        bytes.extend(std::iter::repeat_n(0u8, 1600));
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut calls = 0;
+        receive_wav(
+            Gated {
+                bytes: std::io::Cursor::new(bytes),
+                ready: ready.clone(),
+            },
+            Arc::new(AtomicU64::new(1)),
+            1,
+            Instant::now() + Duration::from_secs(1),
+            |audio| {
+                calls += 1;
+                assert_eq!(audio.buffered_frames(), 320);
+                ready.store(true, Ordering::Release);
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+    }
     fn wav() -> Vec<u8> {
         let mut b = b"RIFF".to_vec();
         b.extend(40u32.to_le_bytes());

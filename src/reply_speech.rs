@@ -17,6 +17,7 @@ pub struct SseReplySpeech {
     text: String,
     finished: bool,
     in_flight: bool,
+    first_chunk: bool,
 }
 impl SseReplySpeech {
     pub fn new(id: u64, config: VoiceConfig, key: Option<String>) -> Self {
@@ -28,6 +29,7 @@ impl SseReplySpeech {
             text: String::new(),
             finished: false,
             in_flight: false,
+            first_chunk: true,
         }
     }
     pub fn push(&mut self, text: &str) {
@@ -48,7 +50,8 @@ impl SseReplySpeech {
         if playing || self.in_flight {
             return None;
         }
-        let text = take_speech_chunk(&mut self.text, self.finished)?;
+        let text = take_reply_chunk(&mut self.text, self.finished, self.first_chunk)?;
+        self.first_chunk = false;
         self.in_flight = true;
         Some(text)
     }
@@ -98,6 +101,7 @@ pub struct HttpReplySpeech {
     ready: VecDeque<VoiceEvent>,
     outstanding: usize,
     finished: bool,
+    first_chunk: bool,
 }
 impl HttpReplySpeech {
     pub fn new(id: u64, config: VoiceConfig, key: Option<String>) -> Self {
@@ -110,6 +114,7 @@ impl HttpReplySpeech {
             ready: VecDeque::new(),
             outstanding: 0,
             finished: false,
+            first_chunk: true,
         }
     }
     pub fn id(&self) -> u64 {
@@ -163,9 +168,10 @@ impl HttpReplySpeech {
         };
         while self.outstanding + self.ready.len() < HTTP_SLOTS
             && worker.can_prefetch()
-            && let Some(text) = take_speech_chunk(&mut self.text, self.finished)
+            && let Some(text) = take_reply_chunk(&mut self.text, self.finished, self.first_chunk)
         {
             worker.enqueue(self.id, self.config.clone(), text, self.key.clone())?;
+            self.first_chunk = false;
             self.outstanding += 1;
         }
         Ok(next)
@@ -177,14 +183,24 @@ pub const SPEECH_CHUNK_MAX: usize = 300;
 /// Takes the next sentence group (40–300 characters). Western terminators split
 /// only before whitespace, so decimals, URLs and a still-streaming "…" survive.
 pub fn take_speech_chunk(text: &mut String, finished: bool) -> Option<String> {
+    take_reply_chunk(text, finished, false)
+}
+
+/// Only the opening phrase is eager: finish a short sentence after ten chars,
+/// or a word boundary after 24. Later groups retain the larger sentence policy.
+fn take_reply_chunk(text: &mut String, finished: bool, first: bool) -> Option<String> {
     loop {
         let mut end = None;
         let mut last_space = None;
+        let mut first_phrase = None;
         let mut chars = text.char_indices().enumerate().peekable();
         while let Some((count, (index, c))) = chars.next() {
             let next = index + c.len_utf8();
             if c.is_whitespace() {
                 last_space = Some(next);
+                if first && count + 1 >= 24 && first_phrase.is_none() {
+                    first_phrase = Some(next);
+                }
             }
             let boundary = match c {
                 '。' | '！' | '？' | '\n' => true,
@@ -193,7 +209,7 @@ pub fn take_speech_chunk(text: &mut String, finished: bool) -> Option<String> {
                 }
                 _ => false,
             };
-            if boundary && count + 1 >= SPEECH_CHUNK_MIN {
+            if boundary && count + 1 >= if first { 10 } else { SPEECH_CHUNK_MIN } {
                 end = Some(next);
                 break;
             }
@@ -202,7 +218,9 @@ pub fn take_speech_chunk(text: &mut String, finished: bool) -> Option<String> {
                 break;
             }
         }
-        let end = end.or_else(|| finished.then_some(text.len()))?;
+        let end = end
+            .or_else(|| finished.then_some(text.len()))
+            .or(first_phrase)?;
         let chunk: String = text.drain(..end).collect();
         let chunk = chunk.trim();
         if !chunk.is_empty() {
@@ -218,6 +236,38 @@ pub fn take_speech_chunk(text: &mut String, finished: bool) -> Option<String> {
 mod tests {
     use super::*;
     use crate::voice::{VoiceAdapter, VoiceAudio};
+
+    #[test]
+    fn first_phrase_is_eager_but_later_chunks_keep_sentence_grouping() {
+        let mut reply = SseReplySpeech::new(7, VoiceConfig::default(), None);
+        reply.push("Hello there! ");
+        assert_eq!(reply.next_text(false).as_deref(), Some("Hello there!"));
+        assert!(!reply.finished);
+        reply.in_flight = false;
+        reply.push("Short! ");
+        assert!(reply.next_text(false).is_none());
+        reply.push("The following sentence makes this a full group. ");
+        assert_eq!(
+            reply.next_text(false).as_deref(),
+            Some("Short! The following sentence makes this a full group.")
+        );
+
+        let mut text = "A useful opening phrase without punctuation ".to_owned();
+        let first = take_reply_chunk(&mut text, false, true).unwrap();
+        assert!(first.chars().count() >= 23);
+        assert_eq!(
+            format!("{first} {}", text.trim()),
+            "A useful opening phrase without punctuation"
+        );
+        let mut text = "The value is 3.14 and ".to_owned();
+        assert!(take_reply_chunk(&mut text, false, true).is_none());
+        let mut text = "https://example.com/path".to_owned();
+        assert!(take_reply_chunk(&mut text, false, true).is_none());
+        assert_eq!(
+            take_reply_chunk(&mut text, true, true).as_deref(),
+            Some("https://example.com/path")
+        );
+    }
 
     fn ready(id: u64) -> VoiceEvent {
         VoiceEvent::Ready {
