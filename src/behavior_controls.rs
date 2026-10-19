@@ -12,7 +12,7 @@ pub fn ui(
 ) -> bool {
     let before = config.clone();
     ui.heading("Local behavior");
-    ui.label("Optional local Idle / Thinking / Speaking controller. Emotion previews use an explicitly selected expression and decay over time. No conversation keyword inference, network calls, or external brain is connected.");
+    ui.label("Optional local Idle / Thinking / Speaking controller. Emotion previews use an explicitly selected expression and decay over time. Automatic character emotion can separately use reply metadata or an opted-in Jev request; configure its source in the emotion controls.");
     ui.checkbox(
         &mut config.enabled,
         "Enable local behavior for this character",
