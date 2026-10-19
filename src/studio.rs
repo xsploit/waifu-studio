@@ -40,6 +40,7 @@ pub enum ViewMode {
 
 enum FileEvent {
     Models(Vec<PathBuf>),
+    LocalAudio(u64, Option<Uuid>, Result<Vec<u8>, String>),
     Background(PathBuf),
     Animation(PathBuf),
     Image(PathBuf, Option<Uuid>),
@@ -124,6 +125,7 @@ pub struct Studio {
     pending_http: Option<waifu_studio::reply_speech::HttpReplySpeech>,
     reply_speech_job: Option<Uuid>,
     stop_audio: bool,
+    local_preview: Option<Vec<u8>>,
     dialog_open: Arc<AtomicBool>,
     unload_model: bool,
     pub store: Store,
@@ -197,6 +199,7 @@ impl Studio {
             pending_http: None,
             reply_speech_job: None,
             stop_audio: false,
+            local_preview: None,
             store,
             library,
             tab: Tab::Chat,
@@ -283,6 +286,7 @@ impl Studio {
         }
     }
     pub fn stop_voice(&mut self) {
+        self.local_preview = None;
         self.speech_queue.clear();
         self.speech_character = None;
         self.scene_speech_active = false;
@@ -626,6 +630,59 @@ impl Studio {
         config.delivery = waifu_studio::voice::VoiceDelivery::Buffered;
         self.active_voice = Some(config);
         self.scene_speech_active = false;
+    }
+    fn receive_local_preview(
+        &mut self,
+        generation: u64,
+        character: Option<Uuid>,
+        result: Result<Vec<u8>, String>,
+    ) {
+        if generation == self.voice_id && character == self.library.selected {
+            match result {
+                Ok(bytes) => self.local_preview = Some(bytes),
+                Err(error) => self.error = Some(error),
+            }
+        }
+    }
+    /// Explicit local playback; no synthesis provider or saved voice change.
+    pub fn preview_audio_file(&mut self) {
+        if self.dialog_open.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let flag = self.dialog_open.clone();
+        let tx = self.file_tx.clone();
+        let generation = self.voice_id;
+        let character = self.library.selected;
+        std::thread::spawn(move || {
+            let _guard = DialogGuard(flag);
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Preview local audio for lip sync")
+                .add_filter("Audio", &["wav", "mp3"])
+                .pick_file()
+            {
+                use std::io::Read;
+                let result = (|| {
+                    let file = std::fs::File::open(path)
+                        .map_err(|_| "Could not open local audio".to_owned())?;
+                    let meta = file
+                        .metadata()
+                        .map_err(|_| "Could not inspect local audio")?;
+                    const LIMIT: u64 = 32 * 1024 * 1024;
+                    if !meta.is_file() || meta.len() > LIMIT {
+                        return Err("Choose a regular WAV/MP3 file of at most 32 MiB".into());
+                    }
+                    let mut bytes = Vec::new();
+                    file.take(LIMIT + 1)
+                        .read_to_end(&mut bytes)
+                        .map_err(|_| "Could not read local audio")?;
+                    if bytes.len() as u64 > LIMIT {
+                        return Err("Local audio exceeds 32 MiB".into());
+                    }
+                    Ok(bytes)
+                })();
+                let _ = tx.send(FileEvent::LocalAudio(generation, character, result));
+            }
+        });
     }
     pub fn preview_voice(&mut self) {
         let text = self
@@ -1093,6 +1150,9 @@ pub fn poll_studio(
     for event in files {
         match event {
             FileEvent::Models(paths) => studio.import_paths(paths),
+            FileEvent::LocalAudio(generation, character, result) => {
+                studio.receive_local_preview(generation, character, result);
+            }
             FileEvent::Image(path, character) => {
                 if character == studio.library.selected
                     && studio.attachments.len() < waifu_studio::attachments::MAX_ATTACHMENTS
@@ -1367,7 +1427,9 @@ pub fn poll_voice(
         }
     }
     design.poll();
-    if let Some(bytes) = design.take_preview() {
+    let local_preview = studio.local_preview.take();
+    let preview_is_local = local_preview.is_some();
+    if let Some(bytes) = local_preview.or_else(|| design.take_preview()) {
         let source = AudioSource {
             bytes: bytes.into(),
         };
@@ -1396,7 +1458,14 @@ pub fn poll_voice(
                 PlaybackSettings::DESPAWN,
             ));
         } else {
-            studio.error = Some("Voice Design returned unsupported preview audio".into());
+            studio.error = Some(
+                if preview_is_local {
+                    "Local file is not supported WAV/MP3 audio"
+                } else {
+                    "Voice Design returned unsupported preview audio"
+                }
+                .into(),
+            );
         }
     }
     let event = studio.voice.lock().unwrap().try_recv();
@@ -2201,6 +2270,32 @@ mod tests {
         }
         studio.cancel_chat();
         assert!(studio.appraised_affect.is_none());
+        drop(studio);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn local_preview_respects_stop_generation_and_character_without_changing_voice() {
+        let (mut studio, directory) = studio();
+        let selected = studio.library.selected;
+        let voice_before = serde_json::to_value(&studio.library.voice).unwrap();
+        let generation = studio.voice_id;
+        studio.receive_local_preview(generation, selected, Ok(vec![1, 2, 3]));
+        assert_eq!(studio.local_preview.as_deref(), Some([1, 2, 3].as_slice()));
+        studio.stop_voice();
+        assert!(studio.local_preview.is_none());
+        studio.receive_local_preview(generation, selected, Ok(vec![4]));
+        studio.receive_local_preview(generation, selected, Err("stale error".into()));
+        assert!(studio.local_preview.is_none());
+        assert!(studio.error.is_none());
+        studio.receive_local_preview(studio.voice_id, Some(Uuid::new_v4()), Ok(vec![5]));
+        assert!(studio.local_preview.is_none());
+        studio.receive_local_preview(studio.voice_id, selected, Err("read failed".into()));
+        assert_eq!(studio.error.as_deref(), Some("read failed"));
+        assert_eq!(
+            serde_json::to_value(&studio.library.voice).unwrap(),
+            voice_before
+        );
         drop(studio);
         std::fs::remove_dir_all(directory).unwrap();
     }

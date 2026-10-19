@@ -2287,6 +2287,9 @@ fn voice_settings(
         {
             studio.preview_voice();
         }
+        if ui.button("Preview local WAV/MP3…").clicked() {
+            studio.preview_audio_file();
+        }
         if ui.button("Stop speech").clicked() {
             studio.stop_voice();
         }
