@@ -1,6 +1,6 @@
 # Waifu Studio: review and test handoff
 
-Updated 2026-10-18. Latest published source baseline when updated: `0648600` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
+Updated 2026-10-18. Latest published source baseline when updated: `4b8f1e4` on `main`. Inspect current HEAD and working-tree status before reviewing; concurrent implementation may be in progress. Private remote: https://github.com/xsploit/waifu-studio.git.
 
 ## Prompt for the reviewing model
 
@@ -44,7 +44,9 @@ Independent Muse review observed **503 passing tests** (406 library, 90 applicat
 
 Later SSE sentence scheduling passed 4 queue tests, 19 Studio tests, 2 benchmark tests and strict all-target Clippy. The hosted HTTP/Low trial preset passed all 16 voice tests, strict Clippy and package formatting. The next integrated run passed 522 tests (423 library, 91 application/controller/UI, 6 integration, 2 benchmark), including material expressions, local fictional routines and bounded SSE cancellation admission. These are dated receipts, not a fresh run by this document's reader.
 
-Latest integrated working-tree receipt: **552 tests passed** (451 library, 93 application, 6 integration, 2 benchmark), with clean strict all-target Clippy. Includes authored bone/expression gaze and the parent correction to Fable’s target-angle finding; the focused re-review hit Claude’s session limit. This includes the optional incoming-message Jev appraisal and CLI environment/SSE terminal-state fixes described in the newest VALIDATION sections. These checks were performed before committing this slice; they are not a pristine-baseline or live-provider receipt.
+Latest full-suite receipt at clean source HEAD **4b8f1e4**: `cargo test --all-targets` passed (453 library, 95 application, 6 integration, 2 benchmark = **556 tests**), zero failures. Strict all-target Clippy passed in the immediately preceding source slice. Includes authored gaze, optional VAD silence trimming, focused live mouth diagnostics and local WAV/MP3 preview. Historical 552-test and older receipts remain in VALIDATION.md. These are offline checks, not physical audio or interactive acceptance.
+
+Newest review priority: local audio preview in `studio.rs`/`ui.rs`: bounded nonblocking regular-file read, stale generation/character rejection, Stop behavior, decoder failures and shared Voice Design playback/viseme path. Verify this can replace ongoing speech cleanly without changing saved voice settings. No fresh independent Claude review has run for the trim/diagnostics/local-preview slices. Live desktop control is currently unavailable because the KDE physical-input guard is missing; do not bypass it. An isolated offscreen Scene/avatar render succeeded, but did not expose the Face diagnostics below the viewport.
 
 Review priority: `appraisal.rs` plus focused/group integration. Check opt-in source exclusivity, bounded two-worker admission including cancelled requests, 1.5 s result lifetime, strict offered choices, stale turn/character/config rejection, and error redaction. Group jobs may wait briefly for appraisal after handing off speech; late focused appraisals do not replay completed body-motion decisions. No fresh independent Claude review has run for this slice.
 
