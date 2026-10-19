@@ -173,7 +173,7 @@ impl Default for Library {
             providers: ProviderConfig::presets(),
             provider: 0,
             scene: SceneSettings::default(),
-            voice: crate::voice::VoiceConfig::default(),
+            voice: crate::voice::VoiceConfig::companion_default(),
             listen: crate::listen::ListenConfig::default(),
         }
     }
@@ -607,6 +607,36 @@ mod tests {
         assert_eq!(library.provider, 1);
         assert!(!library.select_character(Uuid::new_v4()));
         assert_eq!(library.selected, Some(second_id));
+    }
+
+    #[test]
+    fn new_setup_uses_measured_fast_defaults_and_saved_choices_survive() {
+        use crate::{
+            provider::ReasoningEffort,
+            voice::{VoiceAdapter, VoiceConfig, VoiceDelivery},
+        };
+        let mut library = Library::default();
+        let chat = &library.providers[library.provider];
+        assert_eq!(chat.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(chat.reasoning_effort, Some(ReasoningEffort::None));
+        assert_eq!(chat.routing.only, ["baseten"]);
+        for voice in [
+            &library.voice,
+            &VoiceConfig::preset(VoiceAdapter::FishHosted),
+        ] {
+            assert_eq!(voice.model, "drama-3");
+            assert_eq!(voice.delivery, VoiceDelivery::HttpWavStream);
+            assert_eq!(voice.latency, "low");
+        }
+        library.providers[0].model = "google/gemini-3.5-flash".into();
+        library.providers[0].reasoning_effort = Some(ReasoningEffort::Low);
+        library.providers[0].routing.only.clear();
+        library.voice.model = "s2.1-pro".into();
+        library.voice.delivery = VoiceDelivery::LiveWebSocket;
+        library.voice.latency = "balanced".into();
+        let saved = serde_json::to_value(&library).unwrap();
+        let loaded: Library = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(serde_json::to_value(loaded).unwrap(), saved);
     }
 
     #[test]

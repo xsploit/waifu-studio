@@ -146,7 +146,7 @@ Other launch options:
 
 **Fish models and billing**
 
-- Hosted Fish defaults to `s2.1-pro-free`. Paid models such as `drama-3` require an explicit selection.
+- New setups default to DeepSeek V4.1 Flash through Vercel, Baseten-only routing and reasoning None. Hosted speech defaults to `drama-3`, HTTP WAV streaming and Low latency; `s2.1-pro` remains selectable with the same transport settings. These use the configured providers' billing. Saved profiles retain their explicit selections.
 - Unknown model names are rejected so a request can't silently fall back to a paid model.
 - See [FISH-CAPABILITIES.md](FISH-CAPABILITIES.md) for the reviewed contracts and pricing references.
 

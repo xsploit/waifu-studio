@@ -79,7 +79,19 @@ impl Default for VoiceConfig {
     }
 }
 impl VoiceConfig {
+    /// New companion setup only; serde fallback defaults remain compatible.
+    pub fn companion_default() -> Self {
+        Self {
+            model: "drama-3".into(),
+            delivery: VoiceDelivery::HttpWavStream,
+            latency: "low".into(),
+            ..Self::default()
+        }
+    }
     pub fn preset(adapter: VoiceAdapter) -> Self {
+        if adapter == VoiceAdapter::FishHosted {
+            return Self::companion_default();
+        }
         let mut config = Self {
             adapter,
             ..Self::default()

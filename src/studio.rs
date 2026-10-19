@@ -2994,12 +2994,15 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
-    fn http_reply_failure_stops_reply_and_websocket_default_is_unchanged() {
+    fn http_reply_failure_stops_reply_and_explicit_transports_still_work() {
         let (mut studio, directory) = studio();
         studio.library.voice.enabled = true;
         // Hosted speech without any key is skipped quietly; give this session one.
         studio.voice_key = "session-secret".into();
-        // Default delivery is the live WebSocket and never uses HTTP chunking.
+        // A new setup takes the HTTP path; selecting WebSocket still bypasses it.
+        studio.begin_reply_speech(Uuid::new_v4());
+        assert!(studio.pending_http.is_some() && studio.pending_ws.is_none());
+        studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
         studio.begin_reply_speech(Uuid::new_v4());
         assert!(studio.pending_ws.is_some() && studio.pending_http.is_none());
         studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::TimestampSse;

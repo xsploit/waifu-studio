@@ -296,10 +296,18 @@ impl Default for ProviderConfig {
 impl ProviderConfig {
     pub fn presets() -> Vec<Self> {
         vec![
-            Self::pinned(GatewayRoute::VercelGateway),
+            Self::companion_default(),
             Self::pinned(GatewayRoute::OpenRouterResponses),
             Self::default(),
         ]
+    }
+    /// Initial companion connection; saved connections keep their own settings.
+    pub fn companion_default() -> Self {
+        let mut config = Self::pinned(GatewayRoute::VercelGateway);
+        config.model = "deepseek/deepseek-v4.1-flash".into();
+        config.reasoning_effort = Some(ReasoningEffort::None);
+        config.routing.only = vec!["baseten".into()];
+        config
     }
     pub fn pinned(route: GatewayRoute) -> Self {
         let mut config = Self {
