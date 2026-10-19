@@ -2436,12 +2436,31 @@ fn history(ctx: &egui::Context, studio: &Studio, name: &str, left: f32, height: 
                                     .strong()
                                     .color(if turn.role == "user" { MUTED } else { ACCENT }),
                             );
-                            ui.label(&turn.content);
+                            let text = ui.label(&turn.content);
+                            if ui.is_rect_visible(text.rect)
+                                && turn.role == "assistant"
+                                && studio
+                                    .turns
+                                    .last()
+                                    .is_some_and(|last| std::ptr::eq(last, turn))
+                                && studio
+                                    .completed_chat
+                                    .as_ref()
+                                    .is_some_and(|(_, reply)| reply.is_ok())
+                                && let Some(timing) = &studio.reply_timing
+                            {
+                                timing.mark(waifu_studio::reply_timing::Stage::Layout);
+                            }
                             ui.add_space(10.0);
                         }
                         if !studio.pending_response.is_empty() {
                             ui.label(RichText::new(name).small().strong().color(ACCENT));
-                            ui.label(&studio.pending_response);
+                            let text = ui.label(&studio.pending_response);
+                            if ui.is_rect_visible(text.rect)
+                                && let Some(timing) = &studio.reply_timing
+                            {
+                                timing.mark(waifu_studio::reply_timing::Stage::Layout);
+                            }
                         }
                     });
             });
@@ -2527,6 +2546,24 @@ fn composer(
                             {
                                 studio.open_image();
                                 ui.close();
+                            }
+                            if let Some(timing) = &studio.reply_timing {
+                                ui.collapsing("Latest reply timing", |ui| {
+                                    if let Some((stages, history, cancelled)) = timing.snapshot() {
+                                        ui.small("Elapsed since Send; missing stages have not been observed.");
+                                        for (stage, label) in waifu_studio::reply_timing::Stage::ALL {
+                                            let value = stages[stage as usize]
+                                                .map(|elapsed| format!("{} ms", elapsed.as_millis()))
+                                                .unwrap_or_else(|| "—".into());
+                                            ui.label(format!("{label}: {value}"));
+                                        }
+                                        if let Some(duration) = history {
+                                            ui.label(format!("History save duration: {} ms", duration.as_millis()));
+                                        }
+                                        if cancelled { ui.small("Cancelled; late worker timings ignored."); }
+                                        ui.small("Text layout is not GPU presentation or speaker onset. Local-only; not saved.");
+                                    }
+                                });
                             }
                             if ui.button("Import character…").clicked() {
                                 studio.open_models();

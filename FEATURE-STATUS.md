@@ -58,3 +58,7 @@ Settings occupy an opaque full page beside navigation, with dropdowns for compan
 Buffered and HTTP WAV single-character replies now speak sentence groups during LLM streaming. HTTP supports bounded two-request prefetch with ordered delivery; scene replies also emit filtered speech groups before completion. Timestamp SSE remains unchanged. Offline tests validate these paths, not a new latency result.
 
 Facts memory now rejects conservative filler-only duplicates and prunes expired correction trees on later saves, with an expiry tooltip explaining permanence. Fable's RGB disable, primary-window gaze, and Hyprland transient recovery/focus-sort findings are fixed. 471 tests and warnings-denied clippy pass; runtime/audio acceptance remains open.
+
+### Settings and reply timing — 2026-10-18
+
+Advanced settings now share rounded groups, aligned label/control rows and muted hints across Voice, Connections, Scene/avatar, Memory, Tools and Tasks. Switch labels remain clickable; editors, action rows and popup multiselects retain suitable widgets. Expanded Voice, Memory and Scene layouts were checked in isolated offscreen captures, including Voice at 900 px width. The composer + menu exposes a local latest-reply timing receipt to distinguish preparation, request/headers, first provider text, consumption, text layout and synchronous history saving. This is diagnostic instrumentation, not a measured live latency improvement. See VALIDATION.md for the 577-test receipt and its limits.

@@ -1,6 +1,7 @@
 //! OpenAI-compatible gateways, executed off the render thread.
 use crate::attachments::{ImageAttachment, MAX_ATTACHMENTS, MAX_DATA_URL_BYTES};
 use crate::data::Turn;
+use crate::reply_timing::{ReplyTiming, Stage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -651,6 +652,16 @@ pub fn spawn_chat_with_images(
     images: Vec<ImageAttachment>,
     tx: Sender<ProviderEvent>,
 ) -> ChatJob {
+    spawn_chat_with_images_timed(config, turns, images, tx, None)
+}
+
+pub fn spawn_chat_with_images_timed(
+    config: ProviderConfig,
+    turns: Vec<Turn>,
+    images: Vec<ImageAttachment>,
+    tx: Sender<ProviderEvent>,
+    timing: Option<ReplyTiming>,
+) -> ChatJob {
     let id = Uuid::new_v4();
     let cancel = Arc::new(AtomicBool::new(false));
     let stopped = cancel.clone();
@@ -666,18 +677,20 @@ pub fn spawn_chat_with_images(
         .name("studio-chat".into())
         .spawn(move || {
             let _permit = permit;
+            if let Some(timing) = &timing { timing.mark(Stage::Worker); }
             let secrets = config.secrets();
             let mut deltas = DeltaCoalescer::default();
-            let result = stream_chat_with_images(&config, &turns, &images, &stopped, |text| {
+            let result = stream_chat_observed_inner(&config, &turns, &images, &stopped, |text| {
                 if stopped.load(Ordering::Relaxed) {
                     return;
                 }
+                if !text.is_empty() && let Some(timing) = &timing { timing.mark(Stage::RawText); }
                 if let Some(delta) = deltas.push(&text, Instant::now())
                     && tx.send(ProviderEvent::Delta(id, delta)).is_err()
                 {
                     stopped.store(true, Ordering::Relaxed);
                 }
-            });
+            }, |_| {}, timing.as_ref());
             if stopped.load(Ordering::Relaxed) {
                 return;
             }
@@ -770,7 +783,7 @@ fn stream_chat_with_images(
     cancel: &AtomicBool,
     on_delta: impl FnMut(String),
 ) -> Result<(), String> {
-    stream_chat_observed_inner(config, turns, images, cancel, on_delta, |_| {})
+    stream_chat_observed_inner(config, turns, images, cancel, on_delta, |_| {}, None)
 }
 
 /// Production chat with an optional bounded-event observer for diagnostics.
@@ -782,7 +795,7 @@ pub fn stream_chat_observed(
     on_delta: impl FnMut(String),
     on_event: impl FnMut(&Value),
 ) -> Result<(), String> {
-    stream_chat_observed_inner(config, turns, &[], cancel, on_delta, on_event)
+    stream_chat_observed_inner(config, turns, &[], cancel, on_delta, on_event, None)
 }
 
 fn stream_chat_observed_inner(
@@ -792,6 +805,7 @@ fn stream_chat_observed_inner(
     cancel: &AtomicBool,
     mut on_delta: impl FnMut(String),
     mut on_event: impl FnMut(&Value),
+    timing: Option<&ReplyTiming>,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         return Ok(());
@@ -839,7 +853,14 @@ fn stream_chat_observed_inner(
     if !key.is_empty() {
         request = request.bearer_auth(&key);
     }
-    let response = checked_response(request.send().map_err(|e| e.to_string())?)?;
+    if let Some(timing) = timing {
+        timing.mark(Stage::Request);
+    }
+    let response = request.send().map_err(|e| e.to_string())?;
+    if let Some(timing) = timing {
+        timing.mark(Stage::Headers);
+    }
+    let response = checked_response(response)?;
     let json_response = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -1754,7 +1775,9 @@ mod tests {
             ..Default::default()
         };
         let (tx, rx) = mpsc::channel();
-        let job = spawn_chat(config, Vec::new(), tx);
+        let timing = ReplyTiming::new(Instant::now());
+        let job =
+            spawn_chat_with_images_timed(config, Vec::new(), Vec::new(), tx, Some(timing.clone()));
         let mut text = String::new();
         while text != "Hi there!" {
             match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
@@ -1762,6 +1785,17 @@ mod tests {
                 other => panic!("unexpected event before stream end: {other:?}"),
             }
         }
+        let (stages, _, _) = timing.snapshot().unwrap();
+        let stamps: Vec<_> = [
+            Stage::Worker,
+            Stage::Request,
+            Stage::Headers,
+            Stage::RawText,
+        ]
+        .map(|stage| stages[stage as usize].expect("provider timing stage"))
+        .to_vec();
+        assert!(stamps.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(stages[Stage::Consumed as usize].is_none());
         job.cancel();
         release.send(()).unwrap();
         server.join().unwrap();

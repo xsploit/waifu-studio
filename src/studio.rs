@@ -11,6 +11,7 @@ use std::{
 use uuid::Uuid;
 #[cfg(test)]
 use waifu_studio::reply_speech::{SPEECH_CHUNK_MAX, take_speech_chunk};
+use waifu_studio::reply_timing::{ReplyTiming, Stage};
 use waifu_studio::{
     data::{Library, Store, Turn, find_models, trim_history},
     loading::{LoadAvatar, UnloadAvatar},
@@ -137,6 +138,7 @@ pub struct Studio {
     pub composer: String,
     pub turns: Vec<Turn>,
     pub pending_response: String,
+    pub reply_timing: Option<ReplyTiming>,
     pub job: Option<ChatJob>,
     pub error: Option<String>,
     pub notice: Option<String>,
@@ -211,6 +213,7 @@ impl Studio {
             composer: String::new(),
             turns: vec![],
             pending_response: String::new(),
+            reply_timing: None,
             job: None,
             error: None,
             notice: None,
@@ -960,6 +963,9 @@ impl Studio {
         }
     }
     pub fn cancel_chat(&mut self) {
+        if let Some(timing) = &self.reply_timing {
+            timing.cancel();
+        }
         self.cancel_appraisal();
         if let Some(id) = self.chat_character {
             self.affect.take_pending(id);
@@ -984,6 +990,7 @@ impl Studio {
         memory: &mut waifu_studio::memory::MemoryState,
         semantic: Option<&mut waifu_studio::semantic_memory::SemanticMemory>,
     ) {
+        let send_started = std::time::Instant::now();
         memory.select_character(self.library.selected);
         self.facts.select_character(self.library.selected);
         self.facts.poll();
@@ -1124,11 +1131,15 @@ impl Studio {
         self.notice = None;
         self.completed_chat = None;
         self.completed_affect = None;
-        self.job = Some(provider::spawn_chat_with_images(
+        let timing = ReplyTiming::new(send_started);
+        timing.mark(Stage::Prepared);
+        self.reply_timing = Some(timing.clone());
+        self.job = Some(provider::spawn_chat_with_images_timed(
             config,
             context,
             std::mem::take(&mut self.attachments),
             self.provider_tx.clone(),
+            Some(timing.clone()),
         ));
         if let Some(job_id) = self.job.as_ref().map(|job| job.id) {
             self.begin_reply_speech(job_id);
@@ -1155,9 +1166,12 @@ impl Studio {
             }
         }
         self.chat_character = Some(id);
+        let save_started = std::time::Instant::now();
         if let Err(error) = self.store.save_history(id, &self.turns) {
             self.error = Some(error);
         }
+        timing.history_save(save_started.elapsed());
+        timing.mark(Stage::Returned);
     }
 }
 
@@ -1232,6 +1246,11 @@ pub fn poll_studio(
                 }
             }
             ProviderEvent::Delta(id, text) if studio.job.as_ref().is_some_and(|j| j.id == id) => {
+                if !text.is_empty()
+                    && let Some(timing) = &studio.reply_timing
+                {
+                    timing.mark(Stage::Consumed);
+                }
                 let visible = studio.reply_filter.get_or_insert_default().push(&text);
                 studio.feed_reply_speech(id, &visible);
                 studio.pending_response.push_str(&visible)
@@ -2178,6 +2197,12 @@ mod tests {
             }],
         };
         studio.send_chat_with_semantic(&mut memory, Some(&mut semantic));
+        let (stages, history_save, cancelled) =
+            studio.reply_timing.as_ref().unwrap().snapshot().unwrap();
+        assert!(stages[Stage::Prepared as usize].is_some());
+        assert!(stages[Stage::Returned as usize] >= stages[Stage::Prepared as usize]);
+        assert!(history_save.is_some());
+        assert!(!cancelled);
         let request = received.recv_timeout(Duration::from_secs(5)).unwrap();
         server.join().unwrap();
         let wire = request.to_string();
