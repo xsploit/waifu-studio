@@ -103,6 +103,7 @@ impl Default for ReplyMotionConfig {
 #[serde(default)]
 pub struct SceneSettings {
     pub automatic_reflection: crate::facts_memory::automatic::AutomaticReflectionConfig,
+    pub memory_triage: crate::facts_memory::triage::MemoryTriageConfig,
     pub routine: crate::routines::RoutineConfig,
     pub reply_motion: ReplyMotionConfig,
     pub gaze: crate::gaze::GazeConfig,
@@ -125,6 +126,7 @@ impl Default for SceneSettings {
     fn default() -> Self {
         Self {
             automatic_reflection: Default::default(),
+            memory_triage: Default::default(),
             routine: Default::default(),
             reply_motion: Default::default(),
             gaze: Default::default(),

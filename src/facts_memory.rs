@@ -11,6 +11,8 @@
 pub mod automatic;
 #[path = "memory_reflection.rs"]
 pub mod reflection;
+#[path = "memory_triage.rs"]
+pub mod triage;
 use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -207,6 +209,9 @@ pub struct FactsMemoryState {
     /// Manual reflection drafts; results only ever become pending candidates.
     pub reflection: reflection::ReflectionWorker,
     pub automatic: automatic::AutomaticReflectionState,
+    /// Optional decision-model suggestion for the latest user turn; results stay pending.
+    triage: Option<triage::TriageJob>,
+    pub triage_status: String,
     commands: SyncSender<Command>,
     events: Mutex<Receiver<Event>>,
     trace: Mutex<Option<FactsRecallTrace>>,
@@ -277,6 +282,8 @@ impl FactsMemoryState {
             failed: HashMap::new(),
             reflection: reflection::ReflectionWorker::default(),
             automatic: Default::default(),
+            triage: None,
+            triage_status: String::new(),
             commands: tx,
             events: Mutex::new(erx),
             trace: Mutex::new(None),
@@ -349,6 +356,7 @@ impl FactsMemoryState {
         // Queued pending writes for the previous character stay in the outbox.
         self.candidates.clear();
         self.accepting = None;
+        self.triage = None;
         self.draft.clear();
         self.evidence_draft.clear();
         self.clear_trace();
@@ -389,6 +397,7 @@ impl FactsMemoryState {
             }
         }
         self.poll_reflection();
+        self.poll_triage();
         if self.loaded && self.prune_expired() {
             self.queue_pending();
         }
@@ -715,6 +724,15 @@ impl FactsMemoryState {
             .ok_or("Candidate no longer exists")?;
         if !current_reflection_evidence(&r, &self.records, now()) {
             return Err("Reflection draft is stale: cited evidence changed or is legacy; dismiss and redraft".into());
+        }
+        if let Some(target) = r.supersedes
+            && !self
+                .records
+                .iter()
+                .find(|x| x.id == target)
+                .is_some_and(|x| self.record_is_current(x))
+        {
+            return Err("The record this correction replaces has changed; dismiss it".into());
         }
         let pending = r.clone();
         r.expires_at = None;
@@ -1350,7 +1368,10 @@ fn validate_pending(candidates: &[MemoryRecord]) -> Result<(), String> {
         } else {
             c.turn_id.is_some()
         };
-        if !provenance || c.expires_at.is_none() || c.supersedes.is_some() {
+        // Only reviewed corrections from triage may carry a superseding link.
+        let link_ok = c.supersedes.is_none()
+            || (c.kind != RecordKind::Reflection && c.source == triage::SOURCE);
+        if !provenance || c.expires_at.is_none() || !link_ok {
             return Err(
                 "Pending candidates need a turn id (reflections: the reflection source) and explicit expiry"
                     .into(),
@@ -1823,7 +1844,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     /// Settles the ledger worker and every queued pending write.
-    fn settle(s: &mut FactsMemoryState) {
+    pub(super) fn settle(s: &mut FactsMemoryState) {
         for _ in 0..2000 {
             s.poll();
             if !s.busy && !s.pending_saving() {
@@ -1833,14 +1854,14 @@ mod tests {
         }
         panic!("worker timed out");
     }
-    fn temp_root(tag: &str) -> PathBuf {
+    pub(super) fn temp_root(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("facts-{tag}-{}", Uuid::new_v4()))
     }
     fn pending_path(root: &Path, id: Uuid) -> PathBuf {
         root.join(id.to_string()).join(PENDING_FILE)
     }
     /// Loaded, opted-in state for `id` with candidate suggestions on.
-    fn suggesting(root: &Path, id: Uuid, retain: bool) -> FactsMemoryState {
+    pub(super) fn suggesting(root: &Path, id: Uuid, retain: bool) -> FactsMemoryState {
         let mut s = FactsMemoryState::load(root.to_path_buf());
         s.select_character(Some(id));
         settle(&mut s);
@@ -1858,7 +1879,7 @@ mod tests {
         }
         s
     }
-    fn reopen(root: &Path, id: Uuid) -> FactsMemoryState {
+    pub(super) fn reopen(root: &Path, id: Uuid) -> FactsMemoryState {
         let mut s = FactsMemoryState::load(root.to_path_buf());
         s.select_character(Some(id));
         settle(&mut s);

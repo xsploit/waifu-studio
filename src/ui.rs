@@ -446,6 +446,23 @@ pub fn studio_ui(
                         }
                         crate::facts_memory_controls::ui(ui, &mut studio.facts);
                         ui.separator();
+                        ui.heading("Decision-model memory suggestions");
+                        ui.small("Off by default. When candidate suggestions are on, each user message the built-in rules skip is sent with at most one related accepted record to the endpoint and key in Decision model settings. The model only picks a label (fact, preference, correction, duplicate, skip, abstain); the saved text is always your exact words, and nothing enters recall until you accept it.");
+                        let before = studio.library.scene.memory_triage.clone();
+                        let triage = &mut studio.library.scene.memory_triage;
+                        ui.checkbox(
+                            &mut triage.enabled,
+                            "Suggest memories with a decision model",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Model");
+                            ui.text_edit_singleline(&mut triage.model);
+                        });
+                        ui.weak(&studio.facts.triage_status);
+                        if studio.library.scene.memory_triage != before {
+                            studio.save();
+                        }
+                        ui.separator();
                         ui.heading("Automatic reflection drafts");
                         ui.small("Off by default. After new accepted evidence, sends up to 12 current records to the connection copied below. Never sends transcripts or earlier reflections. Drafts require acceptance before recall. Runs only for the selected character while the app is open; no startup catch-up.");
                         let before = studio.library.scene.automatic_reflection.clone();

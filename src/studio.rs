@@ -1037,8 +1037,16 @@ impl Studio {
             self.reply_affect_requested = true;
             self.reply_affect_config = Some(self.library.scene.affect.clone());
         }
+        let turn_id = Uuid::new_v4();
         self.facts
-            .observe_user_turn(id, Uuid::new_v4(), self.composer.trim());
+            .observe_user_turn(id, turn_id, self.composer.trim());
+        self.facts.triage_user_turn(
+            id,
+            turn_id,
+            self.composer.trim(),
+            &self.library.decision,
+            &self.library.scene.memory_triage,
+        );
         self.turns.push(Turn {
             role: "user".into(),
             content: std::mem::take(&mut self.composer).trim().to_owned(),

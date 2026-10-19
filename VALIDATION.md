@@ -508,3 +508,7 @@ Ran `evaluate_memory_decisions --run --model typesafe-ai/jev --rounds 3` with th
 ## Decision model comparison — 2026-10-18
 
 Ran the same 3×18 memory decision set on seven more Vercel evaluation models. Results: Microsoft Decision-1 54/54; Jev, Liquid d1 and GPT-6 Luna Decisions 51/54; Liquid d1-ultra 51/54; Decider v1.2 48/54; Decider Flash 45/54; Laya 18/54. Zero transport errors. All models were deterministic across rounds. Each output file was checked for credential leakage. No app data or ledger was read or written.
+
+## Decision-model memory triage — 2026-10-18
+
+Added off-default runtime triage (`src/memory_triage.rs`) sharing the benchmark prompt. Six new tests cover prompt/parse/default model, verbatim-quote candidates kept out of recall, correction linking and acceptance refusal after the target changes, retained correction candidates across restart, late results discarded on character change, and disabled/rule-matched turns sending nothing. Full suite 568 passed (467 lib + 95 bin + 6 integration), example tests 3 passed, strict all-targets Clippy and formatting passed. Cargo ran with one low-priority job. No live in-app request or GUI acceptance yet.

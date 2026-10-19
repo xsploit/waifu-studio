@@ -58,6 +58,10 @@ Same 18 cases × 3 rounds, same harness, Vercel's shared evaluation endpoint, ap
 
 Every model answered identically in all three rounds, so this is effectively 18 data points per model, not 54. The peanut label is debatable. Missing an ambiguity is the more serious error: skipping it silently drops something the user may have meant, while abstaining leaves it for review. Laya is unsuitable. Decision-1 and Jev are the leading candidates: same price, Decision-1 had no misses, and Jev was fastest and most consistent in latency. A larger held-out set is needed before choosing between them.
 
+## Runtime integration — 2026-10-18
+
+`src/memory_triage.rs` now runs this exact prompt (the example imports `body`/`parse` from it) as an off-default memory suggestion source, defaulting to Decision-1. It only offers pending candidates; acceptance, correction checks and recall rules are unchanged. The constraints below were the integration criteria and still apply.
+
 ## What would justify runtime integration
 
 Keep exact source quotes and source-turn IDs in Rust. A model decision must not invent evidence, establish truth, overwrite a record or accept its own suggestion. If pilot results are useful, the next runtime slice is an opt-in, bounded background candidate classifier that rechecks character/turn/source revisions before offering a draft for review. Correction recommendations must point to a still-current offered record and retain explicit acceptance. Network failures or abstention should leave memory unchanged.

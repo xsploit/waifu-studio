@@ -80,6 +80,13 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                 } else {
                     ui.label(format!("Quoted evidence: {}", candidate.evidence));
                 }
+                if let Some(old) = candidate.supersedes {
+                    let replaced = state.records().iter().find(|r| r.id == old);
+                    ui.label(format!(
+                        "Accepting replaces: {}",
+                        replaced.map_or("(record no longer exists)", |r| r.text.as_str())
+                    ));
+                }
                 ui.weak(format!(
                     "Turn: {:?} · pending expiry: {:?} · not used in chat until accepted",
                     candidate.turn_id, candidate.expires_at
