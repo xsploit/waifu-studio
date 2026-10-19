@@ -369,6 +369,7 @@ fn run() -> Result<(), String> {
 fn sync_scene_members(
     mut commands: Commands,
     studio: Res<Studio>,
+    chat: Res<waifu_studio::scene_chat::SceneChat>,
     focused: Res<AvatarLoadState>,
     mut roster: ResMut<waifu_studio::scene_roster::SceneRoster>,
     attached: Query<&waifu_studio::expressions::SceneMemberFacial>,
@@ -408,6 +409,33 @@ fn sync_scene_members(
                 .map(|s| s.facial.clone())
                 .unwrap_or_default()
         };
+        let scene = if studio.library.selected == Some(id) {
+            Some(&studio.library.scene)
+        } else {
+            character.scene.as_ref()
+        };
+        let emotion = scene
+            .filter(|scene| {
+                scene.behavior.enabled && scene.behavior.validate().is_ok() && scene.affect.enabled
+            })
+            .and_then(|scene| {
+                chat.affect
+                    .entries
+                    .get(&id)
+                    .filter(|mood| mood.config == scene.affect)
+                    .map(|mood| waifu_studio::expressions::SceneMemberEmotion {
+                        emotion: mood.emotion,
+                        strength: mood.mood.magnitude().min(scene.behavior.emotion_max),
+                        smoothing_seconds: scene.behavior.smoothing_seconds,
+                    })
+            });
+        if let Some(emotion) = emotion {
+            commands.entity(entity).insert(emotion);
+        } else {
+            commands
+                .entity(entity)
+                .remove::<waifu_studio::expressions::SceneMemberEmotion>();
+        }
         if attached
             .get(entity)
             .is_ok_and(|old| old.character == id && old.config == config)
@@ -427,9 +455,11 @@ fn poll_scene_chat(
     mut chat: ResMut<waifu_studio::scene_chat::SceneChat>,
     roster: Res<waifu_studio::scene_roster::SceneRoster>,
     mut studio: ResMut<Studio>,
+    time: Res<Time>,
     mut cancellation_revision: Local<u64>,
 ) {
     chat.poll(&studio.library, &roster);
+    chat.tick_affect(&studio.library, &roster, time.delta_secs_f64());
     if *cancellation_revision != chat.cancellation_revision {
         studio.cancel_scene_speech();
         *cancellation_revision = chat.cancellation_revision;

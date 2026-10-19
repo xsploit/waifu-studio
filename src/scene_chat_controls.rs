@@ -58,6 +58,14 @@ pub fn ui(
         chat.cancel();
     }
     ui.label(&chat.status);
+    egui::CollapsingHeader::new("Latest scene emotions").show(ui, |ui| {
+        ui.small("Uses each recipient’s saved reply-affect opt-in. Local behavior must also be enabled for facial output. Metadata arrives after prose; no extra model call or speech-start synchronization claim.");
+        for receipt in chat.affect_receipts() {
+            let name = library.characters.iter().find(|c| c.id == receipt.character).map(|c| c.name.as_str()).unwrap_or("Removed character");
+            if let Some(error) = &receipt.error { ui.colored_label(egui::Color32::LIGHT_RED, format!("{name}: {error}")); }
+            else if let Some(state) = chat.affect.entries.get(&receipt.character) { ui.label(format!("{name}: {:?} · V {:+.2} A {:+.2} D {:+.2}", state.emotion, state.mood.valence, state.mood.arousal, state.mood.dominance)); }
+        }
+    });
     if !chat.partial.is_empty() {
         ui.label(&chat.partial);
     }

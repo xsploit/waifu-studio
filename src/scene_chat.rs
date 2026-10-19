@@ -3,7 +3,7 @@ use crate::{
     data::{Library, Store, Turn, trim_history},
     memory::MemoryState,
     provider::{self, ProviderConfig, ProviderEvent},
-    reply_affect::ReplyAffectFilter,
+    reply_affect::{AFFECT_PROMPT, AffectConfig, AffectLibrary, ReplyAffect, ReplyAffectFilter},
     scene_roster::SceneRoster,
     speech_text::ReplySpeechText,
     voice::VoiceConfig,
@@ -27,6 +27,7 @@ struct Recipient {
     persona: String,
     provider: ProviderConfig,
     voice: VoiceConfig,
+    affect: AffectConfig,
 }
 #[derive(Clone, Debug)]
 pub struct SceneLine {
@@ -43,10 +44,30 @@ pub struct SceneRecall {
     pub notes: Option<crate::memory::RecallTrace>,
     pub facts: Option<crate::facts_memory::FactsRecallTrace>,
 }
+#[derive(Clone, Debug)]
+pub struct SceneAffectReceipt {
+    pub character: Uuid,
+    pub emotion: Option<crate::reply_affect::AffectEmotion>,
+    pub error: Option<String>,
+}
+fn affect_config(library: &Library, id: Uuid) -> AffectConfig {
+    if library.selected == Some(id) {
+        library.scene.affect.clone()
+    } else {
+        library
+            .characters
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.scene.as_ref())
+            .map(|s| s.affect.clone())
+            .unwrap_or_default()
+    }
+}
 #[derive(Debug)]
 enum Event {
     Routed(Result<Option<Uuid>, String>),
     Recall(Box<SceneRecall>),
+    Affect(Uuid, AffectConfig, Option<ReplyAffect>, Option<String>),
     Progress(String, String),
     Line(SceneLine),
     Speech(Uuid, VoiceConfig, String),
@@ -67,6 +88,8 @@ pub struct SceneChat {
     pub partial: String,
     pub cancellation_revision: u64,
     recalls: Vec<SceneRecall>,
+    pub affect: AffectLibrary,
+    affect_receipts: Vec<SceneAffectReceipt>,
     routing_snapshot: Option<RoutingSnapshot>,
     root: PathBuf,
     cancellation: Option<Arc<AtomicBool>>,
@@ -78,7 +101,7 @@ pub struct SceneChat {
 const SPEECH_EVENTS: usize = 8;
 /// Speaks sentence groups while a recipient's reply is still streaming. Task
 /// and affect metadata are filtered incrementally, so hidden blocks split
-/// across deltas are never spoken; the saved reply stays the raw text.
+/// across deltas are never spoken. Saved replies retain task blocks but omit affect metadata.
 struct SpeechStream {
     affect: ReplyAffectFilter,
     tasks: ReplySpeechText,
@@ -178,6 +201,8 @@ impl SceneChat {
             partial: String::new(),
             cancellation_revision: 0,
             recalls: Vec::new(),
+            affect: Default::default(),
+            affect_receipts: Vec::new(),
             routing_snapshot: None,
             root,
             cancellation: None,
@@ -185,6 +210,17 @@ impl SceneChat {
             active_recipients: vec![],
             speech: VecDeque::new(),
         }
+    }
+    pub fn affect_receipts(&self) -> &[SceneAffectReceipt] {
+        &self.affect_receipts
+    }
+    pub fn tick_affect(&mut self, library: &Library, roster: &SceneRoster, seconds: f64) {
+        self.affect.entries.retain(|id, state| {
+            available(library, roster, *id)
+                && state.config.enabled
+                && state.config == affect_config(library, *id)
+        });
+        self.affect.tick(seconds);
     }
     pub fn recalls(&self) -> &[SceneRecall] {
         &self.recalls
@@ -201,6 +237,8 @@ impl SceneChat {
         self.routing_snapshot = None;
         self.active_recipients.clear();
         self.speech.clear();
+        self.affect = Default::default();
+        self.affect_receipts.clear();
         self.partial.clear();
         self.status = "Scene replies cancelled".into();
     }
@@ -318,6 +356,7 @@ impl SceneChat {
                 name: c.name.clone(),
                 persona: c.persona.clone(),
                 provider: config,
+                affect: affect_config(library, *id),
                 voice: if focused {
                     library.voice.clone()
                 } else {
@@ -346,6 +385,7 @@ impl SceneChat {
         self.events = Some(Mutex::new(rx));
         self.active_recipients = ids;
         self.recalls.clear();
+        self.affect_receipts.clear();
         self.transcript.push_back(SceneLine {
             character: None,
             name: "You".into(),
@@ -376,6 +416,32 @@ impl SceneChat {
             .unwrap_or_default();
         for event in events {
             match event {
+                Event::Affect(id, config, reply, error) => {
+                    if available(library, roster, id)
+                        && self.active_recipients.contains(&id)
+                        && config.enabled
+                        && config.validate().is_ok()
+                        && affect_config(library, id) == config
+                    {
+                        self.affect.entries.entry(id).or_default().config = config;
+                        let emotion = reply.map(|value| value.emotion);
+                        let error = if let Some(reply) = reply {
+                            self.affect.apply_reply(id, reply).err().or(error)
+                        } else {
+                            error
+                        };
+                        self.affect.take_pending(id); // Scene expressions read mood directly; never replay focused lifecycle events.
+                        self.affect_receipts
+                            .retain(|receipt| receipt.character != id);
+                        if self.affect_receipts.len() < 4 {
+                            self.affect_receipts.push(SceneAffectReceipt {
+                                character: id,
+                                emotion,
+                                error,
+                            });
+                        }
+                    }
+                }
                 Event::Recall(trace) => {
                     if self.active_recipients.contains(&trace.character) && self.recalls.len() < 4 {
                         self.recalls.retain(|r| r.character != trace.character);
@@ -531,7 +597,12 @@ fn run(
             facts: facts_trace,
         })))
         .map_err(|_| "Scene closed")?;
-        let context = request_context(&recipient.persona, &history, &text, notes, evidence);
+        let persona = if recipient.affect.enabled && recipient.affect.validate().is_ok() {
+            format!("{}\n\n{}", recipient.persona, AFFECT_PROMPT)
+        } else {
+            recipient.persona.clone()
+        };
+        let context = request_context(&persona, &history, &text, notes, evidence);
         let (provider_tx, provider_rx) = mpsc::channel();
         let job = provider::spawn_chat(recipient.provider, context, provider_tx);
         // Reserve one final event for this and each later voiced recipient.
@@ -544,6 +615,8 @@ fn run(
             .enabled
             .then(|| SpeechStream::new(SPEECH_EVENTS.saturating_sub(spoken + 1 + later)));
         let mut reply = String::new();
+        let mut affect_filter = ReplyAffectFilter::default();
+        let mut wire_bytes = 0usize;
         let mut last_progress = Instant::now();
         let deadline = Instant::now() + Duration::from_secs(180);
         loop {
@@ -556,9 +629,11 @@ fn run(
             }
             match provider_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ProviderEvent::Delta(id, delta)) if id == job.id => {
-                    if reply.len() + delta.len() > 64_000 {
+                    wire_bytes += delta.len();
+                    if wire_bytes > 64_000 {
                         return Err("Scene reply exceeded 64 KB".into());
                     }
+                    let delta = affect_filter.push(&delta);
                     reply.push_str(&delta);
                     for chunk in speech.as_mut().map(|s| s.push(&delta)).unwrap_or_default() {
                         if cancel.load(Ordering::Acquire) {
@@ -585,6 +660,14 @@ fn run(
         if cancel.load(Ordering::Acquire) {
             return Ok(());
         }
+        let filtered = affect_filter.finish();
+        reply.push_str(&filtered.tail);
+        if let Some(speech) = speech.as_mut() {
+            // Preserve the same incremental filters and their buffered prefixes.
+            // The remaining text belongs to the reserved final speech event.
+            speech.early = 0;
+            let _ = speech.push(&filtered.tail);
+        }
         history.push(Turn {
             role: "user".into(),
             content: text.clone(),
@@ -595,6 +678,21 @@ fn run(
         });
         trim_history(&mut history);
         store.save_history(recipient.id, &history)?;
+        if recipient.affect.enabled && recipient.affect.validate().is_ok() {
+            let error = filtered.error.or_else(|| {
+                filtered
+                    .metadata
+                    .is_none()
+                    .then(|| "Reply contained no affect metadata".into())
+            });
+            tx.send(Event::Affect(
+                recipient.id,
+                recipient.affect.clone(),
+                filtered.metadata,
+                error,
+            ))
+            .map_err(|_| "Scene closed")?;
+        }
         tx.send(Event::Line(SceneLine {
             character: Some(recipient.id),
             name: recipient.name,
@@ -613,6 +711,44 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scene_affect_is_recipient_scoped_and_rejects_changed_config() {
+        let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice", "Bob"]);
+        library.scene.affect.enabled = true;
+        let config = library.scene.affect.clone();
+        let reply = ReplyAffect::parse(
+            r#"{"emotion":"happy","valence":0.8,"arousal":0.5,"dominance":0.2}"#,
+        )
+        .unwrap();
+        let mut chat = SceneChat::new(root);
+        chat.active_recipients = ids.clone();
+        let (tx, rx) = mpsc::sync_channel(8);
+        chat.events = Some(Mutex::new(rx));
+        tx.send(Event::Affect(ids[0], config.clone(), Some(reply), None))
+            .unwrap();
+        // Bob has not opted in, even if a stale worker claims otherwise.
+        tx.send(Event::Affect(ids[1], config.clone(), Some(reply), None))
+            .unwrap();
+        chat.poll(&library, &roster);
+        assert_eq!(chat.affect.entries.len(), 1);
+        assert_eq!(chat.affect.entries[&ids[0]].emotion, reply.emotion);
+        assert!(!chat.affect.take_pending(ids[0]));
+        assert_eq!(chat.affect_receipts().len(), 1);
+        library.scene.affect.influence = 0.1;
+        tx.send(Event::Affect(ids[0], config, None, Some("stale".into())))
+            .unwrap();
+        chat.poll(&library, &roster);
+        assert!(chat.affect_receipts()[0].error.is_none());
+        chat.tick_affect(&library, &roster, 0.016);
+        assert!(
+            chat.affect.entries.is_empty(),
+            "settings changes discard old moods"
+        );
+        chat.cancel();
+        assert!(chat.affect.entries.is_empty());
+        assert!(chat.affect_receipts().is_empty());
+    }
+
     #[test]
     fn query_dependent_recall_preserves_scene_history_prefix_and_stays_untrusted() {
         let history: Vec<_> = (0..50)
@@ -1209,7 +1345,8 @@ mod tests {
             vec![(FIRST.into(), None), (alice_tail.clone(), Some(gate_rx))],
             vec![(bob.clone(), None)],
         ]);
-        let (root, library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
+        let (root, mut library, roster, ids) = voiced_scene(url, &["Alice", "Bob"]);
+        library.scene.affect.enabled = true;
         let mut chat = SceneChat::new(root.clone());
         chat.recipients = ids.clone();
         chat.draft = "Hello both".into();
@@ -1249,10 +1386,32 @@ mod tests {
         assert_eq!(
             store.history(ids[0]).unwrap()[1].content,
             format!("{FIRST}{alice_tail}")
+                .split("<waifu-affect>")
+                .next()
+                .unwrap()
         );
-        assert_eq!(store.history(ids[1]).unwrap()[1].content, bob);
-        assert_eq!(chat.transcript[1].text, format!("{FIRST}{alice_tail}"));
+        assert_eq!(
+            store.history(ids[1]).unwrap()[1].content,
+            bob.split("<waifu-affect>").next().unwrap()
+        );
+        assert_eq!(
+            chat.transcript[1].text,
+            format!("{FIRST}{alice_tail}")
+                .split("<waifu-affect>")
+                .next()
+                .unwrap()
+        );
+        assert!(
+            chat.transcript
+                .iter()
+                .all(|line| !line.text.contains("<waifu-affect>"))
+        );
         let requests = server.join().unwrap();
+        assert!(requests[0].to_string().contains("waifu-affect"));
+        assert!(!requests[1].to_string().contains("waifu-affect"));
+        assert_eq!(chat.affect_receipts().len(), 1);
+        assert!(chat.affect.entries.contains_key(&ids[0]));
+        assert!(!chat.affect.entries.contains_key(&ids[1]));
         assert!(
             !requests[1].to_string().contains("rest arrives"),
             "histories stay isolated"

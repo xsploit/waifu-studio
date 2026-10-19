@@ -38,7 +38,7 @@ pub enum AffectEmotion {
     Disgust,
 }
 impl AffectEmotion {
-    fn aliases(self) -> &'static [&'static str] {
+    pub(crate) fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Neutral => &[],
             Self::Fear => &["fear", "fearful", "afraid"],

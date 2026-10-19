@@ -85,6 +85,14 @@ pub struct SceneMemberFacial {
     pub character: Uuid,
     pub config: FacialConfig,
 }
+/// Ephemeral scene-reply emotion. The host supplies only validated, opted-in
+/// metadata; the face runtime resolves aliases and protects all manual channels.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct SceneMemberEmotion {
+    pub emotion: crate::reply_affect::AffectEmotion,
+    pub strength: f32,
+    pub smoothing_seconds: f32,
+}
 /// None preserves focused-character playback; Some routes audio to that character only.
 #[derive(Resource, Default)]
 pub struct SpeechTarget(pub Option<Uuid>);
@@ -425,8 +433,46 @@ struct FacialRuntime {
     expressions: Vec<ExpressionMeta>,
     blink: BlinkRuntime,
     mouth: f32,
+    scene_weights: BTreeMap<String, f32>,
     bindings_ready: bool,
     binding_wait_frames: u8,
+}
+fn scene_emotion_weights(
+    cache: &mut FacialRuntime,
+    emotion: Option<&SceneMemberEmotion>,
+    dt: f32,
+) -> BTreeMap<String, f32> {
+    let Some(emotion) = emotion else {
+        cache.scene_weights.clear();
+        return BTreeMap::new();
+    };
+    if !emotion.strength.is_finite() || !emotion.smoothing_seconds.is_finite() {
+        cache.scene_weights.clear();
+        return BTreeMap::new();
+    }
+    let target = emotion.emotion.aliases().iter().find_map(|alias| {
+        cache
+            .expressions
+            .iter()
+            .find(|e| {
+                e.name.eq_ignore_ascii_case(alias) && !crate::behavior::reserved_expression(&e.name)
+            })
+            .map(|e| e.name.clone())
+    });
+    if let Some(name) = &target {
+        cache.scene_weights.entry(name.clone()).or_default();
+    }
+    let alpha = 1. - (-dt.max(0.) / emotion.smoothing_seconds.clamp(0.02, 5.)).exp();
+    for (name, weight) in &mut cache.scene_weights {
+        let desired = if Some(name) == target.as_ref() {
+            emotion.strength.clamp(0., 0.65)
+        } else {
+            0.
+        };
+        *weight += (desired - *weight) * alpha;
+    }
+    cache.scene_weights.retain(|_, weight| *weight > 0.0001);
+    cache.scene_weights.clone()
 }
 fn under_root(entity: Entity, root: Entity, parents: &Query<&ChildOf>) -> bool {
     let mut cursor = entity;
@@ -778,7 +824,7 @@ fn update_expressions(
     nodes: Query<(Entity, &ExpressionNode)>,
     mut morphs: Query<&mut MorphWeights>,
     mut meshes: Query<(Entity, &ChildOf, &mut MeshMorphWeights)>,
-    members: Query<(Entity, &SceneMemberFacial)>,
+    members: Query<(Entity, &SceneMemberFacial, Option<&SceneMemberEmotion>)>,
     speech: Option<Res<SpeechTarget>>,
     mut extras: Local<BTreeMap<Entity, FacialRuntime>>,
     mut material_frame: Option<ResMut<MaterialExpressionFrame>>,
@@ -796,7 +842,12 @@ fn update_expressions(
     });
     let focused_character = avatar
         .active
-        .and_then(|root| members.get(root).ok().map(|(_, member)| member.character))
+        .and_then(|root| {
+            members
+                .get(root)
+                .ok()
+                .map(|(_, member, _)| member.character)
+        })
         .or_else(|| behavior.as_ref().and_then(|b| b.controller.character()));
     let speaker = speech.as_ref().and_then(|target| target.0);
     let focused_speaks = speaker.is_none() || speaker == focused_character;
@@ -915,7 +966,7 @@ fn update_expressions(
             .and_then(|state| state.weights())
             .map(|weights| weights.map(|value| unit(value * gain))),
     );
-    let automatic = behavior
+    let mut automatic = behavior
         .filter(|_| matches!(avatar.status, crate::loading::LoadStatus::Ready))
         .map(|behavior| {
             behavior.controller.weights_for(
@@ -926,6 +977,16 @@ fn update_expressions(
             )
         })
         .unwrap_or_default();
+    let scene_emotion = avatar
+        .active
+        .and_then(|root| members.get(root).ok())
+        .and_then(|(_, _, emotion)| emotion);
+    for (name, weight) in scene_emotion_weights(&mut runtime, scene_emotion, dt) {
+        automatic
+            .entry(name)
+            .and_modify(|value| *value = value.max(weight))
+            .or_insert(weight);
+    }
     if let (Some(frame), Some(root)) = (material_frame.as_mut(), avatar.active) {
         frame.0.insert(
             root,
@@ -961,7 +1022,7 @@ fn update_expressions(
             }
         }
     }
-    for (root, member) in &members {
+    for (root, member, emotion) in &members {
         if Some(root) == avatar.active {
             continue;
         }
@@ -999,20 +1060,23 @@ fn update_expressions(
                 .and_then(|state| state.weights())
                 .map(|weights| weights.map(|value| unit(value * gain))),
         );
+        let automatic = scene_emotion_weights(cache, emotion, dt);
         if let Some(frame) = material_frame.as_mut() {
             frame.0.insert(
                 root,
-                material_weights(
-                    &cache.expressions,
-                    &member.config,
-                    &values,
-                    &BTreeMap::new(),
-                ),
+                material_weights(&cache.expressions, &member.config, &values, &automatic),
             );
         }
         for node in &cache.nodes {
             if let Ok(mut morph) = morphs.get_mut(node.entity) {
                 compose(morph.weights_mut(), node, &values);
+                compose_behavior(
+                    morph.weights_mut(),
+                    node,
+                    &cache.expressions,
+                    &member.config,
+                    &automatic,
+                );
             }
             for &primitive in &node.primitives {
                 if let Ok((_, parent, mut mesh)) = meshes.get_mut(primitive)
@@ -1020,6 +1084,13 @@ fn update_expressions(
                     && let MeshMorphWeights::Value { weights } = &mut *mesh
                 {
                     compose(weights, node, &values);
+                    compose_behavior(
+                        weights,
+                        node,
+                        &cache.expressions,
+                        &member.config,
+                        &automatic,
+                    );
                 }
             }
         }
@@ -1029,6 +1100,33 @@ fn update_expressions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scene_emotion_weights_are_local_bounded_and_restored_on_removal() {
+        let mut cache = FacialRuntime {
+            expressions: vec![ExpressionMeta {
+                name: "happy".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let emotion = SceneMemberEmotion {
+            emotion: crate::reply_affect::AffectEmotion::Happy,
+            strength: 10.,
+            smoothing_seconds: 0.02,
+        };
+        let weights = scene_emotion_weights(&mut cache, Some(&emotion), 1.);
+        assert!((weights["happy"] - 0.65).abs() < 0.001);
+        let mut other = FacialRuntime::default();
+        assert!(scene_emotion_weights(&mut other, Some(&emotion), 1.).is_empty());
+        assert!(scene_emotion_weights(&mut cache, None, 1.).is_empty());
+        assert!(cache.scene_weights.is_empty());
+        let invalid = SceneMemberEmotion {
+            strength: f32::NAN,
+            ..emotion
+        };
+        assert!(scene_emotion_weights(&mut cache, Some(&invalid), 1.).is_empty());
+    }
+
     fn material_fixture(expressions: Value, vrm0: bool) -> gltf::Gltf {
         let extension = if vrm0 {
             serde_json::json!({"VRM": {"blendShapeMaster": {"blendShapeGroups": expressions},
