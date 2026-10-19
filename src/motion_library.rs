@@ -22,6 +22,7 @@ pub fn roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::var_os("WAIFU_MOTION_LIBRARY")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/animations/companion"));
     roots.push(PathBuf::from(WEBWAIFU4_ANIMATIONS));
     roots.retain(|root| root.is_dir());
     roots.dedup();

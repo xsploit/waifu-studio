@@ -293,6 +293,9 @@ impl Studio {
             self.select_character(id);
         }
     }
+    pub fn speaking_character(&self) -> Option<Uuid> {
+        self.speech_character
+    }
     pub fn stop_voice(&mut self) {
         self.local_preview = None;
         self.speech_queue.clear();

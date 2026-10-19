@@ -1,5 +1,7 @@
 //! Studio chrome: conversation overlays the avatar; settings occupy an opaque full page.
 // UI-only catalogs live beside this file; declared here so main.rs stays untouched.
+#[path = "companion_motion.rs"]
+mod companion_motion;
 #[path = "memory_page.rs"]
 mod memory_page;
 #[path = "motion_decision.rs"]
@@ -60,7 +62,8 @@ pub fn style(ctx: &egui::Context) {
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct AvatarUi<'w> {
+pub struct AvatarUi<'w, 's> {
+    playing: Query<'w, 's, (), With<crate::studio::SpokenAudio>>,
     capture: Option<Res<'w, crate::offscreen::OffscreenCapture>>,
     gaze: ResMut<'w, waifu_studio::gaze::GazeState>,
     preview: ResMut<'w, crate::avatar_preview::AvatarPreview>,
@@ -110,6 +113,13 @@ pub fn studio_ui(
     if matches!(studio.mode, ViewMode::Desktop) {
         return;
     }
+    companion_motion_frame(
+        ctx,
+        &studio,
+        &mut animation,
+        load.active.map(|entity| entity.to_bits()),
+        !avatar_ui.playing.is_empty(),
+    );
     if !ctx.data_mut(|d| {
         d.get_temp::<bool>(egui::Id::new("studio_styled"))
             .unwrap_or(false)
@@ -119,11 +129,7 @@ pub fn studio_ui(
     }
     let screen = ctx.content_rect();
     let narrow = screen.width() < 900.0;
-    let rail = if screen.width() >= 1100.0 {
-        184.0
-    } else {
-        60.0
-    };
+    let rail = 60.0;
     studio.ensure_models();
     let left = rail + if narrow { 24.0 } else { 44.0 };
     let name = studio
@@ -1458,9 +1464,125 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// Any manual motion action cancels or discards an automatic pick.
 fn manual_motion(ctx: &egui::Context) {
+    lock(&companion_shared(ctx)).manual_override();
     let (suggester, auto) = motion_shared(ctx);
     let mut suggester = lock(&suggester);
     lock(&auto).manual_override(&mut suggester);
+}
+
+type SharedCompanion = std::sync::Arc<std::sync::Mutex<companion_motion::CompanionAnimator>>;
+fn companion_shared(ctx: &egui::Context) -> SharedCompanion {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<SharedCompanion>(egui::Id::new("companion_animator"))
+            .clone()
+    })
+}
+fn companion_motion_frame(
+    ctx: &egui::Context,
+    studio: &Studio,
+    animation: &mut AnimationState,
+    avatar: Option<u64>,
+    playing: bool,
+) {
+    let config = &studio.library.scene.companion_motion;
+    if !config.enabled {
+        return;
+    }
+    let shared = companion_shared(ctx);
+    let mut controller = lock(&shared);
+    let now = std::time::Instant::now();
+    if !animation.loading
+        && let Some(path) = controller.loading_path.take()
+    {
+        if animation.error.is_some() {
+            controller.failed(path, now);
+        } else if animation.path.as_ref() == Some(&path)
+            && let Some(clip) = &animation.clip
+        {
+            if controller.cache.len() >= 8 {
+                controller.cache.pop_front();
+            }
+            controller.cache.push_back((path, clip.clone()));
+        }
+    }
+    let selected_speech = studio.speaking_character().is_some()
+        && studio.speaking_character() == studio.library.selected;
+    let talking = selected_speech && (playing || (controller.speech_started && studio.voice_busy));
+    controller.speech_started = talking;
+    let owner = studio.library.selected.zip(avatar);
+    let entries = motion_entries(ctx, false);
+    if let Some(path) = controller.frame(
+        now,
+        config,
+        owner,
+        talking,
+        animation.gesture_active(),
+        animation.loading,
+        animation.path.as_deref(),
+        &entries,
+    ) {
+        let cached = controller
+            .cache
+            .iter()
+            .find(|(key, _)| key == &path)
+            .map(|(_, clip)| clip.clone());
+        if let Some(clip) = cached {
+            animation.select_clip(clip, Some(path));
+        } else if animation.load_playlist(&path).is_ok() {
+            controller.loading_path = Some(path);
+        } else {
+            controller.failed(path, now);
+        }
+    }
+}
+fn companion_motion_controls(
+    ui: &mut egui::Ui,
+    studio: &mut Studio,
+    entries: &[motion_library::MotionEntry],
+) {
+    group(ui, "Idle & talking animator", |ui| {
+        let config = &mut studio.library.scene.companion_motion;
+        let mut changed = kit::toggle_row(
+            ui,
+            "Automatic idle and talking motions",
+            "Emotion gestures finish first; speech then resumes talking, or idle when quiet.",
+            &mut config.enabled,
+        )
+        .changed();
+        for (title, talking) in [("Idle playlist", false), ("Talking playlist", true)] {
+            let paths = if talking {
+                &mut config.talking_paths
+            } else {
+                &mut config.idle_paths
+            };
+            ui.collapsing(title, |ui| {
+                kit::note(ui, "Empty uses matching filenames automatically. Checked motions override that list; seated/locomotion motions are excluded.");
+                egui::ScrollArea::vertical().id_salt(title).max_height(180.0).show(ui, |ui| {
+                    for entry in entries.iter().filter(|entry| entry.auto_playable() && !["sit", "kneel", "lay", "crawl"].iter().any(|word| entry.label.to_lowercase().contains(word))) {
+                        let mut selected = paths.contains(&entry.path);
+                        if ui.checkbox(&mut selected, &entry.label).changed() {
+                            paths.retain(|path| path != &entry.path);
+                            if selected { paths.push(entry.path.clone()); }
+                            changed = true;
+                        }
+                    }
+                });
+                if ui.button("Use automatic category list").clicked() { paths.clear(); changed = true; }
+            });
+        }
+        let shared = companion_shared(ui.ctx());
+        let mut controller = lock(&shared);
+        if controller.paused && ui.button("Resume automatic animator").clicked() {
+            controller.resume();
+        }
+        if let Some(note) = &controller.note {
+            kit::note(ui, note);
+        }
+        if changed {
+            controller.resume();
+            studio.save();
+        }
+    });
 }
 
 /// Root-level, non-blocking reply-motion step. Off does nothing but remember
@@ -1886,6 +2008,7 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
         }
     }
     if !entries.is_empty() {
+        companion_motion_controls(ui, studio, &entries);
         suggest_motion(ui, studio, animation, &entries);
     }
     if animation.loading {

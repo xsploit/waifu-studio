@@ -599,6 +599,7 @@ pub struct AnimationState {
     transition_seconds: f32,
     transition_from: Option<ClipPlayback>,
     import_one_shot: bool,
+    import_blend: bool,
     one_shot: bool,
     one_shot_finished: bool,
 }
@@ -621,6 +622,7 @@ impl Default for AnimationState {
             transition_seconds: 0.,
             transition_from: None,
             import_one_shot: false,
+            import_blend: false,
             one_shot: false,
             one_shot_finished: false,
         }
@@ -695,7 +697,14 @@ impl AnimationState {
         self.loading = true;
         self.autoplay_import = true;
         self.import_one_shot = false;
+        self.import_blend = false;
         self.error = None;
+        Ok(())
+    }
+    /// Playlist transitions use the same rest-space crossfade as preloaded clips.
+    pub fn load_playlist(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        self.load_path(path)?;
+        self.import_blend = true;
         Ok(())
     }
     /// Reply and emotion gestures play once, then crossfade to the bundled idle.
@@ -759,6 +768,10 @@ impl AnimationState {
         self.transition_from = None;
         self.transition_seconds = 0.;
     }
+    /// Automatic playlists must let a requested emotion gesture finish first.
+    pub fn gesture_active(&self) -> bool {
+        (self.loading && self.import_one_shot) || self.one_shot
+    }
     pub fn is_posing(&self) -> bool {
         self.clip.is_some() && (self.playing || !self.stopped)
     }
@@ -785,6 +798,10 @@ fn poll_import(mut state: ResMut<AnimationState>) {
         Some(Ok(Ok((path, clip)))) => {
             if state.import_one_shot && state.autoplay_import {
                 state.select_one_shot(Arc::new(clip), Some(path));
+                return;
+            }
+            if state.import_blend && state.autoplay_import {
+                state.select_clip(Arc::new(clip), Some(path));
                 return;
             }
             // Manual file imports preserve their immediate switch semantics.
@@ -1267,6 +1284,23 @@ fn animate_humanoid(
 mod tests {
     use super::*;
     const SAMPLE: &str = "HIERARCHY ROOT hips { OFFSET 0 0 0 CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation JOINT leftUpperArm { OFFSET 1 1 0 CHANNELS 3 Zrotation Xrotation Yrotation End Site { OFFSET 1 0 0 } } } MOTION Frames: 2 Frame Time: 0.1 0 0 0 0 0 0 0 0 0 100 200 300 90 0 0 0 0 0";
+    #[test]
+    fn bundled_companion_clips_are_bounded_stationary_upper_body_motions() {
+        for text in [
+            include_str!("../assets/animations/companion/talking-nod.bvh"),
+            include_str!("../assets/animations/companion/talking-tilt.bvh"),
+            include_str!("../assets/animations/companion/idle-look-down.bvh"),
+        ] {
+            let clip = parse_bvh(text).unwrap();
+            assert_eq!(clip.frame_count, 121);
+            assert_eq!(clip.mapped_bones(), 5);
+            assert!(clip.duration() > 6.0 && clip.duration() < 6.1);
+            for sample in clip.samples.chunks(clip.channel_count) {
+                assert!(sample[..6].iter().all(|value| *value == 0.0));
+            }
+        }
+    }
+
     #[test]
     fn triggered_import_plays_once_and_crossfades_back_to_idle() {
         use bevy::time::TimeUpdateStrategy;

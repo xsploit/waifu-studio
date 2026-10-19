@@ -1,0 +1,1 @@
+Original Waifu Studio procedural BVH motions: subtle head/chest nod, tilt, and downward glance. Authored for this application; no third-party motion data. Upper-body channels only; no root translation or locomotion.

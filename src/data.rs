@@ -99,6 +99,24 @@ impl Default for ReplyMotionConfig {
     }
 }
 
+/// Local idle/talking playlists, independent of model-picked emotion gestures.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompanionMotionConfig {
+    pub enabled: bool,
+    pub idle_paths: Vec<PathBuf>,
+    pub talking_paths: Vec<PathBuf>,
+}
+impl Default for CompanionMotionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            idle_paths: Vec::new(),
+            talking_paths: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSettings {
@@ -106,6 +124,7 @@ pub struct SceneSettings {
     pub memory_triage: crate::facts_memory::triage::MemoryTriageConfig,
     pub routine: crate::routines::RoutineConfig,
     pub reply_motion: ReplyMotionConfig,
+    pub companion_motion: CompanionMotionConfig,
     pub gaze: crate::gaze::GazeConfig,
     pub affect: crate::reply_affect::AffectConfig,
     pub behavior: crate::behavior::BehaviorConfig,
@@ -129,6 +148,7 @@ impl Default for SceneSettings {
             memory_triage: Default::default(),
             routine: Default::default(),
             reply_motion: Default::default(),
+            companion_motion: Default::default(),
             gaze: Default::default(),
             affect: Default::default(),
             facial: Default::default(),
