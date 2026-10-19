@@ -59,7 +59,7 @@ pub fn ui(
     }
     ui.label(&chat.status);
     egui::CollapsingHeader::new("Latest scene emotions").show(ui, |ui| {
-        ui.small("Uses each recipient’s saved reply-affect opt-in. Local behavior must also be enabled for facial output. Metadata arrives after prose; no extra model call or speech-start synchronization claim.");
+        ui.small("Uses each recipient’s saved automatic-emotion opt-in. Local behavior is required for facial output. Reply metadata costs no extra call; Jev appraisal adds a separate bounded request. Neither guarantees speech-onset synchronization.");
         for receipt in chat.affect_receipts() {
             let name = library.characters.iter().find(|c| c.id == receipt.character).map(|c| c.name.as_str()).unwrap_or("Removed character");
             if let Some(error) = &receipt.error { ui.colored_label(egui::Color32::LIGHT_RED, format!("{name}: {error}")); }

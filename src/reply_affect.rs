@@ -1,4 +1,4 @@
-//! Explicit, opt-in reply metadata. Never infers emotion from prose.
+//! Explicit opt-in affect sources: reply metadata or bounded Jev character-reaction appraisal.
 //! Run the filter before displaying, storing, or speaking provider deltas.
 use crate::behavior::{BehaviorController, BehaviorToken, reserved_expression};
 use bevy::prelude::Resource;
@@ -199,10 +199,19 @@ impl ReplyAffectFilter {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AffectSource {
+    #[default]
+    ReplyMetadata,
+    UserMessageJev,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AffectConfig {
     pub enabled: bool,
+    pub source: AffectSource,
     pub influence: f64,
     pub half_life_seconds: f64,
 }
@@ -210,12 +219,19 @@ impl Default for AffectConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            source: AffectSource::ReplyMetadata,
             influence: 0.45,
             half_life_seconds: 45.0,
         }
     }
 }
 impl AffectConfig {
+    pub fn requests_metadata(&self) -> bool {
+        self.enabled && self.source == AffectSource::ReplyMetadata && self.validate().is_ok()
+    }
+    pub fn requests_appraisal(&self) -> bool {
+        self.enabled && self.source == AffectSource::UserMessageJev && self.validate().is_ok()
+    }
     pub fn validate(&self) -> Result<(), String> {
         if !self.influence.is_finite()
             || !(0.0..=1.0).contains(&self.influence)
@@ -245,7 +261,7 @@ impl AffectLibrary {
     pub fn prompt_for(&self, id: Uuid) -> Option<&'static str> {
         self.entries
             .get(&id)
-            .filter(|s| s.config.enabled && s.config.validate().is_ok())
+            .filter(|s| s.config.requests_metadata())
             .map(|_| AFFECT_PROMPT)
     }
     pub fn apply_reply(&mut self, id: Uuid, reply: ReplyAffect) -> Result<(), String> {
@@ -349,6 +365,29 @@ impl AffectLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn affect_sources_are_exclusive_and_old_profiles_request_metadata() {
+        let mut config: AffectConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(config.requests_metadata());
+        assert!(!config.requests_appraisal());
+        config.source = AffectSource::UserMessageJev;
+        assert!(!config.requests_metadata());
+        assert!(config.requests_appraisal());
+        let id = Uuid::new_v4();
+        let mut library = AffectLibrary::default();
+        library.entries.insert(
+            id,
+            CharacterAffect {
+                config: config.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(library.prompt_for(id).is_none());
+        config.enabled = false;
+        assert!(!config.requests_metadata());
+        assert!(!config.requests_appraisal());
+    }
+
     const JSON: &str = r#"{"emotion":"happy","valence":0.8,"arousal":0.4,"dominance":-0.2}"#;
     #[test]
     fn webwaifu_emotions_keep_their_identity_and_expression_mapping() {

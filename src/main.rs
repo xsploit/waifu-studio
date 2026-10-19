@@ -224,7 +224,7 @@ fn run() -> Result<(), String> {
     if let Some(kind) = environment {
         studio.library.scene.environment = kind;
         studio.library.scene.room_view =
-            kind != waifu_studio::environments::EnvironmentKind::Disabled;
+            environment_room_view(kind, studio.library.scene.room_view);
         if matches!(
             kind,
             waifu_studio::environments::EnvironmentKind::RoseBedroom
@@ -540,5 +540,33 @@ fn capture_frame(
 fn sync_gaze(studio: Res<Studio>, mut gaze: ResMut<waifu_studio::gaze::GazeState>) {
     if gaze.config != studio.library.scene.gaze {
         gaze.config = studio.library.scene.gaze.clone();
+    }
+}
+
+fn environment_room_view(kind: waifu_studio::environments::EnvironmentKind, saved: bool) -> bool {
+    use waifu_studio::environments::EnvironmentKind;
+    match kind {
+        EnvironmentKind::Disabled => saved,
+        EnvironmentKind::RoseBedroom
+        | EnvironmentKind::VioletStudio
+        | EnvironmentKind::CyanLounge => true,
+        _ => false,
+    }
+}
+#[cfg(test)]
+mod command_line_tests {
+    use super::*;
+    #[test]
+    fn environment_override_preserves_none_and_only_widens_furnished_rooms() {
+        use waifu_studio::environments::EnvironmentKind::*;
+        for saved in [false, true] {
+            assert_eq!(environment_room_view(Disabled, saved), saved);
+            for kind in [CozyRoom, MoonlitGarden, NeonRooftop] {
+                assert!(!environment_room_view(kind, saved));
+            }
+            for kind in [RoseBedroom, VioletStudio, CyanLounge] {
+                assert!(environment_room_view(kind, saved));
+            }
+        }
     }
 }

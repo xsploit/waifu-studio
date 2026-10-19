@@ -379,3 +379,18 @@ Supersedes the earlier `_MainTex_ST` limitation above. VRM0 material-expression 
 Both VRM0 and VRM1 now share authored base-texture validation. Only unrotated UV0 is accepted, converted values must remain finite, material names must resolve uniquely, and binds retain the existing total cap. Targets feed existing avatar-private Toon/Lit/Unlit additive composition and zero/removal restoration. This does not add per-texture coordinate channels, UV1/rotation support or general Unity shader compatibility.
 
 All 431 library tests passed, including a new parsed VRM0 regression checking nonidentity authored UVs, three sample coordinates at zero/half/full weight, agreement of Toon/Standard material transforms, restoration and rotated/UV1 rejection. The existing material-only import test now expects the UV binding rather than an unsupported-property warning. Strict all-target Clippy, package formatting and whitespace checks passed. No new GPU render or material-expression avatar acceptance was run.
+
+
+### CLI framing and SSE terminal failures — 2026-10-18
+
+Fixed the two low-severity findings supplied in the user’s loop-review report. CLI environment selection now widens only the three furnished rooms, preserves saved framing for `none`, and retains the explicit room-view override. SSE reply speech now clears in-flight state and queued text on either synchronous submission rejection or owned asynchronous failure; late text cannot restart the failed scheduler. Regression tests cover environment kinds and both failure paths.
+
+The integrated working tree, including the incoming-message appraisal below, passed all 538 tests (437 library, 93 application, 6 integration, 2 benchmark). Strict all-target Clippy passed afterward; its intervening changes were style-only. This is integrated offline evidence, not a pristine pre-appraisal checkout or live speech acceptance.
+
+### Optional incoming-message Jev appraisal — 2026-10-18
+
+Automatic affect now offers mutually exclusive reply metadata (default) or incoming-message Jev evaluation (extra request), still disabled unless opted in. Jev uses the existing Scene decision connection and strict offered emotion plus discrete valence/arousal/dominance choices; those categories map to authored -0.75/0/+0.75 values, not calibrated measurements. Bounded fictional-character/persona/message context excludes paths. Failures are fixed redacted messages and responses are capped.
+
+The background adapter admits at most two workers globally, including cancelled blocking requests, with no queued retry. Results expire after 1.5 seconds and require matching turn, character, affect settings and decision settings. Cancellation cannot interrupt all blocking network/DNS work. Source changes also invalidate captured reply-metadata settings while hidden metadata remains filtered. Focused late results can update mood but do not replay body-motion decisions. Group speech is handed off before waiting for an outstanding appraisal; the serial scene job can remain busy briefly until that result expires.
+
+Offline checks: the integrated all-target suite passed 538 tests, strict Clippy passed, and local HTTP fixtures cover wire schema, offered choices, cancellation/admission, stale snapshots, source exclusivity and group/focused application. No live Jev/provider, GUI, GPU render, microphone, speaker onset or lip-sync acceptance. No fresh Opus/Fable review: delegated invocation hit the orchestration limit; a direct Claude CLI smoke request reached the service but reported the session limit.

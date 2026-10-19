@@ -1,15 +1,50 @@
 //! Local inspector; caller persists changes using its existing store worker.
-use crate::reply_affect::CharacterAffect;
+use crate::reply_affect::{AffectSource, CharacterAffect};
 use bevy_egui::egui;
 
 pub fn draw_affect_controls(ui: &mut egui::Ui, state: &mut CharacterAffect) -> bool {
     let mut changed = ui
-        .checkbox(&mut state.config.enabled, "Reply affect metadata (opt in)")
+        .checkbox(
+            &mut state.config.enabled,
+            "Automatic character emotion (opt in)",
+        )
         .changed();
-    ui.label("Requests a small hidden emotion block from this character's chat model. No extra provider calls.");
+    let previous = state.config.source;
+    egui::ComboBox::from_id_salt("affect_source")
+        .selected_text(match state.config.source {
+            AffectSource::ReplyMetadata => "Reply metadata (no extra call)",
+            AffectSource::UserMessageJev => "Incoming message via Jev (extra call)",
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut state.config.source,
+                AffectSource::ReplyMetadata,
+                "Reply metadata (no extra call)",
+            );
+            ui.selectable_value(
+                &mut state.config.source,
+                AffectSource::UserMessageJev,
+                "Incoming message via Jev (extra call)",
+            );
+        });
+    if previous != state.config.source {
+        state.mood = Default::default();
+        state.emotion = Default::default();
+        changed = true;
+    }
+    match state.config.source {
+        AffectSource::ReplyMetadata => {
+            ui.label("Requests a hidden emotion block from this character's chat model. No extra provider calls.");
+        }
+        AffectSource::UserMessageJev => {
+            ui.label("One optional Jev call per incoming message, alongside chat. Uses the Scene chat decision connection. Appraises the character's reaction, not the user's mental state. Discrete VAD levels, 1.5-second deadline, no retries; unavailable or stale results do nothing.");
+        }
+    }
     ui.add_enabled_ui(state.config.enabled, |ui| {
         changed |= ui
-            .add(egui::Slider::new(&mut state.config.influence, 0.0..=1.0).text("Reply influence"))
+            .add(
+                egui::Slider::new(&mut state.config.influence, 0.0..=1.0).text("Emotion influence"),
+            )
             .changed();
         changed |= ui
             .add(

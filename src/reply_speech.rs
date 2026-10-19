@@ -52,13 +52,22 @@ impl SseReplySpeech {
         self.in_flight = true;
         Some(text)
     }
+    fn fail(&mut self) {
+        self.in_flight = false;
+        self.finished = true;
+        self.text.clear();
+        self.filter = Default::default();
+    }
     pub fn pump(
         &mut self,
         fish: &mut crate::fish_live::FishLiveState,
         playing: bool,
     ) -> Result<(), String> {
-        if let Some(text) = self.next_text(playing) {
-            fish.speak(self.id, &self.config, text, self.key.clone())?;
+        if let Some(text) = self.next_text(playing)
+            && let Err(error) = fish.speak(self.id, &self.config, text, self.key.clone())
+        {
+            self.fail();
+            return Err(error);
         }
         Ok(())
     }
@@ -70,7 +79,10 @@ impl SseReplySpeech {
         }
         match event {
             LiveEvent::Finished { .. } => self.in_flight = false,
-            LiveEvent::Failed { message, .. } => return Err(message.clone()),
+            LiveEvent::Failed { message, .. } => {
+                self.fail();
+                return Err(message.clone());
+            }
             _ => {}
         }
         Ok(true)
@@ -283,6 +295,9 @@ mod tests {
     fn sse_failure_is_reported_only_for_the_owned_turn() {
         use crate::fish_live::LiveEvent;
         let mut reply = SseReplySpeech::new(3, VoiceConfig::default(), None);
+        reply.push("This sentence should start speaking immediately. More queued speech must be discarded.");
+        assert!(reply.next_text(false).is_some());
+        assert!(reply.in_flight);
         assert!(
             !reply
                 .receive(&LiveEvent::Failed {
@@ -298,6 +313,28 @@ mod tests {
             }),
             Err("failed".into())
         );
+        assert!(reply.is_done());
+        reply.push("A late delta must not restart speech.");
+        assert!(reply.next_text(false).is_none());
+        assert!(reply.is_done());
+    }
+
+    #[test]
+    fn sse_synchronous_rejection_is_terminal_without_network() {
+        let config = VoiceConfig {
+            endpoint: "invalid-url".into(),
+            ..Default::default()
+        };
+        let mut reply = SseReplySpeech::new(1, config, None);
+        reply.push("A complete sentence queued for speech. Another sentence still pending.");
+        reply.finish();
+        let mut fish = crate::fish_live::FishLiveState::default();
+        assert!(reply.pump(&mut fish, false).is_err());
+        assert!(reply.is_done());
+        reply.finish();
+        reply.push("Must not resume.");
+        assert!(reply.pump(&mut fish, false).is_ok());
+        assert!(reply.is_done());
     }
 
     #[test]

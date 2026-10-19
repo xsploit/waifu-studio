@@ -1086,6 +1086,7 @@ fn scene(
             state.config = config;
             if waifu_studio::reply_affect_controls::draw_affect_controls(ui, state) {
                 studio.library.scene.affect = state.config.clone();
+                studio.cancel_appraisal();
                 studio.save();
             }
             if studio.library.scene.affect.enabled && !studio.library.scene.behavior.enabled {
@@ -1093,6 +1094,9 @@ fn scene(
             }
         }
     });
+    if !studio.appraisal_status.is_empty() {
+        ui.small(&studio.appraisal_status);
+    }
     group(ui, "Avatar parts", |ui| {
         if crate::appearance_controls::ui(ui, appearance) {
             studio.library.scene.appearance = appearance.config.clone();

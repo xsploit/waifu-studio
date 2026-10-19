@@ -85,12 +85,24 @@ impl PendingWsSpeech {
     }
 }
 
+struct PendingAppraisal {
+    turn: Uuid,
+    character: Uuid,
+    affect: waifu_studio::reply_affect::AffectConfig,
+    decision: waifu_studio::recipient_decision::DecisionConfig,
+    job: waifu_studio::appraisal::AppraisalJob,
+}
+
 #[derive(Resource)]
 pub struct Studio {
     pub facts: waifu_studio::facts_memory::FactsMemoryState,
     pub affect: waifu_studio::reply_affect::AffectLibrary,
     reply_filter: Option<waifu_studio::reply_affect::ReplyAffectFilter>,
     reply_affect_requested: bool,
+    reply_affect_config: Option<waifu_studio::reply_affect::AffectConfig>,
+    appraisal: Option<PendingAppraisal>,
+    appraised_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
+    pub appraisal_status: String,
     pub completed_chat: Option<(Uuid, Result<String, String>)>,
     /// (job, character, emotion) parsed from that job's opt-in affect block.
     pub completed_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
@@ -159,6 +171,10 @@ impl Studio {
             affect: Default::default(),
             reply_filter: None,
             reply_affect_requested: false,
+            reply_affect_config: None,
+            appraisal: None,
+            appraised_affect: None,
+            appraisal_status: String::new(),
             completed_chat: None,
             completed_affect: None,
             proposals: Vec::new(),
@@ -819,7 +835,63 @@ impl Studio {
         self.model_discovery.clear();
         self.model_candidate = None;
     }
+    pub fn cancel_appraisal(&mut self) {
+        if let Some(id) = self.library.selected {
+            self.affect.take_pending(id);
+        }
+        self.appraisal = None;
+        self.appraised_affect = None;
+        self.reply_affect_config = None;
+        self.appraisal_status.clear();
+    }
+    fn poll_appraisal(&mut self) {
+        let Some(pending) = self.appraisal.as_ref() else {
+            return;
+        };
+        let current_turn = self.job.as_ref().map(|job| job.id).or_else(|| {
+            self.completed_chat
+                .as_ref()
+                .filter(|(_, result)| result.is_ok())
+                .map(|(id, _)| *id)
+        });
+        if self.library.selected != Some(pending.character)
+            || current_turn != Some(pending.turn)
+            || self.library.scene.affect != pending.affect
+            || self.library.decision != pending.decision
+        {
+            self.cancel_appraisal();
+            self.appraisal_status = "Stale appraisal discarded".into();
+            return;
+        }
+        let Some(result) = pending.job.poll() else {
+            return;
+        };
+        let pending = self.appraisal.take().unwrap();
+        match result {
+            Ok(Some(reply)) => {
+                self.affect
+                    .entries
+                    .entry(pending.character)
+                    .or_default()
+                    .config = pending.affect;
+                match self.affect.apply_reply(pending.character, reply) {
+                    Ok(()) => {
+                        self.appraised_affect =
+                            Some((pending.turn, pending.character, reply.emotion));
+                        self.appraisal_status = format!(
+                            "Jev: {:?} · V {:+.2} A {:+.2} D {:+.2}",
+                            reply.emotion, reply.valence, reply.arousal, reply.dominance
+                        );
+                    }
+                    Err(error) => self.appraisal_status = error,
+                }
+            }
+            Ok(None) => self.appraisal_status = "Jev abstained; mood unchanged".into(),
+            Err(error) => self.appraisal_status = error,
+        }
+    }
     pub fn cancel_chat(&mut self) {
+        self.cancel_appraisal();
         if let Some(id) = self.chat_character {
             self.affect.take_pending(id);
         }
@@ -892,6 +964,18 @@ impl Studio {
             character.delegation.prompt_instruction()
         );
         let id = character.id;
+        let appraisal_input = self.library.scene.affect.requests_appraisal().then(|| {
+            (
+                character.name.clone(),
+                character.persona.clone(),
+                waifu_studio::appraisal::bounded(
+                    self.composer.trim(),
+                    waifu_studio::appraisal::MAX_MESSAGE_BYTES,
+                )
+                .to_owned(),
+            )
+        });
+        self.cancel_appraisal();
         self.facts.select_character(Some(id));
         let facts_context = self.facts.context(&self.composer);
         self.affect.entries.entry(id).or_default().config = self.library.scene.affect.clone();
@@ -901,6 +985,7 @@ impl Studio {
             persona.push_str("\n\n");
             persona.push_str(instruction);
             self.reply_affect_requested = true;
+            self.reply_affect_config = Some(self.library.scene.affect.clone());
         }
         self.facts
             .observe_user_turn(id, Uuid::new_v4(), self.composer.trim());
@@ -958,6 +1043,27 @@ impl Studio {
         ));
         if let Some(job_id) = self.job.as_ref().map(|job| job.id) {
             self.begin_reply_speech(job_id);
+            if let Some((name, persona, message)) = appraisal_input {
+                let decision = self.library.decision.clone();
+                match waifu_studio::appraisal::AppraisalJob::start(
+                    decision.clone(),
+                    &name,
+                    &persona,
+                    &message,
+                ) {
+                    Ok(job) => {
+                        self.appraisal = Some(PendingAppraisal {
+                            turn: job_id,
+                            character: id,
+                            affect: self.library.scene.affect.clone(),
+                            decision,
+                            job,
+                        });
+                        self.appraisal_status = "Appraising incoming message…".into();
+                    }
+                    Err(error) => self.appraisal_status = error,
+                }
+            }
         }
         self.chat_character = Some(id);
         if let Err(error) = self.store.save_history(id, &self.turns) {
@@ -1042,7 +1148,10 @@ pub fn poll_studio(
                     let filtered = filter.finish();
                     studio.feed_reply_speech(id, &filtered.tail);
                     studio.pending_response.push_str(&filtered.tail);
-                    if studio.reply_affect_requested {
+                    if studio.reply_affect_requested
+                        && studio.library.scene.affect.requests_metadata()
+                        && studio.reply_affect_config.as_ref() == Some(&studio.library.scene.affect)
+                    {
                         if let (Some(character), Some(metadata)) =
                             (studio.chat_character, filtered.metadata)
                         {
@@ -1059,6 +1168,12 @@ pub fn poll_studio(
                     }
                 }
                 studio.reply_affect_requested = false;
+                studio.reply_affect_config = None;
+                if let Some(affect) = studio.appraised_affect.filter(|(turn, character, _)| {
+                    *turn == id && Some(*character) == studio.chat_character
+                }) {
+                    studio.completed_affect = Some(affect);
+                }
                 let content = std::mem::take(&mut studio.pending_response);
                 studio.completed_chat = Some((id, Ok(content.clone())));
                 if studio
@@ -1113,11 +1228,13 @@ pub fn poll_studio(
                 studio.pending_response.clear();
                 studio.reply_filter = None;
                 studio.reply_affect_requested = false;
+                studio.reply_affect_config = None;
                 studio.connected = false;
             }
             _ => {}
         }
     }
+    studio.poll_appraisal();
     if std::mem::take(&mut studio.unload_model) {
         unloads.write(UnloadAvatar);
     }
@@ -1667,78 +1784,101 @@ mod tests {
 
     #[test]
     fn streamed_affect_is_hidden_from_speech_display_and_history() {
-        let (mut studio, directory) = studio();
-        let character = studio.library.selected.unwrap();
-        studio.library.voice.enabled = true;
-        studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
-        studio.library.scene.affect.enabled = true;
-        studio.library.scene.behavior.enabled = true;
-        studio.affect.entries.entry(character).or_default().config =
-            studio.library.scene.affect.clone();
-        studio.reply_affect_requested = true;
-        studio.reply_filter = Some(Default::default());
-        let id = Uuid::new_v4();
-        studio.job = Some(ChatJob {
-            id,
-            cancel: Arc::new(AtomicBool::new(false)),
-        });
-        studio.begin_reply_speech(id);
-        let sender = studio.provider_tx.clone();
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-                std::time::Duration::from_millis(100),
-            ))
-            .insert_resource(studio)
-            .insert_resource(waifu_studio::expressions::FacialState {
-                available: vec!["happy".into()],
-                ..Default::default()
-            })
-            .init_resource::<waifu_studio::behavior::BehaviorState>()
-            .init_resource::<waifu_studio::animation::AnimationState>()
-            .add_message::<LoadAvatar>()
-            .add_message::<UnloadAvatar>()
-            .add_systems(
-                Update,
-                (poll_studio, crate::behavior_runtime::poll_behavior).chain(),
+        for changed_source in [false, true] {
+            let (mut studio, directory) = studio();
+            let character = studio.library.selected.unwrap();
+            studio.library.voice.enabled = true;
+            studio.library.voice.delivery = waifu_studio::voice::VoiceDelivery::LiveWebSocket;
+            studio.library.scene.affect.enabled = true;
+            studio.library.scene.behavior.enabled = true;
+            studio.affect.entries.entry(character).or_default().config =
+                studio.library.scene.affect.clone();
+            studio.reply_affect_requested = true;
+            studio.reply_affect_config = Some(studio.library.scene.affect.clone());
+            studio.reply_filter = Some(Default::default());
+            let id = Uuid::new_v4();
+            studio.job = Some(ChatJob {
+                id,
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+            studio.begin_reply_speech(id);
+            let sender = studio.provider_tx.clone();
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                    std::time::Duration::from_millis(100),
+                ))
+                .insert_resource(studio)
+                .insert_resource(waifu_studio::expressions::FacialState {
+                    available: vec!["happy".into()],
+                    ..Default::default()
+                })
+                .init_resource::<waifu_studio::behavior::BehaviorState>()
+                .init_resource::<waifu_studio::animation::AnimationState>()
+                .add_message::<LoadAvatar>()
+                .add_message::<UnloadAvatar>()
+                .add_systems(
+                    Update,
+                    (poll_studio, crate::behavior_runtime::poll_behavior).chain(),
+                );
+            sender
+                .send(ProviderEvent::Delta(id, "Hello! <wai".into()))
+                .unwrap();
+            app.update();
+            assert_eq!(app.world().resource::<Studio>().pending_response, "Hello! ");
+            if changed_source {
+                app.world_mut()
+                    .resource_mut::<Studio>()
+                    .library
+                    .scene
+                    .affect
+                    .source = waifu_studio::reply_affect::AffectSource::UserMessageJev;
+            }
+
+            sender.send(ProviderEvent::Delta(id, "fu-affect>{\"emotion\":\"happy\",\"valence\":0.8,\"arousal\":0.4,\"dominance\":0.2}</waifu-affect>".into())).unwrap();
+            sender.send(ProviderEvent::Finished(id)).unwrap();
+            app.update();
+            let studio = app.world().resource::<Studio>();
+            assert_eq!(studio.pending_ws.as_ref().unwrap().text, "Hello! ");
+            assert_eq!(studio.turns.last().unwrap().content, "Hello! ");
+            assert_eq!(
+                studio
+                    .store
+                    .history(character)
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .content,
+                "Hello! "
             );
-        sender
-            .send(ProviderEvent::Delta(id, "Hello! <wai".into()))
-            .unwrap();
-        app.update();
-        assert_eq!(app.world().resource::<Studio>().pending_response, "Hello! ");
-        sender.send(ProviderEvent::Delta(id, "fu-affect>{\"emotion\":\"happy\",\"valence\":0.8,\"arousal\":0.4,\"dominance\":0.2}</waifu-affect>".into())).unwrap();
-        sender.send(ProviderEvent::Finished(id)).unwrap();
-        app.update();
-        let studio = app.world().resource::<Studio>();
-        assert_eq!(studio.pending_ws.as_ref().unwrap().text, "Hello! ");
-        assert_eq!(studio.turns.last().unwrap().content, "Hello! ");
-        assert_eq!(
-            studio
-                .store
-                .history(character)
-                .unwrap()
-                .last()
-                .unwrap()
-                .content,
-            "Hello! "
-        );
-        assert_eq!(
-            studio.affect.entries[&character].emotion,
-            waifu_studio::reply_affect::AffectEmotion::Happy
-        );
-        assert!(studio.affect.entries[&character].mood.valence > 0.0);
-        let controller = &app
-            .world()
-            .resource::<waifu_studio::behavior::BehaviorState>()
-            .controller;
-        let weights =
-            controller.weights_for(Some(character), &["happy".into()], &Default::default(), "");
-        assert!(weights.get("happy").is_some_and(|weight| *weight > 0.0));
-        assert!(!studio.affect.entries.contains_key(&Uuid::new_v4()));
-        drop(app);
-        std::fs::remove_dir_all(directory).unwrap();
+            assert_eq!(
+                studio.affect.entries[&character].emotion,
+                if changed_source {
+                    waifu_studio::reply_affect::AffectEmotion::Neutral
+                } else {
+                    waifu_studio::reply_affect::AffectEmotion::Happy
+                }
+            );
+            assert_eq!(
+                studio.affect.entries[&character].mood.valence > 0.0,
+                !changed_source
+            );
+            let controller = &app
+                .world()
+                .resource::<waifu_studio::behavior::BehaviorState>()
+                .controller;
+            let weights =
+                controller.weights_for(Some(character), &["happy".into()], &Default::default(), "");
+            assert_eq!(
+                weights.get("happy").is_some_and(|weight| *weight > 0.0),
+                !changed_source
+            );
+            assert!(!studio.affect.entries.contains_key(&Uuid::new_v4()));
+            drop(app);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
+
     #[test]
     fn retrieved_notes_reach_request_once_and_never_enter_saved_history() {
         use std::io::{BufRead, BufReader, Read, Write};
@@ -1947,6 +2087,124 @@ mod tests {
         drop(memory);
         std::fs::remove_dir_all(directory).unwrap();
     }
+    #[test]
+    fn focused_appraisal_applies_once_and_rejects_stale_snapshots() {
+        use std::{
+            io::{BufRead, BufReader, Read, Write},
+            net::TcpListener,
+            time::{Duration, Instant},
+        };
+        use waifu_studio::{
+            appraisal::AppraisalJob,
+            reply_affect::{AffectEmotion, AffectSource},
+        };
+        let (mut studio, directory) = studio();
+        let character = studio.library.selected.unwrap();
+        studio.library.scene.affect.enabled = true;
+        studio.library.scene.affect.source = AffectSource::UserMessageJev;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        studio.library.decision.endpoint =
+            format!("http://{}/evaluation", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let body = serde_json::json!({"answers":{
+                "emotion":{"type":"choice","choice":"curious"},
+                "valence":{"type":"choice","choice":"positive"},
+                "arousal":{"type":"choice","choice":"neutral"},
+                "dominance":{"type":"choice","choice":"neutral"}
+            }})
+            .to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let turn = Uuid::new_v4();
+        studio.completed_chat = Some((turn, Ok("Reply".into())));
+        let config = studio.library.scene.affect.clone();
+        let decision = studio.library.decision.clone();
+        let job = AppraisalJob::start(decision.clone(), "A", "persona", "Hello").unwrap();
+        studio.appraisal = Some(PendingAppraisal {
+            turn,
+            character,
+            affect: config.clone(),
+            decision: decision.clone(),
+            job,
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while studio.appraisal.is_some() {
+            studio.poll_appraisal();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        server.join().unwrap();
+        assert_eq!(
+            studio.affect.entries[&character].emotion,
+            AffectEmotion::Curious
+        );
+        assert!(studio.affect.prompt_for(character).is_none());
+        assert_eq!(
+            studio.appraised_affect,
+            Some((turn, character, AffectEmotion::Curious))
+        );
+        let mood = studio.affect.entries[&character].mood;
+        studio.poll_appraisal();
+        assert_eq!(studio.affect.entries[&character].mood, mood);
+        for change in 0..3 {
+            let job = AppraisalJob::start(
+                waifu_studio::recipient_decision::DecisionConfig {
+                    endpoint: String::new(),
+                    ..Default::default()
+                },
+                "A",
+                "persona",
+                "Hello",
+            )
+            .unwrap();
+            studio.appraisal = Some(PendingAppraisal {
+                turn,
+                character,
+                affect: config.clone(),
+                decision: decision.clone(),
+                job,
+            });
+            match change {
+                0 => studio.library.scene.affect.source = AffectSource::ReplyMetadata,
+                1 => studio.completed_chat = Some((Uuid::new_v4(), Ok("New reply".into()))),
+                _ => studio.library.decision.model = "changed-model".into(),
+            }
+            studio.poll_appraisal();
+            assert!(studio.appraisal.is_none());
+            assert!(studio.appraisal_status.contains("Stale"));
+            assert_eq!(studio.affect.entries[&character].mood, mood);
+            studio.library.scene.affect = config.clone();
+            studio.library.decision = decision.clone();
+            studio.completed_chat = Some((turn, Ok("Reply".into())));
+            // Give the intentionally invalid worker a chance to release its slot.
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        studio.cancel_chat();
+        assert!(studio.appraised_affect.is_none());
+        drop(studio);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn studio() -> (Studio, PathBuf) {
         let directory = std::env::temp_dir().join(format!("studio-controller-{}", Uuid::new_v4()));
         let (store, mut library) = Store::open(directory.clone()).unwrap();

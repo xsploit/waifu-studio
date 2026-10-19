@@ -3,6 +3,7 @@ use crate::{
     data::{Library, Store, Turn, trim_history},
     memory::MemoryState,
     provider::{self, ProviderConfig, ProviderEvent},
+    recipient_decision::DecisionConfig,
     reply_affect::{AFFECT_PROMPT, AffectConfig, AffectLibrary, ReplyAffect, ReplyAffectFilter},
     scene_roster::SceneRoster,
     speech_text::ReplySpeechText,
@@ -28,6 +29,7 @@ struct Recipient {
     provider: ProviderConfig,
     voice: VoiceConfig,
     affect: AffectConfig,
+    decision: DecisionConfig,
     routine_context: Option<String>,
 }
 #[derive(Clone, Debug)]
@@ -68,7 +70,13 @@ fn affect_config(library: &Library, id: Uuid) -> AffectConfig {
 enum Event {
     Routed(Result<Option<Uuid>, String>),
     Recall(Box<SceneRecall>),
-    Affect(Uuid, AffectConfig, Option<ReplyAffect>, Option<String>),
+    Affect(
+        Uuid,
+        AffectConfig,
+        Option<ReplyAffect>,
+        Option<String>,
+        Option<DecisionConfig>,
+    ),
     Progress(String, String),
     Line(SceneLine),
     Speech(Uuid, VoiceConfig, String),
@@ -358,6 +366,7 @@ impl SceneChat {
                 persona: c.persona.clone(),
                 provider: config,
                 affect: affect_config(library, *id),
+                decision: library.decision.clone(),
                 routine_context: if focused {
                     library.scene.routine.chat_context()
                 } else {
@@ -424,12 +433,15 @@ impl SceneChat {
             .unwrap_or_default();
         for event in events {
             match event {
-                Event::Affect(id, config, reply, error) => {
+                Event::Affect(id, config, reply, error, decision) => {
                     if available(library, roster, id)
                         && self.active_recipients.contains(&id)
                         && config.enabled
                         && config.validate().is_ok()
                         && affect_config(library, id) == config
+                        && decision
+                            .as_ref()
+                            .is_none_or(|captured| captured == &library.decision)
                     {
                         self.affect.entries.entry(id).or_default().config = config;
                         let emotion = reply.map(|value| value.emotion);
@@ -557,6 +569,29 @@ fn request_context(
     });
     context
 }
+fn poll_appraisal(
+    job: &mut Option<crate::appraisal::AppraisalJob>,
+    recipient: &Recipient,
+    tx: &mpsc::SyncSender<Event>,
+) -> Result<(), String> {
+    let Some(result) = job.as_ref().and_then(|job| job.poll()) else {
+        return Ok(());
+    };
+    *job = None;
+    let (reply, error) = match result {
+        Ok(Some(reply)) => (Some(reply), None),
+        Ok(None) => (None, Some("Jev abstained; mood unchanged".into())),
+        Err(error) => (None, Some(error)),
+    };
+    tx.send(Event::Affect(
+        recipient.id,
+        recipient.affect.clone(),
+        reply,
+        error,
+        Some(recipient.decision.clone()),
+    ))
+    .map_err(|_| "Scene closed".into())
+}
 fn run(
     root: PathBuf,
     recipients: Vec<Recipient>,
@@ -605,13 +640,13 @@ fn run(
             facts: facts_trace,
         })))
         .map_err(|_| "Scene closed")?;
-        let persona = if recipient.affect.enabled && recipient.affect.validate().is_ok() {
+        let persona = if recipient.affect.requests_metadata() {
             format!("{}\n\n{}", recipient.persona, AFFECT_PROMPT)
         } else {
             recipient.persona.clone()
         };
         let mut context = request_context(&persona, &history, &text, notes, evidence);
-        if let Some(content) = recipient.routine_context {
+        if let Some(content) = recipient.routine_context.clone() {
             context.insert(
                 context.len() - 1,
                 Turn {
@@ -621,7 +656,30 @@ fn run(
             );
         }
         let (provider_tx, provider_rx) = mpsc::channel();
-        let job = provider::spawn_chat(recipient.provider, context, provider_tx);
+        let job = provider::spawn_chat(recipient.provider.clone(), context, provider_tx);
+        let mut appraisal = if recipient.affect.requests_appraisal() {
+            match crate::appraisal::AppraisalJob::start(
+                recipient.decision.clone(),
+                &recipient.name,
+                &recipient.persona,
+                &text,
+            ) {
+                Ok(job) => Some(job),
+                Err(error) => {
+                    tx.send(Event::Affect(
+                        recipient.id,
+                        recipient.affect.clone(),
+                        None,
+                        Some(error),
+                        Some(recipient.decision.clone()),
+                    ))
+                    .map_err(|_| "Scene closed")?;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // Reserve one final event for this and each later voiced recipient.
         let later = recipients[index + 1..]
             .iter()
@@ -644,6 +702,7 @@ fn run(
             if Instant::now() > deadline {
                 return Err("Scene reply timed out".into());
             }
+            poll_appraisal(&mut appraisal, &recipient, tx)?;
             match provider_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ProviderEvent::Delta(id, delta)) if id == job.id => {
                     wire_bytes += delta.len();
@@ -695,7 +754,7 @@ fn run(
         });
         trim_history(&mut history);
         store.save_history(recipient.id, &history)?;
-        if recipient.affect.enabled && recipient.affect.validate().is_ok() {
+        if recipient.affect.requests_metadata() {
             let error = filtered.error.or_else(|| {
                 filtered
                     .metadata
@@ -707,19 +766,31 @@ fn run(
                 recipient.affect.clone(),
                 filtered.metadata,
                 error,
+                None,
             ))
             .map_err(|_| "Scene closed")?;
         }
         tx.send(Event::Line(SceneLine {
             character: Some(recipient.id),
-            name: recipient.name,
+            name: recipient.name.clone(),
             text: reply.clone(),
         }))
         .map_err(|_| "Scene closed")?;
         if let Some(text) = speech.and_then(SpeechStream::finish) {
-            tx.send(Event::Speech(recipient.id, recipient.voice, text))
+            tx.send(Event::Speech(recipient.id, recipient.voice.clone(), text))
                 .map_err(|_| "Scene closed")?;
             spoken += 1;
+        }
+        // Speech has already been handed off. A short outstanding appraisal
+        // never blocks render/audio; it may keep this optional scene job busy.
+        while appraisal.is_some() {
+            if cancel.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            poll_appraisal(&mut appraisal, &recipient, tx)?;
+            if appraisal.is_some() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
     Ok(())
@@ -728,6 +799,68 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn jev_scene_appraisal_uses_separate_source_and_keeps_chat_streaming() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let _lock = crate::appraisal::TEST_LOCK.lock().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/evaluation", listener.local_addr().unwrap());
+        let decision_server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let state: serde_json::Value =
+                serde_json::from_str(request["state"].as_str().unwrap()).unwrap();
+            assert_eq!(state["user_message"], "Hello Alice");
+            let body = serde_json::json!({"answers":{
+                "emotion":{"type":"choice","choice":"happy"},
+                "valence":{"type":"choice","choice":"positive"},
+                "arousal":{"type":"choice","choice":"neutral"},
+                "dominance":{"type":"choice","choice":"neutral"}
+            }})
+            .to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let (url, provider) = gated_server(vec![vec![(FIRST.into(), None)]]);
+        let (root, mut library, roster, ids) = voiced_scene(url, &["Alice"]);
+        library.scene.affect.enabled = true;
+        library.scene.affect.source = crate::reply_affect::AffectSource::UserMessageJev;
+        library.decision.endpoint = endpoint;
+        let mut chat = SceneChat::new(root.clone());
+        chat.recipients = ids.clone();
+        chat.draft = "Hello Alice".into();
+        chat.submit(&library, &roster).unwrap();
+        poll_until(&mut chat, &library, &roster, |chat| !chat.is_busy());
+        assert_eq!(
+            chat.affect.entries[&ids[0]].emotion,
+            crate::reply_affect::AffectEmotion::Happy
+        );
+        assert!(chat.affect_receipts()[0].error.is_none());
+        assert_eq!(chat.take_speech().unwrap().2, FIRST.trim());
+        let requests = provider.join().unwrap();
+        assert!(!requests[0].to_string().contains("waifu-affect"));
+        decision_server.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn scene_affect_is_recipient_scoped_and_rejects_changed_config() {
         let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice", "Bob"]);
@@ -741,19 +874,37 @@ mod tests {
         chat.active_recipients = ids.clone();
         let (tx, rx) = mpsc::sync_channel(8);
         chat.events = Some(Mutex::new(rx));
-        tx.send(Event::Affect(ids[0], config.clone(), Some(reply), None))
-            .unwrap();
+        tx.send(Event::Affect(
+            ids[0],
+            config.clone(),
+            Some(reply),
+            None,
+            None,
+        ))
+        .unwrap();
         // Bob has not opted in, even if a stale worker claims otherwise.
-        tx.send(Event::Affect(ids[1], config.clone(), Some(reply), None))
-            .unwrap();
+        tx.send(Event::Affect(
+            ids[1],
+            config.clone(),
+            Some(reply),
+            None,
+            None,
+        ))
+        .unwrap();
         chat.poll(&library, &roster);
         assert_eq!(chat.affect.entries.len(), 1);
         assert_eq!(chat.affect.entries[&ids[0]].emotion, reply.emotion);
         assert!(!chat.affect.take_pending(ids[0]));
         assert_eq!(chat.affect_receipts().len(), 1);
         library.scene.affect.influence = 0.1;
-        tx.send(Event::Affect(ids[0], config, None, Some("stale".into())))
-            .unwrap();
+        tx.send(Event::Affect(
+            ids[0],
+            config,
+            None,
+            Some("stale".into()),
+            None,
+        ))
+        .unwrap();
         chat.poll(&library, &roster);
         assert!(chat.affect_receipts()[0].error.is_none());
         chat.tick_affect(&library, &roster, 0.016);

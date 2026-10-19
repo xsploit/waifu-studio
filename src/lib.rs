@@ -66,3 +66,5 @@ pub mod reply_speech;
 mod recall_terms;
 
 pub mod routines;
+
+pub mod appraisal;

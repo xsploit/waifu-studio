@@ -1,4 +1,4 @@
-//! Lifecycle bridge and explicit opt-in reply metadata. Prose is never scored for sentiment.
+//! Lifecycle bridge for opt-in typed reply metadata or Jev character-reaction appraisal.
 use crate::studio::{SpokenAudio, Studio};
 use bevy::prelude::*;
 use uuid::Uuid;
