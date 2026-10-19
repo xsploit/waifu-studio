@@ -496,3 +496,7 @@ The initial targeted compile failed on the generic Bevy ResMut mutability bound;
 Fake vectors test lifecycle and isolation only; they do not demonstrate real paraphrase retrieval quality. The committed lexical behavior evaluation remains 8/9, with its paraphrase miss unchanged. No live embedding endpoint, GUI, GPU render or physical audio check was run. Fable review delegation was attempted but rejected by the orchestrator automated causal-hop limit; no fresh independent review is claimed.
 
 Final strict all-target Clippy completed cleanly after the source-character check and additional tests. No compilation remains active from this slice.
+
+## Synthetic memory decision probe — 2026-10-18
+
+Added an explicit-run-only evaluation example and operating notes in `benchmarks/MEMORY-DECISIONS.md`. Eighteen synthetic cases exercise typed memory-triage choices; the tool reads no app data, loads no saved credentials, never writes a ledger, and uses an explicitly configured proxy for remote runs. Three offline tests passed, including a loopback evaluation-wire/strict-choice test. Strict example Clippy passed and a help-only invocation completed without a live request. These Cargo invocations were announced and sequential with one low-priority job. No model quality, cost or speed result is claimed; production classification remains unimplemented pending evidence of benefit. The prior full 564-test application gate remains the last full-suite receipt; this slice only adds an example and documentation.
