@@ -1,6 +1,6 @@
 # Memory decision experiment
 
-This is a synthetic smoke evaluation, not an enabled companion feature or a claim that Jev outperforms a generative model. It asks whether typed decisions can help identify memory candidates while Rust preserves exact user evidence and a person reviews changes. No model results have been collected for this evaluation yet.
+This is a synthetic smoke evaluation, not an enabled companion feature or a claim that Jev outperforms a generative model. It asks whether typed decisions can help identify memory candidates while Rust preserves exact user evidence and a person reviews changes. One live Jev run has been collected; see "Jev pilot result" below.
 
 `examples/evaluate_memory_decisions.rs` offers six decisions: new fact, new preference, explicit correction, duplicate, skip and abstain. Eighteen fixed cases include paraphrases, negation, changed preferences, unrelated existing records, transient remarks, fiction, third-party quotations, schema injection, ambiguity and a Spanish preference. Each case offers zero or one existing accepted record. No user conversations, application settings or saved credentials are loaded. No memory writes occur.
 
@@ -29,6 +29,17 @@ CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR=../../work/studio-target nice -n 10 cargo ru
 The output file must not already exist. Requests are sequential; rounds are limited to 1–5. Each request has a 10-second deadline, response bodies are capped at 16 KiB, and remote bodies/errors/credentials are not echoed into the result. Each row records the expected and actual choice or a fixed error category. The report includes accuracy over all attempts and p50/p95 latency for valid responses. Errors count as nonmatches, rather than disappearing from the denominator. Latency includes the complete HTTP request and response, not just inference; first-request overhead is included. Round order rotates deterministically. The harness does not measure provider billing or token use.
 
 Compare other models only through an endpoint that supports this same typed evaluation protocol. Use the same fixtures, rounds and routing conditions. An ordinary chat endpoint cannot be substituted directly. Eighteen hand-authored cases are too small to establish broad accuracy; inspect false retention of fiction, missed negation and incorrect correction decisions separately before enlarging the held-out set. A high aggregate score does not justify automatic writes.
+
+## Jev pilot result — 2026-10-18
+
+`typesafe-ai/jev`, 3 rounds × 18 cases, via the Vercel gateway using the key already saved in Waifu Studio's private credentials file (loaded only into the benchmark process; never printed or written). Raw rows: `benchmarks/memory-decisions-jev.json`.
+
+- 51/54 correct (94.4%), 0 transport or parse errors.
+- Latency for the full HTTP round trip: p50 217 ms, p95 292 ms. The first request took 3.6 s (connection setup/cold start).
+- Every fiction, third-party quote, schema-injection, temporary-state and question case was skipped in all three rounds. Ambiguous and uncertain claims abstained every time. Corrections and duplicates were all identified.
+- The only miss was consistent: "I do not eat peanuts." was labeled `preference` instead of `fact`, in all three rounds. The label is debatable (allergy versus dietary choice); either way, the candidate would still be offered with its exact negated quote, because Rust stores the quote rather than the model's paraphrase. The fixture was left unchanged so this result is not graded after the fact.
+
+This is encouraging for bounded triage: fast, consistent and conservative about fiction. It is still 18 hand-written cases. Token use and price were not measured.
 
 ## What would justify runtime integration
 

@@ -500,3 +500,7 @@ Final strict all-target Clippy completed cleanly after the source-character chec
 ## Synthetic memory decision probe — 2026-10-18
 
 Added an explicit-run-only evaluation example and operating notes in `benchmarks/MEMORY-DECISIONS.md`. Eighteen synthetic cases exercise typed memory-triage choices; the tool reads no app data, loads no saved credentials, never writes a ledger, and uses an explicitly configured proxy for remote runs. Three offline tests passed, including a loopback evaluation-wire/strict-choice test. Strict example Clippy passed and a help-only invocation completed without a live request. These Cargo invocations were announced and sequential with one low-priority job. No model quality, cost or speed result is claimed; production classification remains unimplemented pending evidence of benefit. The prior full 564-test application gate remains the last full-suite receipt; this slice only adds an example and documentation.
+
+## Live Jev memory decision pilot — 2026-10-18
+
+Ran `evaluate_memory_decisions --run --model typesafe-ai/jev --rounds 3` with the existing app-saved gateway key injected only into that process environment. 51/54 correct, 0 errors, p50 217 ms / p95 292 ms (first request 3.6 s). The single, consistent miss was the peanut negation fixture (fact expected, preference returned). The output file was checked for credential leakage. No app data, memory ledger or settings were read or written. Pricing was not measured.
