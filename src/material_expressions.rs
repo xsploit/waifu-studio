@@ -70,8 +70,30 @@ fn property(name: &str, vrm0: bool) -> Option<MaterialProperty> {
         (false, "matcapColor") => MaterialProperty::Matcap,
         (false, "rimColor") | (true, "_RimColor") => MaterialProperty::Rim,
         (false, "outlineColor") | (true, "_OutlineColor") => MaterialProperty::Outline,
+        (true, "_MainTex_ST") => MaterialProperty::Uv,
         _ => return None,
     })
+}
+/// All shader variants share the base texture's unrotated UV0 transform.
+/// Reject unsupported coordinate ownership before installing any binding.
+fn authored_uv(material: &gltf::Material<'_>) -> Result<[f32; 4], &'static str> {
+    let info = material.pbr_metallic_roughness().base_color_texture();
+    let transform = info.as_ref().and_then(|info| info.texture_transform());
+    let tex_coord = transform
+        .as_ref()
+        .and_then(|t| t.tex_coord())
+        .unwrap_or_else(|| info.as_ref().map_or(0, |t| t.tex_coord()));
+    let rotation = transform.as_ref().map_or(0., |t| t.rotation());
+    if tex_coord != 0 || rotation != 0. {
+        return Err("Unsupported texture transform: only unrotated base texture UV0 is supported");
+    }
+    let scale = transform.as_ref().map_or([1., 1.], |t| t.scale());
+    let offset = transform.as_ref().map_or([0., 0.], |t| t.offset());
+    let values = [scale[0], scale[1], offset[0], offset[1]];
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err("Invalid authored texture transform");
+    }
+    Ok(values)
 }
 impl ParsedMaterials {
     pub fn count(&self) -> usize {
@@ -102,14 +124,8 @@ impl ParsedMaterials {
                     .and_then(Value::as_str)
                     .unwrap_or("<missing type>");
                 let Some(property) = property(kind, vrm0) else {
-                    self.issues.insert(format!(
-                        "Unsupported material property {kind}{}",
-                        if kind == "_MainTex_ST" {
-                            ": Unity/glTF texture-coordinate mapping is not implemented"
-                        } else {
-                            ""
-                        }
-                    ));
+                    self.issues
+                        .insert(format!("Unsupported material property {kind}"));
                     continue;
                 };
                 let material = if vrm0 {
@@ -141,6 +157,26 @@ impl ParsedMaterials {
                         .insert(format!("Invalid finite RGBA target for {kind}"));
                     continue;
                 };
+                let authored_uv = if property == MaterialProperty::Uv {
+                    // Unity samples v upwards; glTF samples v downwards. For
+                    // t = scale * uv + offset, conjugating by v -> 1-v gives
+                    // offset_y' = 1 - offset_y - scale_y (three-vrm parity).
+                    target[3] = 1. - target[3] - target[1];
+                    if !target[3].is_finite() {
+                        self.issues
+                            .insert("Invalid converted texture transform".into());
+                        continue;
+                    }
+                    match authored_uv(&material) {
+                        Ok(value) => Some(value),
+                        Err(error) => {
+                            self.issues.insert(error.into());
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
                 // glTF emission strength is baked into both imported material types.
                 if !vrm0 && property == MaterialProperty::Emission {
                     let strength = material.emissive_strength().unwrap_or(1.);
@@ -154,7 +190,7 @@ impl ParsedMaterials {
                     }
                 }
                 let index = material.index().unwrap();
-                let authored = if vrm0 {
+                let authored = if vrm0 && property != MaterialProperty::Uv {
                     gltf.extension_value("VRM")
                         .and_then(|v| v.get("materialProperties"))
                         .and_then(|v| v.get(index))
@@ -163,17 +199,17 @@ impl ParsedMaterials {
                 } else {
                     None
                 };
-                self.binds
-                    .entry(index)
-                    .or_default()
-                    .binds
-                    .push(MaterialBind {
-                        expression,
-                        property,
-                        target,
-                        authored,
-                        rgba: vrm0 || property == MaterialProperty::Color,
-                    });
+                let entry = self.binds.entry(index).or_default();
+                if let Some(value) = authored_uv {
+                    entry.authored_uv = Some(value);
+                }
+                entry.binds.push(MaterialBind {
+                    expression,
+                    property,
+                    target,
+                    authored,
+                    rgba: vrm0 || property == MaterialProperty::Color,
+                });
                 if matches!(
                     property,
                     MaterialProperty::Shade
@@ -221,36 +257,16 @@ impl ParsedMaterials {
                         .insert("Invalid finite texture transform".into());
                     continue;
                 };
-                let info = material.pbr_metallic_roughness().base_color_texture();
-                let transform = info.as_ref().and_then(|info| info.texture_transform());
-                let tex_coord = transform
-                    .as_ref()
-                    .and_then(|t| t.tex_coord())
-                    .unwrap_or_else(|| info.as_ref().map_or(0, |t| t.tex_coord()));
-                let rotation = transform.as_ref().map_or(0., |t| t.rotation());
-                if tex_coord != 0 || rotation != 0. {
-                    self.issues.insert("Unsupported texture transform: only unrotated base texture UV0 is supported".into());
-                    continue;
-                }
-                let original_scale = transform.as_ref().map_or([1., 1.], |t| t.scale());
-                let original_offset = transform.as_ref().map_or([0., 0.], |t| t.offset());
-                if original_scale
-                    .iter()
-                    .chain(&original_offset)
-                    .any(|v| !v.is_finite())
-                {
-                    self.issues
-                        .insert("Invalid authored texture transform".into());
-                    continue;
-                }
+                let original = match authored_uv(&material) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.issues.insert(error.into());
+                        continue;
+                    }
+                };
                 let index = material.index().unwrap();
                 let entry = self.binds.entry(index).or_default();
-                entry.authored_uv = Some([
-                    original_scale[0],
-                    original_scale[1],
-                    original_offset[0],
-                    original_offset[1],
-                ]);
+                entry.authored_uv = Some(original);
                 entry.binds.push(MaterialBind {
                     expression,
                     property: MaterialProperty::Uv,
@@ -435,6 +451,72 @@ mod tests {
             rgba: true,
         }
     }
+    #[test]
+    fn vrm0_uv_target_converts_unity_coordinates_and_restores_all_variants() {
+        let json = serde_json::json!({"asset":{"version":"2.0"},
+            "materials":[{"name":"face", "pbrMetallicRoughness":{"baseColorTexture":{"index":0,
+                "extensions":{"KHR_texture_transform":{"scale":[1.2,0.8],"offset":[0.1,0.2]}}}}}],
+            "textures":[{"source":0}], "images":[{"uri":"offline.png"}]});
+        let gltf =
+            gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(&json).unwrap()).unwrap();
+        let expression = serde_json::json!({"materialValues":[{"materialName":"face",
+            "propertyName":"_MainTex_ST", "targetValue":[2.0,0.5,0.25,0.1]}]});
+        let mut parsed = ParsedMaterials::default();
+        parsed.parse_expression(&gltf, 0, &expression, true, 32);
+        assert!(parsed.issues.is_empty());
+        let binds = &parsed.binds[&0];
+        assert_eq!(binds.authored_uv, Some([1.2, 0.8, 0.1, 0.2]));
+        let mut original = MaterialValues::read_toon(&bevy_shader_mtoon::MtoonMaterial::default());
+        original.seed_authored(binds);
+        for weight in [0., 0.5, 1.] {
+            let mut values = original;
+            values.overlay(
+                &original,
+                binds,
+                Some(&ResolvedMaterialWeights {
+                    manual: vec![weight],
+                    ..default()
+                }),
+                1.,
+                1.,
+            );
+            for point in [Vec2::ZERO, Vec2::ONE, Vec2::new(0.3, 0.7)] {
+                let unity = Vec2::new(point.x, 1. - point.y);
+                let target_unity = unity * Vec2::new(2., 0.5) + Vec2::new(0.25, 0.1);
+                let target_gltf = Vec2::new(target_unity.x, 1. - target_unity.y);
+                let expected = original
+                    .uv
+                    .transform_point2(point)
+                    .lerp(target_gltf, weight);
+                assert!(values.uv.transform_point2(point).distance(expected) < 1e-6);
+            }
+            let mut toon = bevy_shader_mtoon::MtoonMaterial::default();
+            let mut standard = StandardMaterial::default();
+            values.write_toon(&mut toon);
+            values.write_standard(&mut standard);
+            assert_eq!(toon.uv_transform, standard.uv_transform);
+        }
+        let mut restored = original;
+        restored.overlay(&original, binds, None, 1., 1.);
+        assert_eq!(restored.uv, original.uv);
+        // Reject UV1/rotated bases instead of silently overwriting them.
+        for transform in [
+            serde_json::json!({"texCoord":1}),
+            serde_json::json!({"rotation":0.5}),
+        ] {
+            let mut invalid = json.clone();
+            invalid["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"] =
+                transform;
+            let gltf =
+                gltf::Gltf::from_slice_without_validation(&serde_json::to_vec(&invalid).unwrap())
+                    .unwrap();
+            let mut parsed = ParsedMaterials::default();
+            parsed.parse_expression(&gltf, 0, &expression, true, 32);
+            assert_eq!(parsed.count(), 0);
+            assert!(parsed.issues.iter().any(|issue| issue.contains("UV0")));
+        }
+    }
+
     #[test]
     fn deltas_add_from_authored_values_and_never_accumulate() {
         let source = bevy_shader_mtoon::MtoonMaterial {

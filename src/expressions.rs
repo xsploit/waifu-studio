@@ -1185,13 +1185,19 @@ mod tests {
             true,
         ));
         assert_eq!(zero.expressions[0].name, "happy");
-        assert_eq!(zero.materials.count(), 2);
+        assert_eq!(zero.materials.count(), 3);
         assert_eq!(
             zero.materials.binds[&0].binds[1].authored,
             Some([0.1, 0.2, 0.3, 1.])
         );
+        assert_eq!(
+            zero.materials.binds[&0].binds[2].property,
+            crate::material_expressions::MaterialProperty::Uv
+        );
+        assert_eq!(zero.materials.binds[&0].binds[2].target, [1., 1., 0., 0.]);
         assert!(
-            zero.materials
+            !zero
+                .materials
                 .issues
                 .iter()
                 .any(|s| s.contains("_MainTex_ST"))
