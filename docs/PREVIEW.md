@@ -23,6 +23,15 @@ The X11/Vulkan path uses Studio because transparent desktop rendering is unrelia
 
 Profiles persist under `%LOCALAPPDATA%\waifu-studio\data` on Windows and `~/.local/share/waifu-studio` on Linux. Existing profiles are reused. No personal profile, chat history or provider credentials are shipped in the archives. Elmer, Zome and Lazuli are excluded from the preview bundle; existing local profiles are not deleted.
 
+## Try the new controls
+
+- **Voice & mic:** the default pause allowance is three seconds. Turn off **Stop after silence** for manual stopping (the 30-second cap still applies). Blank Silero paths use the included model/runtime.
+- **Voice & hotkeys:** Ctrl+Shift+Space records, Ctrl+Shift+M toggles speech, Ctrl+Shift+period stops voice/recording, and Ctrl+Shift+comma opens voice settings. Global registration starts by default; Linux may need desktop-portal approval.
+- **Chat:** drop images, PDF, DOCX, text or code into the app, then send a question. The composer shows removable attachment chips.
+- **Animation:** the original 167 Kimodo-generated Waifumations clips are bundled on both platforms. Enable automatic companion motions; empty idle/talking selections use discovered categories, while saved selections must point to available files. Use Resume after manual playback.
+- **Assistant tools:** the conversational agent loop is off by default. Choose Tavily search/page extraction, local read-only Codex/Claude delegation or individually enabled MCP tools, then enable the loop. Your model must support function calls; extra tool/model rounds add latency. Browser automation requires a configured Streamable HTTP browser MCP server.
+- **Agent tasks:** select an installed, authenticated Codex/Claude/Pi CLI and a working directory. Start with a read-only task. Enable task proposals for the review inbox or review and start a bounded coding loop. Showing and speaking intermediate text have separate switches.
+
 ## What needs testing
 
 - Clean-machine startup, GPU/driver compatibility, transparency, multiple monitors and mixed DPI.
@@ -30,6 +39,8 @@ Profiles persist under `%LOCALAPPDATA%\waifu-studio\data` on Windows and `~/.loc
 - Restarting and updating without losing saved character settings or conversations.
 - Long sessions, desktop interactions, global shortcuts and optional integrations.
 
-Python and Node.js are needed only for integrations that use those interpreters. The Discord voice worker and optional ONNX Runtime are not bundled. App/API/provider behavior, display acceptance and every integration are not covered by an automated build passing.
+Python and Node.js are needed only for integrations that use those interpreters. Claude Code must support `--safe-mode` (verified with 2.1.310). Agent model overrides are saved separately; choose an available model when a CLI default requires extra usage credits.
+
+The Discord voice worker is not bundled. Silero VAD and the platform-specific ONNX Runtime CPU libraries are bundled, with upstream license notices under `assets/silero/`. App/API/provider behavior, display acceptance and every integration are not covered by an automated build passing.
 
 Report the release tag, OS, GPU, steps to reproduce and expected/actual behavior in a GitHub issue. Include a screenshot or relevant error text when helpful. Check `SHA256SUMS.txt` before installing and retain `package-manifest.json` for file integrity checks.

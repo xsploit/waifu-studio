@@ -23,6 +23,7 @@ pub fn roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::var_os("WAIFU_MOTION_LIBRARY")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
+    roots.push(waifu_studio::bundled::assets_path().join("animations/waifumations"));
     roots.push(waifu_studio::bundled::assets_path().join("animations/companion"));
     // The user's existing unlicensed checkout is a development convenience,
     // never an implicit dependency of a relocated package.
@@ -393,6 +394,42 @@ impl MotionCatalog {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bundled_kimodo_library_parses_and_supplies_automatic_playlists() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/animations/waifumations");
+        let entries = scan(&[root]);
+        assert_eq!(
+            entries.len(),
+            167,
+            "Original Kimodo library must ship intact"
+        );
+        for entry in &entries {
+            let text = std::fs::read_to_string(&entry.path).unwrap();
+            let clip = waifu_studio::animation::parse_bvh(&text)
+                .unwrap_or_else(|e| panic!("{}: {e}", entry.path.display()));
+            assert!(clip.frame_count > 1 && clip.frame_time > 0.0);
+        }
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e.category() == MotionCategory::Idle)
+                .count()
+                >= 16
+        );
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e.category() == MotionCategory::Talking)
+                .count()
+                >= 20
+        );
+        assert!(
+            entries
+                .iter()
+                .filter(|e| e.category() == MotionCategory::Locomotion)
+                .all(|e| !e.auto_playable())
+        );
+    }
     #[test]
     fn scans_supported_motions_with_groups_and_readable_labels() {
         let root = std::env::temp_dir().join(format!("motion-lib-{}", uuid::Uuid::new_v4()));

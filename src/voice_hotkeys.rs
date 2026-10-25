@@ -73,10 +73,15 @@ pub(super) enum PortalEvent {
     Closed(String),
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     global: bool,
+}
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { global: true }
+    }
 }
 
 #[derive(Resource)]
@@ -226,6 +231,12 @@ impl VoiceHotkeys {
                     self.setting_up = false;
                     self.status = if self.bindings.is_empty() {
                         "No global shortcuts were assigned. Focused shortcuts still work.".into()
+                    } else if self.bindings.len() < Action::ALL.len() {
+                        format!(
+                            "{} of {} global shortcuts are active. Unavailable bindings may belong to another app; they still work when Waifu Studio is focused.",
+                            self.bindings.len(),
+                            Action::ALL.len()
+                        )
                     } else {
                         "Global shortcuts are active, including while another app is focused."
                             .into()
@@ -338,11 +349,22 @@ pub(crate) fn settings_ui(ui: &mut egui::Ui, state: &mut VoiceHotkeys) {
         for action in Action::ALL {
             card.row(action.label(), "", |ui| {
                 ui.label(state.shortcut(action));
+                if state.preferences.global && !state.setting_up {
+                    ui.weak(if state.bindings.contains_key(&action) {
+                        "Global"
+                    } else {
+                        "Focused only"
+                    });
+                }
             });
         }
         card.row(
             "Use shortcuts in other apps",
-            "Your desktop lets you approve or change the global keys.",
+            if cfg!(windows) {
+                "Windows registers the default keys; conflicts are shown per binding."
+            } else {
+                "Your desktop lets you approve or change the global keys."
+            },
             |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -379,6 +401,18 @@ pub(crate) fn settings_ui(ui: &mut egui::Ui, state: &mut VoiceHotkeys) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_shortcuts_default_on_and_explicit_disable_is_preserved() {
+        assert!(Preferences::default().global);
+        assert!(serde_json::from_str::<Preferences>("{}").unwrap().global);
+        assert!(
+            !serde_json::from_str::<Preferences>(r#"{"global":false}"#)
+                .unwrap()
+                .global
+        );
+    }
+
     #[test]
     fn modifier_chords_are_specific_and_do_not_repeat_from_held_keys() {
         let mut keys = ButtonInput::default();
@@ -396,7 +430,10 @@ mod tests {
     }
     #[test]
     fn stale_global_events_and_unassigned_actions_cannot_trigger_voice() {
-        let mut state = VoiceHotkeys::default();
+        let mut state = VoiceHotkeys {
+            allow_global: false,
+            ..Default::default()
+        };
         state
             .tx
             .try_send((
@@ -433,7 +470,10 @@ mod tests {
         studio.library.voice.enabled = true;
         let mut app = App::new();
         app.insert_resource(studio)
-            .init_resource::<VoiceHotkeys>()
+            .insert_resource(VoiceHotkeys {
+                allow_global: false,
+                ..Default::default()
+            })
             .init_resource::<ListeningState>()
             .init_resource::<ButtonInput<KeyCode>>()
             .add_systems(Update, process);

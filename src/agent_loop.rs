@@ -157,7 +157,9 @@ impl AgentLoop {
         };
         if self.steps >= self.max_steps {
             self.stop(StopReason::StepLimit);
-            return Ok(None);
+            return Err(
+                "Task budget exhausted; companion must provide a final answer without tools".into(),
+            );
         }
         self.steps += 1;
         self.status = LoopStatus::WorkerRunning;
@@ -179,9 +181,9 @@ impl AgentLoop {
         self.require(token, LoopStatus::WorkerRunning)?;
         if !success {
             self.stop(StopReason::WorkerFailed);
-        } else if self.steps >= self.max_steps {
-            self.stop(StopReason::StepLimit);
         } else {
+            // Even the final worker result gets one companion summary request.
+            // accept_assistant still rejects any task beyond the fixed budget.
             self.ready_at = now.saturating_add(self.cooldown);
             self.status = LoopStatus::Cooldown;
         }
@@ -272,8 +274,30 @@ mod tests {
         assert!(c.accept_assistant(chat, &response("codex")).is_err());
         c.complete_worker(worker.token, true, Duration::ZERO)
             .unwrap();
+        assert_eq!(c.status(), &LoopStatus::Cooldown);
+        let summary = c.next_chat(Duration::from_secs(999)).unwrap();
+        assert!(
+            c.accept_assistant(summary, "The requested check passed.")
+                .unwrap()
+                .is_none()
+        );
+        assert!(!c.is_active());
+        assert_eq!(c.steps(), 1);
+    }
+    #[test]
+    fn final_summary_cannot_start_an_extra_worker() {
+        let mut c = AgentLoop::default();
+        let chat = start(&mut c, 1);
+        let worker = c
+            .accept_assistant(chat, &response("codex"))
+            .unwrap()
+            .unwrap();
+        c.complete_worker(worker.token, true, Duration::ZERO)
+            .unwrap();
+        let final_chat = c.next_chat(Duration::from_secs(5)).unwrap();
+        assert!(c.accept_assistant(final_chat, &response("codex")).is_err());
+        assert_eq!(c.steps(), 1);
         assert_eq!(c.status(), &LoopStatus::Stopped(StopReason::StepLimit));
-        assert!(c.next_chat(Duration::from_secs(999)).is_none());
     }
     #[test]
     fn cooldown_feedback_then_next_proposal() {

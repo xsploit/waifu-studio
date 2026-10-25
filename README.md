@@ -128,7 +128,9 @@ Chat, speech, transcription and optional decision requests have separate setting
 
 Each character keeps a bounded, rolling local conversation history. Returning to that character restores their conversation context. Long-term notes and accepted facts are managed separately in Memory; a chat transcript is not an unlimited permanent memory system.
 
-Attach **PNG, JPEG or WebP** images to a message when using a vision-capable model. The attachment goes with that request so you can discuss a picture. Image payloads are not retained in chat history. There is no continuous webcam or screen observation.
+Use **Attach files** or drag files onto the app to stage attachments beside the chat composer. Remove a file by clicking its chip; nothing is sent until you send the message. You can attach up to **two PNG/JPEG/WebP images and four documents** per message, with an **8 MiB input limit per file**. Images need a vision-capable model.
+
+**PDF, DOCX, UTF-8/UTF-16 text, Markdown, CSV, JSON, logs and source-code files** are supported. Documents are converted to text locally and sent as quoted reference material to the selected chat provider, so they also work with text-only models. Each document may contain up to **32 KiB of extracted text**; use an excerpt for larger documents. Scanned PDFs need OCR first. Password-protected documents, unsupported binary formats, audio and video are not decoded. DOCX extraction covers body text and tables, not embedded images or layout. Attachment payloads are sent with that one request and are not retained in chat history. There is no continuous webcam or screen observation.
 
 ### Talk with several characters
 
@@ -168,11 +170,11 @@ Buffered and progressive HTTP paths can prepare upcoming sentence groups while k
 
 ### Speak through your microphone
 
-Configure transcription in **Voice & mic**, then start recording using the microphone control or shortcut. The app captures the default input device and uses voice-activity detection (VAD) to distinguish speech from silence. Recording ends after the configured silence interval or when you stop it manually, then the clip goes to the selected transcription service.
+Configure transcription in **Voice & mic**, then start recording using the microphone control or shortcut. The app captures the default input device and uses voice-activity detection (VAD) to distinguish speech from silence. New profiles allow **three seconds of silence** after speech before ending the clip. Adjust **Pause allowance** in Voice & mic, or turn **Stop after silence** off to keep recording until you press the microphone button or shortcut again. The existing 30-second recording cap still applies. The finished clip then goes to the selected transcription service. Existing saved pause timings are preserved until you change them.
 
 New setups enable **Send when you stop talking**. Turn it off to review the transcript in the composer before sending. Automatic send also checks that the character, draft and conversation are still suitable; otherwise the transcript stays available for review. Recording always starts manually and does not restart itself after a reply.
 
-Advanced controls cover transcription endpoint/model, language, silence timing and VAD thresholds. Energy-based detection is available directly; optional **Silero ONNX VAD** needs separately supplied model/runtime files. Optional silence trimming removes detected leading and trailing silence before upload while keeping margins and internal pauses. This preview does not provide a wake word or continuous full-duplex conversation.
+Advanced controls cover transcription endpoint/model, language, silence timing and VAD thresholds. **Silero ONNX VAD** is enabled by default and its model and CPU runtime are included in preview archives for Windows and Linux. Leave the advanced model/runtime paths blank to use the bundled copies, or enter your own paths. Source builds prepare these with `python tools/prepare_silero.py`. Energy-based detection is also available by disabling Silero. Optional silence trimming removes detected leading and trailing silence before upload while keeping margins and internal pauses. This preview does not provide a wake word or continuous full-duplex conversation.
 
 ### Mouth animation and diagnostics
 
@@ -212,6 +214,8 @@ Choose a solid color, import an image, use one of three illustrated backgrounds,
 Image backgrounds are flat backdrops; the rooms contain rendered geometry. They do not include walking navigation, world interaction or a game simulation.
 
 ### Motion library and automatic playlists
+
+The preview includes the original **167-motion Waifumations library generated with Kimodo**: idle, talking, reactions, greetings, dance and walking clips. It is discovered from the package's `assets/animations/waifumations` folder on both platforms. Automatic idle/talking playlists choose their matching categories; reply gestures use the selected decision or emotion-mapping mode. Walking motions are available for manual preview and excluded from automatic playback. These original motions can clip on some avatars; rejected arm-clearance experiments are not bundled.
 
 Import **BVH, VRMA or FBX** motions, find them by folder, category or search, then play, pause, stop, scrub, loop or adjust speed and weight. Motions are retargeted to the avatar's humanoid rig, with rest-pose correction and clip crossfades. Results vary with the source animation and target rig.
 
@@ -301,25 +305,41 @@ Studio and the transparent companion can be used as sources in an external captu
 
 ## Assistant tools and coding agents
 
-These are optional, experimental workflows for giving the companion useful context or running a bounded task. They are separate from ordinary conversation.
+These optional workflows let the companion search, use configured tools, or delegate bounded work. The automatic loop is **off by default**. Normal chat keeps its existing streaming path and does not make tool-discovery or extra model requests.
+
+### Let Hikari search and use tools
+
+Open **Assistant tools → Companion agent loop**, choose the allowed tools, then turn on **Use tools automatically**. The chat composer also has an **Agent loop on/off** menu. Settings belong to the selected character; enabling task proposals in Agent tasks is a separate choice.
+
+With the loop enabled, the selected chat model receives the enabled function definitions. It can search, inspect the result, request another tool, delegate a task, and then answer. The app returns actual results with native assistant/tool message roles. Calls run sequentially, with a configurable **1–16 calls per message** (default 6) and at most four requested calls per model round. At the limit, the model gets one final-answer request without tools. Stopping chat cancels the loop; a blocked HTTP read can remain until its timeout, and cancellation does not undo remote actions.
+
+- **Tavily search and page reading:** set `TAVILY_API_KEY` in your private startup credentials or environment. `web_search` returns up to five results with titles, URLs and excerpts; `web_extract` reads up to three selected pages. Hikari is instructed to cite sources. These use the [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search) and page extraction service. Search snippets and extracted text are bounded untrusted reference data. Crawl and WebWaifu4's combined research helper are not included.
+- **Codex and Claude delegation:** enable either adapter and configure its workspace, model override and timeout under **Agent tasks**. Hikari supplies only the task prompt. Automatic delegation uses the built-in **local, read-only** adapter with installed CLI authentication; it cannot choose another executable, directory, SSH host or access mode. Use the reviewed workflow below for edits or remote work. Worker results return to Hikari so she can continue.
+- **MCP tools, including browser tools:** MCP is the protocol a tool server uses to advertise schemas and receive calls. Enter a Streamable HTTP server address, load its tools, and check the individual tools the companion may call. A browser MCP server can supply page navigation or other browser actions; Waifu Studio does not bundle a browser automation engine or import Codex's own skills. Only checked tools are exposed. Grants are bound to that server address, and tools must be loaded again after restart; the optional access token remains session-only. Enable tools according to the effects you want Hikari to perform.
+
+Tool use adds network/service round trips. While the loop is enabled, each model round is buffered until the app knows whether it contains tool calls or a final answer; final text then enters the usual speech/display path. The chosen model must support **OpenAI-compatible Chat Completions function calls**. Existing gateway routing and sampling/reasoning rules still apply. An incompatible model reports its provider error; the app does not silently switch models or retry through another API. This is a bounded conversational loop, not unsolicited background activity or a persistent coding-agent session.
 
 ### Call an MCP tool manually
 
 In **Assistant tools**, enter a **Streamable HTTP MCP** server address and choose **Load tools**. Select a tool, fill its arguments, review the exact call and execute it. You can inspect the result and insert it into the conversation draft when useful, such as bringing the result of a lookup into your next question.
 
-An optional access token is kept for the session. The current implementation does not support stdio servers, OAuth sign-in, subscriptions or an automatic model-controlled tool loop. Compatibility with a particular live MCP server still needs verification.
+An optional access token is kept for the session. Manual review remains available independently of the automatic loop. The current implementation does not support stdio servers, OAuth sign-in or subscriptions. Compatibility with a particular live MCP server still needs verification.
 
 ### Run an installed coding agent
 
 **Agent tasks** supports **Codex CLI, Claude Code, Pi and custom executables**; another tool such as Hermes can use the custom-command path. Install and authenticate the CLI separately. Choose its working directory, task, timeout and access level, then **Review task → Start task**. Read-only is the default for the built-in presets; file edits require selecting that access. Output remains available for inspection and explicit use as conversation context.
 
-Local execution uses the installed CLI's existing authentication. SSH execution uses the remote CLI and its authentication, with a known host key, noninteractive access and remote timeout support. Cancel/timeout controls stop supervised work, but do not undo files already changed. The app does not include agent subscriptions or persistent provider chat sessions. Real model tasks and SSH-host operation still need acceptance testing.
+Local execution uses the installed CLI's existing authentication. SSH execution uses the remote CLI and its authentication, with a known host key, noninteractive access and remote timeout support. Cancel/timeout controls stop supervised work, but do not undo files already changed. The app saves your chosen provider, access level, working directory, timeout and separate Codex/Claude model overrides locally; it creates an empty `agent-workspace` inside the data directory when none was selected. Windows resolves npm-installed Codex to its executable rather than trying to execute a PowerShell shim. The app does not include agent subscriptions or persistent provider chat sessions. SSH-host operation still needs acceptance testing.
 
 ### Task board and bounded companion loop
 
 The **Task board** holds multiple independent task cards. Review their commands, then run the reviewed batch with bounded concurrency, per-task status, cancellation and staged results. Use independent scopes when tasks can edit files; parallel cards do not create a shared agent conversation or automatically coordinate conflicting changes.
 
-For sequential work, the experimental **Task loop** lets the companion propose tasks toward a goal and use their results to continue. Choose the worker, access, directory/SSH scope and limits, then **Review loop and fixed execution scope → Start reviewed loop**. Starting authorizes automatic execution of proposals within that reviewed scope, up to **8 worker tasks and 9 model calls**. Stop controls cancel the loop and its active jobs. It is explicitly started and bounded, not an always-running background supervisor.
+The runner, task board and reviewed coding loop are directly visible in **Agent tasks**. Enable **Allow task proposals** for the character to permit suggestions; ordinary chat suggestions go to the review inbox. This does not enable the automatic conversational tool loop.
+
+For sequential work, the experimental **Companion agentic loop** lets the companion propose tasks toward a goal and use their results to continue. Choose the worker, access, directory/SSH scope and limits, then **Review loop and fixed execution scope → Start reviewed loop**. Starting authorizes automatic execution of proposals within that reviewed scope, up to **8 worker tasks and 9 model calls**. Each successful worker result returns to the companion, including one final summary request after the last allowed task. Stop controls cancel the loop and its active jobs. It is explicitly started and bounded, not an always-running background supervisor.
+
+**Show intermediate text** and **Speak intermediate text** are separate per-character settings under Agent tasks. Showing progress is on by default; speaking it is off. They control brief companion text between tool calls in both the conversational and reviewed coding loops; final answers use the normal spoken-reply setting. Tool receipts are collapsible when progress is shown, and tool status remains visible when progress text is hidden. Extra model calls, tool execution and optional spoken progress add latency.
 
 ## Saved data and credentials
 
@@ -332,7 +352,7 @@ Profiles, conversation history, notes and other app data are stored locally:
 
 Existing profiles are reused across launches. Back up the data directory before moving an established setup. Imported files outside the managed asset store may still be referenced by their original paths, so copying settings alone between operating systems may require updating those paths.
 
-**Connections → Keys → Manage…** provides masked, memory-only session overrides for chat, decisions, speech and microphone transcription. For automatic loading on future launches, use the configured environment-variable names or the private `credentials.env` file in the data directory. The startup file supports `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `FISH_API_KEY` and `FISH_REFERENCE_ID`; existing process environment values take precedence. Linux requires the credentials file to be private to its owner. See [cross-platform setup](docs/CROSS-PLATFORM.md) for startup configuration.
+**Connections → Keys → Manage…** provides masked, memory-only session overrides for chat, decisions, speech and microphone transcription. For automatic loading on future launches, use the configured environment-variable names or the private `credentials.env` file in the data directory. The startup file supports `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `FISH_API_KEY`, `FISH_REFERENCE_ID` and `TAVILY_API_KEY`; existing process environment values take precedence. Linux requires the credentials file to be private to its owner. See [cross-platform setup](docs/CROSS-PLATFORM.md) for startup configuration.
 
 The release ships app defaults and bundled characters, not someone's personal profile, conversations or provider credentials. Requests go to the services you select: chat receives the assembled conversation context, transcription receives recorded audio, speech receives text to speak, and optional remote semantic lookup receives its selected memory/query content. Provider accounts and any usage charges remain separate from Waifu Studio.
 

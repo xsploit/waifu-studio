@@ -33,18 +33,18 @@ Profiles are separate from the source and executable: normally `%LOCALAPPDATA%\w
 | Studio, VRM rendering, chat/provider UI, local settings | Native Bevy/winit | Native Bevy/winit |
 | Desktop surfaces and taskbar seats | Win32/DWM visible window bounds and actual bottom taskbars; minimized/cloaked windows excluded | Existing KWin and Hyprland bridges; other desktops retain basic overlay controls |
 | Coordinates | One companion DPI scale for all physical desktop coordinates, including negative monitor positions | Existing compositor logical coordinates |
-| Global voice shortcuts | Opt-in `RegisterHotKey`; conflicts are reported and registrations are released on disable/exit | Existing desktop GlobalShortcuts portal |
+| Global voice shortcuts | Default-on `RegisterHotKey`; conflicts are reported per binding and registrations are released on disable/exit | Existing desktop GlobalShortcuts portal |
 | Extension and coding-agent cleanup | Child starts suspended, joins a kill-on-close Job Object, then resumes; bounded pipe transport | Existing process groups, nonblocking pipes, Linux parent-death handling |
 | Discord Identify admission | Shared file lock, persisted uptime plus wall-clock checks | Existing boot ID, boot clock and shared file lock |
 | Routine local time | Windows local time including OS timezone/DST | libc local time including OS timezone/DST |
 
-Global shortcuts use Ctrl+Shift+Space (microphone), Ctrl+Shift+M (voice replies), Ctrl+Shift+. (stop), and Ctrl+Shift+, (voice settings). They are opt-in in Voice settings. Linux may let the desktop choose alternate bindings; Windows uses these fixed bindings and reports conflicts.
+Global shortcuts use Ctrl+Shift+Space (microphone), Ctrl+Shift+M (voice replies), Ctrl+Shift+. (stop), and Ctrl+Shift+, (voice settings). They are enabled by default for new profiles and can be disabled in Voice settings. Linux may let the desktop choose alternate bindings; Windows uses these fixed bindings and reports conflicts.
 
-Saved credentials are read automatically from the profile's `credentials.env`. Supported names are `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `FISH_API_KEY`, and `FISH_REFERENCE_ID`. Explicit process environment settings retain precedence. On Linux the file must belong to the current user and have mode `0600`.
+Saved credentials are read automatically from the profile's `credentials.env`. Supported names are `AI_GATEWAY_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `FISH_API_KEY`, `FISH_REFERENCE_ID`, and `TAVILY_API_KEY`. Explicit process environment settings retain precedence. On Linux the file must belong to the current user and have mode `0600`. The conversational tool loop is off by default; enable it and choose its tools under Assistant tools. Normal chat makes no tool requests while it is off.
 
 Windows cannot execute Unix shebangs. For installed `.py` extensions, the host invokes `py.exe -3 -u`; install Python 3 with its launcher, or set `WAIFU_STUDIO_PYTHON` to your Python executable. For `.js`, `.mjs`, and `.cjs`, install Node.js or set `WAIFU_STUDIO_NODE`. Script paths and arguments remain separate argv entries. Native executables are launched directly. Python/Node are optional dependencies for those extension packs, not requirements for the main studio.
 
-Optional Silero VAD needs a matching ONNX Runtime library for each operating system: `onnxruntime.dll` on Windows, `libonnxruntime.so` on Linux. Do not reuse a Linux `.so` or model-runtime library path on Windows. Energy VAD does not require ONNX Runtime.
+Preview packages include Silero 6.2.1 and ONNX Runtime 1.24.4 CPU libraries for the target platform. Blank model/runtime settings resolve bundled files; explicit overrides are retained. For source builds run `python tools/prepare_silero.py` (or `python3` on Linux); `--platform all` prepares both releases. Downloads are pinned by SHA-256, and packages retain upstream licenses and provenance. Energy VAD remains available without ONNX Runtime.
 
 ## Desktop rendering reference
 
@@ -57,6 +57,7 @@ Mate Engine remains a desktop-behavior reference. No Mate implementation code or
 ## Build and package
 
 ```text
+python tools/prepare_silero.py
 cargo check --locked --all-targets
 npm ci --prefix tools/discord-voice --no-audit --no-fund
 cargo test --locked --all-targets -- --test-threads=1
@@ -75,7 +76,7 @@ py -3 tools/package_windows.py --repo . --binary target/windows/release/waifu-st
 python3 tools/package_linux.py --repo . --binary target/linux/release/waifu-studio --output dist/waifu-studio-linux --archive dist/waifu-studio-linux.tar.gz
 ```
 
-The commands above produce local candidates. After committing all inputs, add `--release v0.1.0-preview.1` to record the release tag and source commit in an experimental preview package. See [preview setup and known issues](PREVIEW.md). The executable and `assets/` must stay together. Runtime users do not need Rust/Cargo. Linux system-library compatibility remains distribution-dependent.
+The commands above produce local candidates. After committing all inputs, add `--release v0.1.0-preview.2` to record the release tag and source commit in an experimental preview package. See [preview setup and known issues](PREVIEW.md). The executable and `assets/` must stay together. Runtime users do not need Rust/Cargo. Linux system-library compatibility remains distribution-dependent.
 
 ## Validation
 

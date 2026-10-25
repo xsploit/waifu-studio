@@ -26,7 +26,7 @@ def build(repo, binary, output, release=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="waifu-windows-", dir=output.parent))
     try:
-        copy_runtime(repo, binary, stage)
+        copy_runtime(repo, binary, stage, platform="windows-x86_64")
         (stage / "waifu-studio").rename(stage / "waifu-studio.exe")
         (stage / "start.cmd").write_text('@echo off\n"%~dp0waifu-studio.exe" %*\n', encoding="utf-8")
         (stage / "studio.cmd").write_text('@echo off\n"%~dp0waifu-studio.exe" --studio %*\n', encoding="utf-8")
@@ -39,7 +39,7 @@ def build(repo, binary, output, release=None):
             "User data is separate under %LOCALAPPDATA%\\waifu-studio\\data.\n"
             "Python integrations need Python 3 with the py launcher; JavaScript\n"
             "integrations need Node.js. These interpreters are not bundled.\n"
-            "Optional Silero VAD needs a compatible Windows ONNX Runtime DLL.\n"
+            "Silero speech detection and its CPU runtime are included.\n"
             "See docs/CROSS-PLATFORM.md for validation and graphics guidance.\n\n"
             "This is an experimental tester build. See docs/PREVIEW.md.\n"
             "Bundled model metadata and attribution are retained under assets/.\n"

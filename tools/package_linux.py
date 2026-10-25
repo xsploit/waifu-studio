@@ -80,13 +80,21 @@ def release_metadata(repo, release):
     return {"private": False, "release": release, "source_commit": commit}
 
 
-def copy_runtime(repo, binary, root):
-    # These are source-controlled runtime trees, never application data dirs.
+def copy_runtime(repo, binary, root, platform="linux-x86_64"):
+    # Runtime trees plus pinned generated speech assets, never application data dirs.
+    runtime = "onnxruntime.dll" if platform == "windows-x86_64" else "libonnxruntime.so"
+    for relative in ["silero_vad.onnx", "SILERO-LICENSE.txt", f"{platform}/{runtime}", f"{platform}/LICENSE", f"{platform}/provenance.json"]:
+        if not (repo / "assets/silero" / relative).is_file():
+            raise ValueError("Missing bundled speech assets; run tools/prepare_silero.py for the target platform")
     plan = [(binary, Path("waifu-studio"))]
     for name in ("assets", "docs"):
         for path in regular_files(repo / name):
-            plan.append((path, Path(name) / path.relative_to(repo / name)))
-    for name in ("LICENSE", "REFERENCES.md", "FEATURE-STATUS.md", "VALIDATION.md"):
+            relative = path.relative_to(repo / name)
+            if name == "assets" and len(relative.parts) > 1 and relative.parts[0] == "silero":
+                if relative.parts[1] in {"windows-x86_64", "linux-x86_64"} and relative.parts[1] != platform:
+                    continue
+            plan.append((path, Path(name) / relative))
+    for name in ("LICENSE", "README.md", "REFERENCES.md", "FEATURE-STATUS.md", "VALIDATION.md"):
         plan.append((repo / name, Path(name)))
     for path in regular_files(repo / "vendor"):
         if path.name.startswith("LICENSE") or path.name == "WAIFU-PATCH.md":
@@ -132,6 +140,7 @@ def build(repo, binary, output, release=None):
             f"Waifu Studio — {release or 'private candidate'} — Linux x86_64\n\n"
             "Run ./studio.sh for setup, or ./start.sh for the desktop companion.\n"
             "Rust and Cargo are not needed to launch.\n"
+            "Silero speech detection and its CPU runtime are included.\n"
             "Keep the executable and assets directory together. User profiles and\n"
             "credentials are stored separately and are not included here.\n"
             "Requires the system libraries recorded in DEPENDENCIES.txt, a working\n"
@@ -140,7 +149,7 @@ def build(repo, binary, output, release=None):
             "interpreters; executable integrations remain opt-in.\n\n"
             "This is an experimental tester build. See docs/PREVIEW.md for setup and known issues.\n"
             "Bundled model metadata and attribution are retained under assets/.\n"
-            "No experimental generated motion library, accounts or keys are included.\n"
+            "The original Kimodo motion library is included; accounts and keys are not.\n"
             "Motion quality, live services and long-session acceptance remain open.\n"
         )
         dependencies = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, check=True)

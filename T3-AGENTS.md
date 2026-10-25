@@ -41,10 +41,10 @@ Pass each token as an argv element; never interpolate a model-generated command 
 Claude Code, from the [official CLI reference](https://code.claude.com/docs/en/cli-reference):
 
 ```text
-claude --bare --print --permission-mode plan --tools Read,Glob,Grep --no-session-persistence -- PROMPT
+claude --safe-mode --strict-mcp-config --print --permission-mode plan --tools Read,Glob,Grep --no-session-persistence -- PROMPT
 ```
 
-`--bare` skips automatic hooks, skills, commands, plugins, MCP, memory and CLAUDE.md discovery. `--tools` controls available tools; `--allowedTools` alone is not an availability restriction. Do not enable permission bypass. `--output-format stream-json` is available for event adapters; streaming examples also require `--verbose`.
+`--safe-mode` disables customizations while retaining existing authentication; `--strict-mcp-config` excludes unconfigured MCP servers. Verified against installed Claude Code 2.1.310 on 2026-10-25. The previous `--bare` preset ignored OAuth/keychain credentials and therefore broke subscription logins. Model overrides are saved independently for Codex and Claude; a successful local Claude acceptance used `sonnet` because the configured Fable model required extra usage credits. `--tools` controls available tools; `--allowedTools` alone is not an availability restriction. Do not enable permission bypass. `--output-format stream-json` is available for event adapters; streaming examples also require `--verbose`.
 
 Pi, from its [official CLI documentation](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/cli.md) and [argument parser](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/cli/args.ts):
 
@@ -67,6 +67,8 @@ Grok API: [official xAI reference](https://docs.x.ai/docs/api-reference) shows t
 Codex flags are verified separately by the parent implementation against official OpenAI documentation. No authenticated Codex CLI invocation was performed in this research.
 
 ## Product boundary
+
+The current preview also has an independent native **conversational tool loop**, off by default. Hikari's selected chat model can call Tavily search/page extraction, explicitly enabled Streamable HTTP MCP tools, and local read-only Codex/Claude adapters, inspect results, and answer within a fixed call budget. This is separate from the reviewed coding-task loop and does not copy T3's orchestrator. WebWaifu4's `server/src/ai/TavilyTools.ts` and `src/lib/grillo/chat-tools.ts` at `fad86c2a8e67960ef1ba843df15855bce0c46f70` were inspected as search/extraction references; its crawl and combined research helpers are not ported. Real Windows production-worker checks passed Tavily search/extraction and both coding adapters on 2026-10-25. Browser automation requires a configured MCP server and its own acceptance test.
 
 The initial public implementation may stage a companion-proposed task, require review of provider/workspace/prompt, run a bounded one-shot process, show its outcome and explicitly return its result to chat. That is useful task dispatch, not T3's persistent session, subagent, approval-broker, steering or nested-task aggregation parity.
 

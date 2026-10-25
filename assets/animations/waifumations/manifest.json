@@ -1,0 +1,1343 @@
+{
+  "version": 1,
+  "generator": "Kimodo",
+  "conversion": "SOMA joint names renamed for VRM; original motion samples unchanged",
+  "clips": [
+    {
+      "file": "amusement_01.bvh",
+      "sha256": "5cc79c6e0a10602d05927d2cb56fab8efc45acee19e7157f54fa6172a446df7a",
+      "bytes": 270115,
+      "name": "amusement_01",
+      "seconds": 4,
+      "prompt": "A person laughs, leaning back and holding the stomach."
+    },
+    {
+      "file": "amusement_02.bvh",
+      "sha256": "6f5f2835db9dadd2a0ed8705003a8c23d0dcd6d54122618c3344b021ecbdb90b",
+      "bytes": 270774,
+      "name": "amusement_02",
+      "seconds": 4,
+      "prompt": "A person giggles, covering the mouth with one hand."
+    },
+    {
+      "file": "amusement_laugh_hard_01.bvh",
+      "sha256": "8508e82ef5f1c397bf72eb14d9fd2034eea5d0e260219e95aa8b9f5d665a4ee9",
+      "bytes": 335653,
+      "name": "amusement_laugh_hard_01",
+      "seconds": 5,
+      "prompt": "A person laughs hard, bending over and slapping one knee."
+    },
+    {
+      "file": "amusement_snort_01.bvh",
+      "sha256": "f8b3caa7be7887ef54dccef27123e60c2fc92c6c6eabc7841c490ccb70fea735",
+      "bytes": 270731,
+      "name": "amusement_snort_01",
+      "seconds": 4,
+      "prompt": "A person laughs, turning away and covering the mouth."
+    },
+    {
+      "file": "anger_01.bvh",
+      "sha256": "72ff0055be23b62d82a5e4ac0c1d341062fb68fd5bb95dc75a11827796b63358",
+      "bytes": 270132,
+      "name": "anger_01",
+      "seconds": 4,
+      "prompt": "A person stomps one foot angrily and clenches both fists."
+    },
+    {
+      "file": "anger_02.bvh",
+      "sha256": "fee61b96aeb05edc985b71790f22161ea9107736206965c27eec176a2a2fe82e",
+      "bytes": 270948,
+      "name": "anger_02",
+      "seconds": 4,
+      "prompt": "A person crosses arms angrily and turns the head away."
+    },
+    {
+      "file": "anger_shake_fist_01.bvh",
+      "sha256": "6117af8d3da17ae2e087e73e3844876d38a00b4a7d285645e8e0fa0fd7b81e61",
+      "bytes": 270093,
+      "name": "anger_shake_fist_01",
+      "seconds": 4,
+      "prompt": "A person shakes a fist angrily."
+    },
+    {
+      "file": "anger_tantrum_01.bvh",
+      "sha256": "da54bc23181c62f46bf2e91f7ed5c3a96787de59467f277169061491b4be0488",
+      "bytes": 333861,
+      "name": "anger_tantrum_01",
+      "seconds": 5,
+      "prompt": "A person throws a small tantrum, stomping both feet and swinging the arms."
+    },
+    {
+      "file": "annoyance_01.bvh",
+      "sha256": "7ff19cb66dc6e474f1b58803cc5abedf9a025ff58648c511684f8c132e68cc86",
+      "bytes": 270380,
+      "name": "annoyance_01",
+      "seconds": 4,
+      "prompt": "A person rolls their eyes, sighs, and puts hands on hips."
+    },
+    {
+      "file": "annoyance_02.bvh",
+      "sha256": "c6256e41afc76fe8570146e83d69c953bf0eb857f280eeee4ee853ea850f81d2",
+      "bytes": 270072,
+      "name": "annoyance_02",
+      "seconds": 4,
+      "prompt": "A person taps one foot impatiently with arms crossed."
+    },
+    {
+      "file": "annoyance_eye_roll_01.bvh",
+      "sha256": "d0881d16ef139afbb80908cd3ce547aca8aa2cb4ae984b39413597b9877f0dc0",
+      "bytes": 269760,
+      "name": "annoyance_eye_roll_01",
+      "seconds": 4,
+      "prompt": "A person rolls the eyes and throws the head back, sighing."
+    },
+    {
+      "file": "annoyance_facepalm_01.bvh",
+      "sha256": "9a4c076b7007f3416aa82b83251984e928810eb8e8f68f6648284a2edf76bec7",
+      "bytes": 271218,
+      "name": "annoyance_facepalm_01",
+      "seconds": 4,
+      "prompt": "A person facepalms, putting one hand over the face and shaking the head."
+    },
+    {
+      "file": "annoyance_middle_finger_01.bvh",
+      "sha256": "d3f354b8da84c237b041e83a3fbdafe6ac089877f5bd4af199180a30dbdcd4c3",
+      "bytes": 270439,
+      "name": "annoyance_middle_finger_01",
+      "seconds": 4,
+      "prompt": "A person raises the middle finger with an annoyed expression."
+    },
+    {
+      "file": "annoyance_middle_finger_02.bvh",
+      "sha256": "8713916115e592b23e79f03e72a41313dd03511f252d8c0f99cc4a95c35224a6",
+      "bytes": 270543,
+      "name": "annoyance_middle_finger_02",
+      "seconds": 4,
+      "prompt": "A person flips off someone with both middle fingers, leaning forward."
+    },
+    {
+      "file": "annoyance_pout_01.bvh",
+      "sha256": "c513109d96f5e27b75c32785d8b4d4c829dae4f1ddabe249745fd567ef2bb3bc",
+      "bytes": 270688,
+      "name": "annoyance_pout_01",
+      "seconds": 4,
+      "prompt": "A person pouts, crosses arms, and stomps one foot."
+    },
+    {
+      "file": "approval_01.bvh",
+      "sha256": "97d7c2a2c91bfb1f9f677f35dbd9dbf9aba8d11f729ab3ef6fb326dbda2ab2e9",
+      "bytes": 270192,
+      "name": "approval_01",
+      "seconds": 4,
+      "prompt": "A person nods approvingly and gives a thumbs up."
+    },
+    {
+      "file": "approval_chefs_kiss_01.bvh",
+      "sha256": "2040cadcc8828ffe51e31dca349a6852d6542db9ca18c50a98d09f1dc2b240e0",
+      "bytes": 270946,
+      "name": "approval_chefs_kiss_01",
+      "seconds": 4,
+      "prompt": "A person kisses the fingertips and opens the hand in a chef's kiss."
+    },
+    {
+      "file": "approval_ok_sign_01.bvh",
+      "sha256": "ee84dc1633564e10a73ba59b3fba09ab41bae623078303ef5bff565c374c3d6c",
+      "bytes": 271119,
+      "name": "approval_ok_sign_01",
+      "seconds": 4,
+      "prompt": "A person makes an OK sign with one hand and nods."
+    },
+    {
+      "file": "approval_slow_clap_01.bvh",
+      "sha256": "3336ee494355b54fb8f148f51d5bbd681f4c5551d10939474c61e728789ec2ad",
+      "bytes": 336350,
+      "name": "approval_slow_clap_01",
+      "seconds": 5,
+      "prompt": "A person slowly claps with a smug expression."
+    },
+    {
+      "file": "approval_thumbs_up_both_01.bvh",
+      "sha256": "3526767c1ad8986e4bcf69ca3b3fd5f5dcb7b60c582bf00fa2255430d82e9f58",
+      "bytes": 270697,
+      "name": "approval_thumbs_up_both_01",
+      "seconds": 4,
+      "prompt": "A person gives two thumbs up enthusiastically."
+    },
+    {
+      "file": "caring_01.bvh",
+      "sha256": "5a53365f375a156a58d896704eb3879f063f0eec4b3cfcd265e67b238cbb4f6e",
+      "bytes": 270463,
+      "name": "caring_01",
+      "seconds": 4,
+      "prompt": "A person reaches forward gently as if to comfort someone."
+    },
+    {
+      "file": "caring_02.bvh",
+      "sha256": "03cea00014b85ba6695da5a7567ab8d77e1c7dc5d633c96dfbf1c92dbe6b29ad",
+      "bytes": 270620,
+      "name": "caring_02",
+      "seconds": 4,
+      "prompt": "A person makes a heart shape with both hands."
+    },
+    {
+      "file": "caring_blow_kiss_01.bvh",
+      "sha256": "cf31fc506133c3aed9156283f63583a0bdbe0b3d387ea88b560acdae7f3b00d2",
+      "bytes": 269782,
+      "name": "caring_blow_kiss_01",
+      "seconds": 4,
+      "prompt": "A person blows a kiss with one hand."
+    },
+    {
+      "file": "caring_heart_hands_02.bvh",
+      "sha256": "703582e342aa4e415acb1210c2bc465020e4dcb8312ddbd7093b21320cbb9f4c",
+      "bytes": 271815,
+      "name": "caring_heart_hands_02",
+      "seconds": 4,
+      "prompt": "A person makes a heart with both hands over the chest."
+    },
+    {
+      "file": "caring_hug_self_01.bvh",
+      "sha256": "8c5c6a20bf7f1bfd28a7cb97a79f4665b28c571bea51253b92eb05ab71624c58",
+      "bytes": 271115,
+      "name": "caring_hug_self_01",
+      "seconds": 4,
+      "prompt": "A person hugs themselves warmly, swaying."
+    },
+    {
+      "file": "confusion_01.bvh",
+      "sha256": "408e596dc191eddb1568359dc618381ca367d00bb773937d0fe5305ed1b8348a",
+      "bytes": 270880,
+      "name": "confusion_01",
+      "seconds": 4,
+      "prompt": "A person scratches the head in confusion and tilts the head."
+    },
+    {
+      "file": "confusion_02.bvh",
+      "sha256": "dca2730e7d2b4522f2b47ffa3680048707464e33d22e1e1f0090cf3606f9ded3",
+      "bytes": 270537,
+      "name": "confusion_02",
+      "seconds": 4,
+      "prompt": "A person shrugs, confused, looking left and right."
+    },
+    {
+      "file": "confusion_huh_01.bvh",
+      "sha256": "4f2ec11d5aa50752deaef24ffcda49f348912db1f1d3406a5d5b9363587ebaac",
+      "bytes": 270545,
+      "name": "confusion_huh_01",
+      "seconds": 4,
+      "prompt": "A person leans forward with one hand cupped at the ear, confused."
+    },
+    {
+      "file": "curiosity_01.bvh",
+      "sha256": "e254b531d0aeb4a6cdd1848b6ed5f56415a14135b68fe9a8e4aa389929648082",
+      "bytes": 270885,
+      "name": "curiosity_01",
+      "seconds": 4,
+      "prompt": "A person leans forward curiously and tilts the head."
+    },
+    {
+      "file": "curiosity_02.bvh",
+      "sha256": "9d764f81b36c4ae7797c8fafe72455bd30a6b01be4a146b53b352d25d2eb8c28",
+      "bytes": 271208,
+      "name": "curiosity_02",
+      "seconds": 4,
+      "prompt": "A person cups a hand to the ear, curious and listening."
+    },
+    {
+      "file": "curiosity_peek_01.bvh",
+      "sha256": "3ed50c9ac12d23508f7d59097cf3ea9526e832b7b649b52918bbf9778b4f8904",
+      "bytes": 270053,
+      "name": "curiosity_peek_01",
+      "seconds": 4,
+      "prompt": "A person peeks around something, leaning sideways and looking."
+    },
+    {
+      "file": "dance_cute_01.bvh",
+      "sha256": "18733893092386e7a6ac50f660418790241c9a62fb7801659cbabcf3a2fa627d",
+      "bytes": 527489,
+      "name": "dance_cute_01",
+      "seconds": 8,
+      "prompt": "A person does a cute idol dance in place."
+    },
+    {
+      "file": "dance_groove_01.bvh",
+      "sha256": "1522059adbfa1eccf7ddd4fd8ca14aafabaec8dcdedbf8c10844ff6b05f12d21",
+      "bytes": 527723,
+      "name": "dance_groove_01",
+      "seconds": 8,
+      "prompt": "A person grooves to music in place, bobbing and moving the arms."
+    },
+    {
+      "file": "dance_headbang_01.bvh",
+      "sha256": "54068055e0a17a8ee3a67a4a6699a032ba44035b5f26dddedda2a017ee752442",
+      "bytes": 333821,
+      "name": "dance_headbang_01",
+      "seconds": 5,
+      "prompt": "A person headbangs to heavy music."
+    },
+    {
+      "file": "disappointment_slump_01.bvh",
+      "sha256": "98be31063eb722adb7b9fbe7f51474ec6a2259980a2fb2e63c192e1ae8264178",
+      "bytes": 270315,
+      "name": "disappointment_slump_01",
+      "seconds": 4,
+      "prompt": "A person drops the shoulders in disappointment and lets the arms hang."
+    },
+    {
+      "file": "disapproval_finger_wag_01.bvh",
+      "sha256": "8ada691b805ed6c4c819cfa00edf4b6f1b3a638b90f8f76ea4b334330cfe33f3",
+      "bytes": 270193,
+      "name": "disapproval_finger_wag_01",
+      "seconds": 4,
+      "prompt": "A person wags one finger no, no, no."
+    },
+    {
+      "file": "disapproval_thumbs_down_01.bvh",
+      "sha256": "190c19bc3365b147b6dcd3e1442d4e161e3000e0503baa74272c2f6bc645c528",
+      "bytes": 269459,
+      "name": "disapproval_thumbs_down_01",
+      "seconds": 4,
+      "prompt": "A person gives a thumbs down and shakes the head."
+    },
+    {
+      "file": "disgust_01.bvh",
+      "sha256": "71bc7ad497101182822da8d723dd6c901080b04996c931ae88d4e261cdead583",
+      "bytes": 270117,
+      "name": "disgust_01",
+      "seconds": 4,
+      "prompt": "A person recoils in disgust, turning the head away and waving a hand."
+    },
+    {
+      "file": "disgust_02.bvh",
+      "sha256": "4570fb3e0ecff881acd79f672e4c274e43097100dcb0ed665375212aee1546f9",
+      "bytes": 270808,
+      "name": "disgust_02",
+      "seconds": 4,
+      "prompt": "A person leans back in disgust, pinching the nose."
+    },
+    {
+      "file": "disgust_ew_01.bvh",
+      "sha256": "fa6177d96c9fe4d3d0e694f3c0288df62fe0a3927726fa87f9e7462b038b5983",
+      "bytes": 269938,
+      "name": "disgust_ew_01",
+      "seconds": 4,
+      "prompt": "A person recoils saying ew, shaking out both hands."
+    },
+    {
+      "file": "embarrassment_01.bvh",
+      "sha256": "a7c92ff006611f126d98788267b816b6b2130ce41b5eaebb26bb4aa6a953a6ee",
+      "bytes": 269632,
+      "name": "embarrassment_01",
+      "seconds": 4,
+      "prompt": "A person covers the face shyly with both hands and turns away."
+    },
+    {
+      "file": "embarrassment_02.bvh",
+      "sha256": "d256bbf6db58b35f29f35e69dc8aeb566447d7407cc020f8512b16d92d3c8943",
+      "bytes": 271065,
+      "name": "embarrassment_02",
+      "seconds": 4,
+      "prompt": "A person rubs the back of the head, embarrassed, looking down."
+    },
+    {
+      "file": "embarrassment_hide_face_01.bvh",
+      "sha256": "e7cd04328091601a6c2d7913369283e8eef43928fb5b8947072bcced9e79bbb9",
+      "bytes": 270246,
+      "name": "embarrassment_hide_face_01",
+      "seconds": 4,
+      "prompt": "A person hides the face in both hands and wiggles shyly."
+    },
+    {
+      "file": "embarrassment_shy_sway_01.bvh",
+      "sha256": "e3d818c05f8895eda87aa8d02b174eb6040abf077224df84e55b6edff43e46cc",
+      "bytes": 270330,
+      "name": "embarrassment_shy_sway_01",
+      "seconds": 4,
+      "prompt": "A person sways shyly, twisting the body side to side with hands behind the back."
+    },
+    {
+      "file": "excitement_01.bvh",
+      "sha256": "19545f0954e4f00816f2255cf245a62ee7a952f5dd641fbe14cf23144b175b96",
+      "bytes": 270681,
+      "name": "excitement_01",
+      "seconds": 4,
+      "prompt": "A person bounces excitedly and pumps both fists."
+    },
+    {
+      "file": "excitement_02.bvh",
+      "sha256": "d71d3855c43b536559c38af9b4fdd548c503bb25311377150a506f68adeae393",
+      "bytes": 270986,
+      "name": "excitement_02",
+      "seconds": 4,
+      "prompt": "A person hops in place with excitement, waving both hands."
+    },
+    {
+      "file": "excitement_dab_01.bvh",
+      "sha256": "769596669b269eadaf616f23592e879930338b18bfbfec7479ec20b3bdd8ed47",
+      "bytes": 206443,
+      "name": "excitement_dab_01",
+      "seconds": 3,
+      "prompt": "A person does a dab dance move."
+    },
+    {
+      "file": "excitement_finger_guns_01.bvh",
+      "sha256": "64aedbb7bb2f226cf168405413febb88a2b7a8a48b7c83046779e25e1e595a18",
+      "bytes": 270710,
+      "name": "excitement_finger_guns_01",
+      "seconds": 4,
+      "prompt": "A person points finger guns forward with both hands and winks."
+    },
+    {
+      "file": "excitement_jazz_hands_01.bvh",
+      "sha256": "dc1fd6766369cbab17a8faef26d1710f8920167c880cb7974992a0161b52eb78",
+      "bytes": 270491,
+      "name": "excitement_jazz_hands_01",
+      "seconds": 4,
+      "prompt": "A person does jazz hands, wiggling the fingers."
+    },
+    {
+      "file": "excitement_yes_01.bvh",
+      "sha256": "ae8364ed35a36d717f71deaf046f0db85045ee210e4cf61d5220e8008d55690e",
+      "bytes": 270091,
+      "name": "excitement_yes_01",
+      "seconds": 4,
+      "prompt": "A person pumps one fist downward shouting yes."
+    },
+    {
+      "file": "fear_01.bvh",
+      "sha256": "76872d545fdf7519fd0c9ae155cf954c2fec25bbf5d436ff7a9fb8a7715e9672",
+      "bytes": 271462,
+      "name": "fear_01",
+      "seconds": 4,
+      "prompt": "A person flinches in fear and shields the face with both arms."
+    },
+    {
+      "file": "fear_02.bvh",
+      "sha256": "5045ef341b04a83115a28ce93ccc5293fb933780b58e4bed6cb030773c042e3e",
+      "bytes": 271817,
+      "name": "fear_02",
+      "seconds": 4,
+      "prompt": "A person backs away fearfully, hands raised in front."
+    },
+    {
+      "file": "fear_scared_jump_01.bvh",
+      "sha256": "9e7c8b3b33826cb847b04f0b065cfd9eab2d22c3e5c29b560a4480fa4c7e4193",
+      "bytes": 270398,
+      "name": "fear_scared_jump_01",
+      "seconds": 4,
+      "prompt": "A person jumps in fright and clutches the chest."
+    },
+    {
+      "file": "gratitude_01.bvh",
+      "sha256": "aa8669c3c16ab035bde7dc29f61021c37c9d3685a95c2aa41f53606b648e7185",
+      "bytes": 270885,
+      "name": "gratitude_01",
+      "seconds": 4,
+      "prompt": "A person bows slightly with hands pressed together in thanks."
+    },
+    {
+      "file": "gratitude_02.bvh",
+      "sha256": "1d5ed61c67dcdc29e64cb723b73d4906f71f497be4b134505ce28fdeff03c60e",
+      "bytes": 269948,
+      "name": "gratitude_02",
+      "seconds": 4,
+      "prompt": "A person puts a hand on the heart and nods gratefully."
+    },
+    {
+      "file": "gratitude_bow_deep_01.bvh",
+      "sha256": "4d3dfcef41f5a5c613878c15caa01ee2f3fca3c68fbbb38242d239508ccfd044",
+      "bytes": 271101,
+      "name": "gratitude_bow_deep_01",
+      "seconds": 4,
+      "prompt": "A person bows deeply in gratitude."
+    },
+    {
+      "file": "greeting_bow_01.bvh",
+      "sha256": "84a9572a1ab0788187ebc4031c8757769f7ac6f7c5b6131dba050893ab65f30b",
+      "bytes": 270598,
+      "name": "greeting_bow_01",
+      "seconds": 4,
+      "prompt": "A person bows politely."
+    },
+    {
+      "file": "greeting_curtsy_01.bvh",
+      "sha256": "5528c448d0326af6a8eb349a00291532da7247b2bb5e5633cb1bac63fa1f455b",
+      "bytes": 270541,
+      "name": "greeting_curtsy_01",
+      "seconds": 4,
+      "prompt": "A person does a cute curtsy."
+    },
+    {
+      "file": "greeting_goodbye_wave_01.bvh",
+      "sha256": "8ef535d372e8637b4c8bced5a823290001917085ee910721af75b14674c9076e",
+      "bytes": 270692,
+      "name": "greeting_goodbye_wave_01",
+      "seconds": 4,
+      "prompt": "A person waves goodbye slowly with one hand."
+    },
+    {
+      "file": "greeting_hi_bounce_01.bvh",
+      "sha256": "f134ac46f211897216667801a6466b0bd50e9768faba975fba7d8edcc86406d6",
+      "bytes": 270301,
+      "name": "greeting_hi_bounce_01",
+      "seconds": 4,
+      "prompt": "A person waves hi while bouncing excitedly."
+    },
+    {
+      "file": "greeting_peace_sign_01.bvh",
+      "sha256": "d4139e1047e42318087aa822213d8a582e57ba221a86fabd1c0ae1df756a973a",
+      "bytes": 207108,
+      "name": "greeting_peace_sign_01",
+      "seconds": 3,
+      "prompt": "A person flashes a peace sign beside the face."
+    },
+    {
+      "file": "greeting_salute_01.bvh",
+      "sha256": "d4578e45d0d5f6be6c157a98fab425b82811390212ce136e445f321db0682594",
+      "bytes": 206276,
+      "name": "greeting_salute_01",
+      "seconds": 3,
+      "prompt": "A person gives a playful salute."
+    },
+    {
+      "file": "greeting_wave_01.bvh",
+      "sha256": "a235b7324ae1239a3f56a09e87c2f78790ea5fefdf3673ed25b5d392a7db2dc8",
+      "bytes": 270191,
+      "name": "greeting_wave_01",
+      "seconds": 4,
+      "prompt": "A person waves hello with one hand."
+    },
+    {
+      "file": "greeting_wave_02.bvh",
+      "sha256": "816aef52b51ab62187580b8bf3a81de9a490c2b45873e854bbc501746f9a689a",
+      "bytes": 270155,
+      "name": "greeting_wave_02",
+      "seconds": 4,
+      "prompt": "A person waves enthusiastically with both hands."
+    },
+    {
+      "file": "idle_arms_crossed_01.bvh",
+      "sha256": "2df5c90965fad5694172b07cb435159d1d35556f835cb4f6275261c80b2f343f",
+      "bytes": 527055,
+      "name": "idle_arms_crossed_01",
+      "seconds": 8,
+      "prompt": "A person stands with arms crossed, slowly nodding the head."
+    },
+    {
+      "file": "idle_bored_01.bvh",
+      "sha256": "789a328894cc9dd4aaa6d168ca564bff2c7873f8773d15588e84b9defe436552",
+      "bytes": 523765,
+      "name": "idle_bored_01",
+      "seconds": 8,
+      "prompt": "A person stands bored, sighs, and looks up at the ceiling."
+    },
+    {
+      "file": "idle_breathing_01.bvh",
+      "sha256": "729bbbb2e2a4712afbc11a79f8d83b3a8c3fd3ad36c0b75f2191ae1771f509ca",
+      "bytes": 523726,
+      "name": "idle_breathing_01",
+      "seconds": 8,
+      "prompt": "A person stands still and relaxed, breathing calmly, with small natural sways."
+    },
+    {
+      "file": "idle_check_nails_01.bvh",
+      "sha256": "7986c3609fd488060dea9b390d735dc60972e37abc8b61d23fb12eddee97afd8",
+      "bytes": 526384,
+      "name": "idle_check_nails_01",
+      "seconds": 8,
+      "prompt": "A person stands and looks at their nails, bored."
+    },
+    {
+      "file": "idle_cold_01.bvh",
+      "sha256": "44636f19d7864774cb601064a94960582a05f6c192beb742e8d02cdc2a1c326f",
+      "bytes": 525331,
+      "name": "idle_cold_01",
+      "seconds": 8,
+      "prompt": "A person stands rubbing both arms as if cold."
+    },
+    {
+      "file": "idle_curious_peek_01.bvh",
+      "sha256": "dde3584dda72cf345755e35aaf715ddac978d95c55c28791f7ffa65ec5aa14c3",
+      "bytes": 525108,
+      "name": "idle_curious_peek_01",
+      "seconds": 8,
+      "prompt": "A person stands and leans forward slightly to peek at something, then straightens up."
+    },
+    {
+      "file": "idle_cute_lean_01.bvh",
+      "sha256": "86791560f85323c798c6eecf34d2e408e0e95c39b63df8b5cbe6c6226900f149",
+      "bytes": 525990,
+      "name": "idle_cute_lean_01",
+      "seconds": 8,
+      "prompt": "A person stands leaning to one side with hands clasped behind, tilting the head cutely."
+    },
+    {
+      "file": "idle_fidget_01.bvh",
+      "sha256": "7f1c352e3d04fb7e1f2867567cdb65f8a13be81ef6112d64b8f903f69d6f821c",
+      "bytes": 525938,
+      "name": "idle_fidget_01",
+      "seconds": 8,
+      "prompt": "A person stands in place and fidgets with their hands, glancing down and back up."
+    },
+    {
+      "file": "idle_glance_01.bvh",
+      "sha256": "4970c0de584efc6eaa7b78042ec56612c49628d61367f819ee7931b6fdc09ea0",
+      "bytes": 525010,
+      "name": "idle_glance_01",
+      "seconds": 8,
+      "prompt": "A person stands still, glances over the shoulder, then looks forward again."
+    },
+    {
+      "file": "idle_hair_touch_01.bvh",
+      "sha256": "837db308a2ccc320cffa6d55b1e5ef1b4bcb268645794106d27858da51e8025b",
+      "bytes": 526781,
+      "name": "idle_hair_touch_01",
+      "seconds": 8,
+      "prompt": "A person stands in place and tucks hair behind one ear, then relaxes."
+    },
+    {
+      "file": "idle_hands_behind_back_01.bvh",
+      "sha256": "5885e6ad48fff3ab4fa5f9bf35a195ccfea46b39a2f666ea7b0c20b169a6e93b",
+      "bytes": 526778,
+      "name": "idle_hands_behind_back_01",
+      "seconds": 8,
+      "prompt": "A person stands with hands clasped behind the back, rocking slightly on the heels."
+    },
+    {
+      "file": "idle_hands_on_hips_01.bvh",
+      "sha256": "e77b56f691ef56371eb52aefaf15a8dbdea6d4ee8ac0335a1a81902f532521c5",
+      "bytes": 529311,
+      "name": "idle_hands_on_hips_01",
+      "seconds": 8,
+      "prompt": "A person stands with hands on hips, looking around casually."
+    },
+    {
+      "file": "idle_head_bob_01.bvh",
+      "sha256": "22728c79e245e6875dac1da95f3936bbcf1282488cd04fed080258750cfcd1ac",
+      "bytes": 525671,
+      "name": "idle_head_bob_01",
+      "seconds": 8,
+      "prompt": "A person stands and bobs the head gently as if listening to music."
+    },
+    {
+      "file": "idle_head_tilt_01.bvh",
+      "sha256": "39db9ff8235078cc245ac858644b7ed5906b08a2b73987ee61ab63dc7bd30d29",
+      "bytes": 525339,
+      "name": "idle_head_tilt_01",
+      "seconds": 8,
+      "prompt": "A person stands relaxed and gently tilts the head to one side, then back to center."
+    },
+    {
+      "file": "idle_heel_rock_01.bvh",
+      "sha256": "e6896034aaaebff27fc756f9321d525dbd409075424e46701e8e0ce2b4142b9c",
+      "bytes": 525185,
+      "name": "idle_heel_rock_01",
+      "seconds": 8,
+      "prompt": "A person rocks back and forth on the heels with hands behind the back."
+    },
+    {
+      "file": "idle_listening_01.bvh",
+      "sha256": "9488776b2c2b9ec319cf546a3e890af9e152c002e9c18ceb8a19d15a3e1b9727",
+      "bytes": 525067,
+      "name": "idle_listening_01",
+      "seconds": 8,
+      "prompt": "A person stands still and listens attentively, nodding slowly now and then."
+    },
+    {
+      "file": "idle_look_around_01.bvh",
+      "sha256": "2bb0b0017e4f7c14f70e57dcc90f25c4d9bc4942c058327aee8958e70c4bdcf6",
+      "bytes": 525953,
+      "name": "idle_look_around_01",
+      "seconds": 8,
+      "prompt": "A person stands in place and slowly looks around, turning the head left and then right."
+    },
+    {
+      "file": "idle_look_up_01.bvh",
+      "sha256": "bd861a82aee87eab039b5eb492d67e1f06c5a74294fc8b8c30840d6e76830ef3",
+      "bytes": 528379,
+      "name": "idle_look_up_01",
+      "seconds": 8,
+      "prompt": "A person stands and slowly looks up, then back down, thinking."
+    },
+    {
+      "file": "idle_neck_roll_01.bvh",
+      "sha256": "41e83a59e3cb6c13647ed2d56e52ecd6de9a627c5304e75d8547ecd1535fc011",
+      "bytes": 524266,
+      "name": "idle_neck_roll_01",
+      "seconds": 8,
+      "prompt": "A person stands and rolls the neck slowly to stretch."
+    },
+    {
+      "file": "idle_phone_scroll_01.bvh",
+      "sha256": "db116bf08d5b353f0075900c427538d4a49133a65d15f6b2c2c31d9fe76e599a",
+      "bytes": 525285,
+      "name": "idle_phone_scroll_01",
+      "seconds": 8,
+      "prompt": "A person stands holding a phone in one hand, scrolling with the thumb and looking down."
+    },
+    {
+      "file": "idle_restless_01.bvh",
+      "sha256": "e15aa3e077bf34129695258d2111e01553b4e25d0b9785dc4832e4d3114721b6",
+      "bytes": 525889,
+      "name": "idle_restless_01",
+      "seconds": 8,
+      "prompt": "A person stands restlessly, shifting feet and swinging the arms."
+    },
+    {
+      "file": "idle_shoulder_roll_01.bvh",
+      "sha256": "1a7f804934e355f57f3e3850bf254db87e942df985f3a48d681eebac2241ece5",
+      "bytes": 525096,
+      "name": "idle_shoulder_roll_01",
+      "seconds": 8,
+      "prompt": "A person stands and rolls the shoulders, then relaxes."
+    },
+    {
+      "file": "idle_sleepy_01.bvh",
+      "sha256": "d9ecacda5638c21058d5a07240b4e692f76763d4f97ad71f8ec4195b91d32f53",
+      "bytes": 525695,
+      "name": "idle_sleepy_01",
+      "seconds": 8,
+      "prompt": "A person stands sleepily, head nodding forward and jerking back up."
+    },
+    {
+      "file": "idle_stretch_01.bvh",
+      "sha256": "70ad05d3a1d4aa021376857b2a2c3ddc4d376574552cc28498000e83f67b46ca",
+      "bytes": 526002,
+      "name": "idle_stretch_01",
+      "seconds": 8,
+      "prompt": "A person stands and stretches both arms overhead, then relaxes."
+    },
+    {
+      "file": "idle_sway_01.bvh",
+      "sha256": "baf9ef0057058468d2ce5fb129259e7881ce11e5f7dde190e6d392859a8fddd9",
+      "bytes": 524467,
+      "name": "idle_sway_01",
+      "seconds": 8,
+      "prompt": "A person stands and sways gently side to side as if humming a song."
+    },
+    {
+      "file": "idle_toe_tap_01.bvh",
+      "sha256": "123c980321ddffc15c3c49cfd09871dae5ae6d7108de0604834af6139d4e72b3",
+      "bytes": 526619,
+      "name": "idle_toe_tap_01",
+      "seconds": 8,
+      "prompt": "A person stands and taps one foot, looking around."
+    },
+    {
+      "file": "idle_vibing_01.bvh",
+      "sha256": "50b4c69944a89035a6626564a280b7f9fde326511c1d0369e7b7de5a3a6a272e",
+      "bytes": 525188,
+      "name": "idle_vibing_01",
+      "seconds": 8,
+      "prompt": "A person stands and vibes to music, swaying the hips and nodding."
+    },
+    {
+      "file": "idle_watch_check_01.bvh",
+      "sha256": "ccc2b341a860ee25de82c36666530446bff40d6b9552bf817d88741d5bfd232e",
+      "bytes": 397198,
+      "name": "idle_watch_check_01",
+      "seconds": 6,
+      "prompt": "A person checks a watch on the wrist impatiently and looks around."
+    },
+    {
+      "file": "idle_weight_shift_01.bvh",
+      "sha256": "bec99f8581267e3a0ec54d08f88352a86ae399df1f6fa0c859aa4873df0970f2",
+      "bytes": 524716,
+      "name": "idle_weight_shift_01",
+      "seconds": 8,
+      "prompt": "A person stands in place and shifts weight from one leg to the other."
+    },
+    {
+      "file": "idle_yawn_01.bvh",
+      "sha256": "c1cf63244a1b55868dcecef212186d57ccd1a06997f1ba96536d368c476de6d4",
+      "bytes": 526078,
+      "name": "idle_yawn_01",
+      "seconds": 8,
+      "prompt": "A person stands and yawns, covering the mouth with one hand."
+    },
+    {
+      "file": "joy_01.bvh",
+      "sha256": "63265726abb8a0336c2c0720148c5e774e451d6b0bbdbbc96d9831ebd9852500",
+      "bytes": 270506,
+      "name": "joy_01",
+      "seconds": 4,
+      "prompt": "A person jumps happily and raises both arms in joy."
+    },
+    {
+      "file": "joy_02.bvh",
+      "sha256": "207274c5d57e8fd80f0a9f93fb578c71e5585977a812f6008ae0dfb825c1eaa6",
+      "bytes": 270264,
+      "name": "joy_02",
+      "seconds": 4,
+      "prompt": "A person claps hands happily and bounces on the toes."
+    },
+    {
+      "file": "joy_happy_dance_01.bvh",
+      "sha256": "724bc4fd745523a4642520dac016f48ddd84772b2bd7bab7992020dfda54da86",
+      "bytes": 333943,
+      "name": "joy_happy_dance_01",
+      "seconds": 5,
+      "prompt": "A person does a small happy dance, wiggling the shoulders."
+    },
+    {
+      "file": "joy_twirl_01.bvh",
+      "sha256": "b9503ae6a15208920d5ef9070d71d39a9a2069c10c8d9f5f2fe5c91c2a52d3ef",
+      "bytes": 270037,
+      "name": "joy_twirl_01",
+      "seconds": 4,
+      "prompt": "A person spins around happily once with arms out."
+    },
+    {
+      "file": "nervousness_01.bvh",
+      "sha256": "3feab5beb66c8c8bf3c44a757c4fb3aa3b5de7533ae8d108a1ff57b6ee4da09f",
+      "bytes": 270895,
+      "name": "nervousness_01",
+      "seconds": 4,
+      "prompt": "A person fidgets nervously, glancing around and wringing the hands."
+    },
+    {
+      "file": "nervousness_02.bvh",
+      "sha256": "cc9d0ae0cbccfd9df7b9e5d315743dbeab52ab689b59b543c371668449f6761e",
+      "bytes": 271184,
+      "name": "nervousness_02",
+      "seconds": 4,
+      "prompt": "A person takes a nervous step back and hugs their own arms."
+    },
+    {
+      "file": "nervousness_awkward_01.bvh",
+      "sha256": "34908748b739b66c7965c8ee082ede15d9ab64d5f03460f8993a92c1866d2be1",
+      "bytes": 334675,
+      "name": "nervousness_awkward_01",
+      "seconds": 5,
+      "prompt": "A person laughs awkwardly, scratching the back of the neck."
+    },
+    {
+      "file": "optimism_01.bvh",
+      "sha256": "8cb1877343479c06eafd31cdde0d53c95b03e4154a6d398f0dab42065a6c229e",
+      "bytes": 270034,
+      "name": "optimism_01",
+      "seconds": 4,
+      "prompt": "A person gives an encouraging fist pump and smiles."
+    },
+    {
+      "file": "optimism_lets_go_01.bvh",
+      "sha256": "301fc922137130f45e11cef1e1315d4fb4b6bd6ed930b93aa06c85dee03b59ed",
+      "bytes": 270437,
+      "name": "optimism_lets_go_01",
+      "seconds": 4,
+      "prompt": "A person punches one fist in the air enthusiastically."
+    },
+    {
+      "file": "pride_01.bvh",
+      "sha256": "1b0a0547fe63d5ad8ca9faaf0408d89223083b837e1ac7708075e0c73f5b89d8",
+      "bytes": 271703,
+      "name": "pride_01",
+      "seconds": 4,
+      "prompt": "A person stands proudly with hands on hips and chest out."
+    },
+    {
+      "file": "pride_02.bvh",
+      "sha256": "b5cb895e2b61da55482a7bdb24ab19b03c5c0e157d57bc654d7591a65ea718bb",
+      "bytes": 269977,
+      "name": "pride_02",
+      "seconds": 4,
+      "prompt": "A person brushes off one shoulder confidently."
+    },
+    {
+      "file": "pride_flex_01.bvh",
+      "sha256": "11eb0abf0b3e60cce90c92631ca724ff91ad25a597dfb89fddf8ca5a34e3e2fb",
+      "bytes": 270093,
+      "name": "pride_flex_01",
+      "seconds": 4,
+      "prompt": "A person flexes both arms proudly."
+    },
+    {
+      "file": "pride_hair_flip_01.bvh",
+      "sha256": "67e4fbb41b19e5bbbb747ace20a9d275188e90b7af92fd18452348c661b48170",
+      "bytes": 269736,
+      "name": "pride_hair_flip_01",
+      "seconds": 4,
+      "prompt": "A person flips the hair over one shoulder confidently."
+    },
+    {
+      "file": "pride_victory_pose_01.bvh",
+      "sha256": "98afe2543f2186df218cdd909835a0a449525407d8552de9fe816f2263e26e51",
+      "bytes": 271112,
+      "name": "pride_victory_pose_01",
+      "seconds": 4,
+      "prompt": "A person strikes a victory pose with a peace sign."
+    },
+    {
+      "file": "realization_01.bvh",
+      "sha256": "aaab01c816ffa7093975d0e72a5f5c08a26a76fae152d1ae96954583d05b0136",
+      "bytes": 270471,
+      "name": "realization_01",
+      "seconds": 4,
+      "prompt": "A person has a sudden realization and raises one finger."
+    },
+    {
+      "file": "realization_lightbulb_01.bvh",
+      "sha256": "d2b09a731ee4d3b5f2b131eb2dc19ed8aa99083d614aa12076f1e04d8707f5fd",
+      "bytes": 270263,
+      "name": "realization_lightbulb_01",
+      "seconds": 4,
+      "prompt": "A person snaps the fingers with a sudden idea."
+    },
+    {
+      "file": "relief_01.bvh",
+      "sha256": "5649716bae4ec2c006516d6a72fd2dda63ef5e79c3ccc2646400aada2073d429",
+      "bytes": 270360,
+      "name": "relief_01",
+      "seconds": 4,
+      "prompt": "A person exhales in relief, shoulders dropping, hand on chest."
+    },
+    {
+      "file": "relief_phew_01.bvh",
+      "sha256": "9fa96369614cccc4ef3325d16b66189ecfb7f4f27f0ae6a236e93740a39b9928",
+      "bytes": 270841,
+      "name": "relief_phew_01",
+      "seconds": 4,
+      "prompt": "A person wipes the forehead in relief."
+    },
+    {
+      "file": "sadness_01.bvh",
+      "sha256": "fc9fde41cc2538f6eec21e9140ec6fd253fb7f28e4df690c2902abf24ba3efb6",
+      "bytes": 333383,
+      "name": "sadness_01",
+      "seconds": 5,
+      "prompt": "A person stands sadly with slumped shoulders and looks down."
+    },
+    {
+      "file": "sadness_02.bvh",
+      "sha256": "5c5b22c160ea625cd26ffb45f73d88266bc5029528b9e986e87852a5240d7e45",
+      "bytes": 334179,
+      "name": "sadness_02",
+      "seconds": 5,
+      "prompt": "A person sighs sadly and rubs one arm, looking away."
+    },
+    {
+      "file": "sadness_sniffle_01.bvh",
+      "sha256": "8ffd33e79ffc6f0d7e0ad5d1303ddf8e541953e1eb40b62dadfab5ef93512c37",
+      "bytes": 334317,
+      "name": "sadness_sniffle_01",
+      "seconds": 5,
+      "prompt": "A person wipes the eyes with one hand, sniffling sadly."
+    },
+    {
+      "file": "surprise_01.bvh",
+      "sha256": "81d691ac952819df52b7060cb69223cf329914040dba3207264e27fec1cf908b",
+      "bytes": 270634,
+      "name": "surprise_01",
+      "seconds": 4,
+      "prompt": "A person is surprised and jumps back slightly with hands raised."
+    },
+    {
+      "file": "surprise_02.bvh",
+      "sha256": "7160dc64c5979d5486947349b34db4f3b58f7105db3d1efdd2203e65c5eb3c46",
+      "bytes": 271099,
+      "name": "surprise_02",
+      "seconds": 4,
+      "prompt": "A person gasps in surprise, covering the mouth with both hands."
+    },
+    {
+      "file": "surprise_double_take_01.bvh",
+      "sha256": "d1eb7249876e9540a8f0a55bca1356081fa2094e5a65b07587adf5958674c2ee",
+      "bytes": 270039,
+      "name": "surprise_double_take_01",
+      "seconds": 4,
+      "prompt": "A person looks away, then quickly looks back in a double take."
+    },
+    {
+      "file": "surprise_dramatic_gasp_01.bvh",
+      "sha256": "36ed9f5f299da5e974a227fbfefccc834f68fb8c188b9d6e81ded614fd5e274f",
+      "bytes": 271563,
+      "name": "surprise_dramatic_gasp_01",
+      "seconds": 4,
+      "prompt": "A person gasps dramatically, both hands on the cheeks."
+    },
+    {
+      "file": "talking_agree_01.bvh",
+      "sha256": "419e5c4b59b746e7070530aef3e8e85106018b21dbc894fcae45bb0a474e8bba",
+      "bytes": 398414,
+      "name": "talking_agree_01",
+      "seconds": 6,
+      "prompt": "A person stands talking, nodding and giving a thumbs up."
+    },
+    {
+      "file": "talking_air_quotes_01.bvh",
+      "sha256": "c0fad37878f09f01d0e2c6448ebef13ca3b6cfcaa0d0e167b822df7b39eba262",
+      "bytes": 462791,
+      "name": "talking_air_quotes_01",
+      "seconds": 7,
+      "prompt": "A person stands and talks, making air quotes with both hands."
+    },
+    {
+      "file": "talking_animated_01.bvh",
+      "sha256": "4d639f97d1f0c2ef2f9517eb5a4f4ddccc2bf5d2e844a21e89d903e3fd9c7ebf",
+      "bytes": 462818,
+      "name": "talking_animated_01",
+      "seconds": 7,
+      "prompt": "A person stands and talks excitedly, with big expressive arm gestures."
+    },
+    {
+      "file": "talking_both_palms_up_01.bvh",
+      "sha256": "e21287dbf93a49d05bdb50efd67dc01f5c111c72917621c637fad329f345f823",
+      "bytes": 400133,
+      "name": "talking_both_palms_up_01",
+      "seconds": 6,
+      "prompt": "A person talks with both palms up as if asking what do you want."
+    },
+    {
+      "file": "talking_calm_01.bvh",
+      "sha256": "544257a2f25cfd1267d50d0e37dd51094d435b9191a6ed8093894ab86393ee55",
+      "bytes": 463724,
+      "name": "talking_calm_01",
+      "seconds": 7,
+      "prompt": "A person stands calmly, talking with subtle hand movements and gentle head motions."
+    },
+    {
+      "file": "talking_casual_01.bvh",
+      "sha256": "59350acc7f8ef74300eb4c1559b35f0a301a293c0261bea8461a3027543f17d6",
+      "bytes": 463774,
+      "name": "talking_casual_01",
+      "seconds": 7,
+      "prompt": "A person stands in place and talks casually, making small hand gestures and nodding."
+    },
+    {
+      "file": "talking_casual_02.bvh",
+      "sha256": "5517fcb1f2d888f7d37d891216a58fef4ff8c615ac15f60a5c4a9e41febd9b7d",
+      "bytes": 463602,
+      "name": "talking_casual_02",
+      "seconds": 7,
+      "prompt": "A person stands in place chatting, gesturing with one hand while the head moves naturally."
+    },
+    {
+      "file": "talking_counting_down_01.bvh",
+      "sha256": "05db4f7171525d17d364bffaa6df0feb57a545541734513fc39d4d10bdcc2aee",
+      "bytes": 399445,
+      "name": "talking_counting_down_01",
+      "seconds": 6,
+      "prompt": "A person talks while counting down on the fingers of one hand."
+    },
+    {
+      "file": "talking_dramatic_01.bvh",
+      "sha256": "279674e20401d0f661ca18af33c407cf51fefc0abe60ebffd6b9593cf2ebf2d5",
+      "bytes": 463159,
+      "name": "talking_dramatic_01",
+      "seconds": 7,
+      "prompt": "A person talks dramatically, placing a hand on the forehead and leaning back."
+    },
+    {
+      "file": "talking_excited_bounce_01.bvh",
+      "sha256": "96f9120544d718c5aeaa75f7e8a769402b7e327cc0c8b6b4f27e453ac62ecc3a",
+      "bytes": 400115,
+      "name": "talking_excited_bounce_01",
+      "seconds": 6,
+      "prompt": "A person talks excitedly, bouncing slightly on the toes and gesturing."
+    },
+    {
+      "file": "talking_explain_01.bvh",
+      "sha256": "c1aa6771444fb8adee267981baeccd880bf277909a001fc5c971be3343a501eb",
+      "bytes": 463715,
+      "name": "talking_explain_01",
+      "seconds": 7,
+      "prompt": "A person stands and explains something, raising both hands and gesturing in front of the chest."
+    },
+    {
+      "file": "talking_explain_02.bvh",
+      "sha256": "8c93f604d451f19c193f5da33518e431c2f4821515cab1f222e5c12e50f9c0ce",
+      "bytes": 462417,
+      "name": "talking_explain_02",
+      "seconds": 7,
+      "prompt": "A person stands and explains, counting on their fingers."
+    },
+    {
+      "file": "talking_gossip_01.bvh",
+      "sha256": "890d32b0aa9baf9362eb0afe5c61fa646d5b92db8b44e32f06d1687db9aecff5",
+      "bytes": 463532,
+      "name": "talking_gossip_01",
+      "seconds": 7,
+      "prompt": "A person talks excitedly, leaning in, with hands near the face as if gossiping."
+    },
+    {
+      "file": "talking_hand_wave_dismiss_01.bvh",
+      "sha256": "c2ab477276d191707adcb92cc2653b6ad5296954f5afc08e0f3007895d1a84f2",
+      "bytes": 398632,
+      "name": "talking_hand_wave_dismiss_01",
+      "seconds": 6,
+      "prompt": "A person talks and waves one hand dismissively, rolling the head."
+    },
+    {
+      "file": "talking_hands_clasped_01.bvh",
+      "sha256": "f4c669061bf8680fcc4db35868ae00a24f4224b5b532a54ede6704e1beb78164",
+      "bytes": 463785,
+      "name": "talking_hands_clasped_01",
+      "seconds": 7,
+      "prompt": "A person talks with hands clasped in front, gently bobbing the head."
+    },
+    {
+      "file": "talking_head_shake_01.bvh",
+      "sha256": "904652ab0aee3ff3ada49f43f5fdc92e94eabea7b8f011aa135611ba1a263b74",
+      "bytes": 398855,
+      "name": "talking_head_shake_01",
+      "seconds": 6,
+      "prompt": "A person stands talking and shakes the head no while gesturing with one hand."
+    },
+    {
+      "file": "talking_lean_in_01.bvh",
+      "sha256": "089586cbeb22537b262edea2de4b3f16748be04bbbc188459a26282a0951b48b",
+      "bytes": 399368,
+      "name": "talking_lean_in_01",
+      "seconds": 6,
+      "prompt": "A person leans in slightly while talking, as if sharing a secret."
+    },
+    {
+      "file": "talking_lecture_01.bvh",
+      "sha256": "403bd1352dc7c514057a46cffeb4b2f00eb8fd1f1cd89245f5cfad5a71b3edb9",
+      "bytes": 462648,
+      "name": "talking_lecture_01",
+      "seconds": 7,
+      "prompt": "A person lectures, wagging a finger and then pointing forward."
+    },
+    {
+      "file": "talking_nod_01.bvh",
+      "sha256": "c7c4c7672abf55a5f79089c09874b965cb794bef550088dac260593bcdb4d95f",
+      "bytes": 399046,
+      "name": "talking_nod_01",
+      "seconds": 6,
+      "prompt": "A person stands in place, talking and nodding the head repeatedly."
+    },
+    {
+      "file": "talking_one_hand_01.bvh",
+      "sha256": "9a2598f9b3c3be1588cbd87f0ec447cbd529bcd2e459e5e5135ee76cb86bdc2b",
+      "bytes": 463629,
+      "name": "talking_one_hand_01",
+      "seconds": 7,
+      "prompt": "A person stands with one hand on the hip and talks, gesturing with the other hand."
+    },
+    {
+      "file": "talking_point_01.bvh",
+      "sha256": "9dc0a6a260d21aef622d644f929e1b68cf26aa298178e2bf85004901fc51e255",
+      "bytes": 398282,
+      "name": "talking_point_01",
+      "seconds": 6,
+      "prompt": "A person stands talking and points forward with one hand."
+    },
+    {
+      "file": "talking_ponder_01.bvh",
+      "sha256": "7abeffd7d8ffd25ef78c5bc71f59e50373ba1e1f341b72883c1ad8f5fcda463f",
+      "bytes": 463213,
+      "name": "talking_ponder_01",
+      "seconds": 7,
+      "prompt": "A person talks slowly, tapping the chin with one finger and looking up."
+    },
+    {
+      "file": "talking_presenting_01.bvh",
+      "sha256": "dfa5369696dcc4237bbf374d209293c02cba87d3f9a0ca0244421f201963cad3",
+      "bytes": 463138,
+      "name": "talking_presenting_01",
+      "seconds": 7,
+      "prompt": "A person talks and sweeps one arm to the side as if presenting something."
+    },
+    {
+      "file": "talking_rant_01.bvh",
+      "sha256": "07df966c0ec6973e796132b44d359dc740f4a4626deb1c49b650d7cc681f5f16",
+      "bytes": 525088,
+      "name": "talking_rant_01",
+      "seconds": 8,
+      "prompt": "A person rants passionately, gesturing sharply with both hands and shaking the head."
+    },
+    {
+      "file": "talking_relaxed_sway_01.bvh",
+      "sha256": "25997d561c7d7cb1fe960546ee23d77d1d044c5f684288fd4d13336ede236bc4",
+      "bytes": 525514,
+      "name": "talking_relaxed_sway_01",
+      "seconds": 8,
+      "prompt": "A person talks casually while swaying slightly and touching their hair."
+    },
+    {
+      "file": "talking_sarcastic_01.bvh",
+      "sha256": "e92dc3a88a40631b7c7cfebc155b5764e4e5a1e794b277d217de03a9f3ccafcc",
+      "bytes": 399732,
+      "name": "talking_sarcastic_01",
+      "seconds": 6,
+      "prompt": "A person talks sarcastically with a slow clap and an exaggerated nod."
+    },
+    {
+      "file": "talking_sassy_01.bvh",
+      "sha256": "d3930c52b89e4d4034702d7857666e352779524d0a77610d224c6f6c453a025b",
+      "bytes": 400193,
+      "name": "talking_sassy_01",
+      "seconds": 6,
+      "prompt": "A person stands talking with attitude, flipping one hand dismissively."
+    },
+    {
+      "file": "talking_self_point_01.bvh",
+      "sha256": "26880b60436a6c20814823e857a2e6542ef85f2b61b31aa794f697d331cc0c93",
+      "bytes": 398856,
+      "name": "talking_self_point_01",
+      "seconds": 6,
+      "prompt": "A person talks and points at their own chest with both thumbs."
+    },
+    {
+      "file": "talking_shrug_01.bvh",
+      "sha256": "2276c057049aded8bd74e038235a5ed659760ee3f6e4ce2502faa32b23a3b63a",
+      "bytes": 399145,
+      "name": "talking_shrug_01",
+      "seconds": 6,
+      "prompt": "A person stands talking and shrugs both shoulders with palms up."
+    },
+    {
+      "file": "talking_shrug_02.bvh",
+      "sha256": "268f682f71b70fc683944df22b13e22c1fceedd8f62fdaa5b801373623c87b43",
+      "bytes": 334618,
+      "name": "talking_shrug_02",
+      "seconds": 5,
+      "prompt": "A person shrugs dramatically with both hands raised and head tilted."
+    },
+    {
+      "file": "talking_side_glance_01.bvh",
+      "sha256": "c42a85b52bcb72c2a045b53d21d65a18b9a7954153f7e8e41aaa16a090a4d5ab",
+      "bytes": 398477,
+      "name": "talking_side_glance_01",
+      "seconds": 6,
+      "prompt": "A person talks and glances to the side, then back forward with a small nod."
+    },
+    {
+      "file": "talking_storytelling_01.bvh",
+      "sha256": "1bf42f523577c6250a3de1006b4fabbe8596e4add45c876f7406e1fa28584f64",
+      "bytes": 525538,
+      "name": "talking_storytelling_01",
+      "seconds": 8,
+      "prompt": "A person stands and tells a story, moving both hands to describe shapes."
+    },
+    {
+      "file": "talking_talk_to_the_hand_01.bvh",
+      "sha256": "c3fc3f7b10efa8d1b8fa595b9e2f47f81a3db6776a2218d8272755acdcc91d86",
+      "bytes": 335155,
+      "name": "talking_talk_to_the_hand_01",
+      "seconds": 5,
+      "prompt": "A person holds one palm out toward someone, saying talk to the hand, and turns the head away."
+    },
+    {
+      "file": "talking_teasing_01.bvh",
+      "sha256": "e4b0db7485ff2ed4e72f31d2cb7de46aa5fcf0adc33bd165336142ce57e27703",
+      "bytes": 398777,
+      "name": "talking_teasing_01",
+      "seconds": 6,
+      "prompt": "A person talks teasingly, pointing and wagging one finger."
+    },
+    {
+      "file": "talking_thinking_01.bvh",
+      "sha256": "d9df7d1399cfc649f0ca148f9a77421d9d9101cf42af8dc21b886a51e6e786af",
+      "bytes": 463317,
+      "name": "talking_thinking_01",
+      "seconds": 7,
+      "prompt": "A person stands talking, pauses to touch the chin thoughtfully, then continues gesturing."
+    },
+    {
+      "file": "talking_whisper_01.bvh",
+      "sha256": "e78e726703d2b80a6bec6a59e3c631496e7c3e6dd3c94f01f9bdb933b68ba9ab",
+      "bytes": 400625,
+      "name": "talking_whisper_01",
+      "seconds": 6,
+      "prompt": "A person leans to one side and whispers, cupping a hand beside the mouth."
+    },
+    {
+      "file": "thinking_01.bvh",
+      "sha256": "466664596ae12789560dc33da84d9673cdc7192bbb26478dd63f2741cf3a3995",
+      "bytes": 334584,
+      "name": "thinking_01",
+      "seconds": 5,
+      "prompt": "A person stands thinking with a hand on the chin, looking up."
+    },
+    {
+      "file": "thinking_hmm_01.bvh",
+      "sha256": "c48bd87c7c0b279c1642227503e666dea70d834278e288901e0dad099c93869d",
+      "bytes": 334067,
+      "name": "thinking_hmm_01",
+      "seconds": 5,
+      "prompt": "A person crosses one arm and rests the chin on the other hand, thinking."
+    },
+    {
+      "file": "walk_approach_01.bvh",
+      "sha256": "3bc0392cb846da6ec112c2c937840b78c025ce99fb0d512db4bea1f7e14e88b3",
+      "bytes": 333670,
+      "name": "walk_approach_01",
+      "seconds": 5,
+      "prompt": "A person walks a few steps forward toward the viewer and stops, smiling."
+    },
+    {
+      "file": "walk_around_01.bvh",
+      "sha256": "2eafb6c489e65941622652d63fef54576ba1c7b641e575c9e7b0078264708f50",
+      "bytes": 398339,
+      "name": "walk_around_01",
+      "seconds": 6,
+      "prompt": "A person walks forward a few steps, turns around, and walks back."
+    },
+    {
+      "file": "walk_back_away_01.bvh",
+      "sha256": "d49c75ab058a6b73d355dee352c5716d6d9a391a5a7b3467dceed21b968e42d0",
+      "bytes": 334695,
+      "name": "walk_back_away_01",
+      "seconds": 5,
+      "prompt": "A person takes a few steps backward and stops."
+    },
+    {
+      "file": "walk_pace_01.bvh",
+      "sha256": "3d25da4fbcdd9232d56b7de6a7647dd9069a35337cb59333da31afd7659e8251",
+      "bytes": 526619,
+      "name": "walk_pace_01",
+      "seconds": 8,
+      "prompt": "A person paces slowly back and forth, thinking."
+    },
+    {
+      "file": "walk_sidestep_01.bvh",
+      "sha256": "109cedbf82f728d001a98949f08b755c531723d1770e4548c509d9e4ccec1c4e",
+      "bytes": 334743,
+      "name": "walk_sidestep_01",
+      "seconds": 5,
+      "prompt": "A person takes a few steps to the side and then back."
+    },
+    {
+      "file": "walk_skip_01.bvh",
+      "sha256": "44721d58d90babb09275cc5c931350aff5754af6311da54bcd14b89de6fc94e5",
+      "bytes": 335360,
+      "name": "walk_skip_01",
+      "seconds": 5,
+      "prompt": "A person skips playfully forward a few steps and stops."
+    },
+    {
+      "file": "walk_stroll_01.bvh",
+      "sha256": "42d89c5dd5383797564bd0fbe236c69a2ad3008d2495c29d9da6b1892ad79d2a",
+      "bytes": 398777,
+      "name": "walk_stroll_01",
+      "seconds": 6,
+      "prompt": "A person strolls casually in a small circle."
+    },
+    {
+      "file": "walk_tiptoe_01.bvh",
+      "sha256": "97b644996c7498c38951b2075183f9d2353c6362d3ae6e29b53d43bce29577c5",
+      "bytes": 398518,
+      "name": "walk_tiptoe_01",
+      "seconds": 6,
+      "prompt": "A person tiptoes sneakily a few steps and stops."
+    },
+    {
+      "file": "walk_turn_01.bvh",
+      "sha256": "02ba42aada75507591fe7eda1dce4dd3015d0b7aaccf2661b921e30bf480ce12",
+      "bytes": 271044,
+      "name": "walk_turn_01",
+      "seconds": 4,
+      "prompt": "A person turns around in place to look behind, then turns back."
+    },
+    {
+      "file": "walk_wander_01.bvh",
+      "sha256": "e7272100a48f4a871aa33c27d7a9a25770e83c258f8427ec207ca0360890e875",
+      "bytes": 526652,
+      "name": "walk_wander_01",
+      "seconds": 8,
+      "prompt": "A person wanders slowly, looking around curiously, and stops."
+    }
+  ]
+}

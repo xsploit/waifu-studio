@@ -9,7 +9,7 @@ pub fn ui(
     catalog: &mut waifu_studio::model_catalog::ModelCatalog,
 ) {
     kit::group(ui, "Microphone", |ui| {
-        ui.small("Start manually. Stop or silence sends audio; Cancel discards it.")
+        ui.small("Start manually. Stop sends audio; automatic silence detection is optional.")
             .on_hover_text("An upload already sent cannot be recalled.");
         let backend = state.config.backend;
         if backend == SttBackend::VercelGateway {
@@ -81,20 +81,20 @@ pub fn ui(
             kit::text_row(
                 ui,
                 "Silero model",
-                "Current 512-frame ONNX model.",
+                "Optional override; blank uses the bundled model.",
                 &mut state.config.silero_model,
                 "File path",
             );
             kit::text_row(
                 ui,
                 "Runtime library",
-                "Trusted native ONNX Runtime library.",
+                "Optional override; blank uses the bundled CPU runtime.",
                 &mut state.config.silero_runtime,
                 "File path",
             );
             kit::note(
                 ui,
-                "No downloads. Missing/incompatible files fall back to energy VAD. Runtime library changes may require an app restart.",
+                "Release builds include Silero and its CPU runtime. Missing/incompatible files fall back to energy VAD. Changing runtimes requires a restart.",
             );
             kit::slider_row(
                 ui,
@@ -122,14 +122,20 @@ pub fn ui(
                     .selected_text(match state.config.trailing_silence_ms {
                         400 => "Fast · 400 ms silence",
                         800 => "Balanced · 800 ms silence",
-                        1200 => "Patient · 1200 ms silence",
+                        1200 => "Short pause · 1.2 seconds",
+                        2000 => "Natural pause · 2 seconds",
+                        3000 => "Patient · 3 seconds",
+                        5000 => "Long pause · 5 seconds",
                         _ => "Custom silence delay",
                     })
                     .show_ui(ui, |ui| {
                         for (delay, label) in [
                             (400, "Fast · 400 ms"),
                             (800, "Balanced · 800 ms"),
-                            (1200, "Patient · 1200 ms"),
+                            (1200, "Short pause · 1.2 seconds"),
+                            (2000, "Natural pause · 2 seconds"),
+                            (3000, "Patient · 3 seconds"),
+                            (5000, "Long pause · 5 seconds"),
                         ] {
                             ui.selectable_value(
                                 &mut state.config.trailing_silence_ms,

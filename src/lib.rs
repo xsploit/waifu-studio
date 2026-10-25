@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod memory;
 
 pub mod agents;
+pub mod companion_tools;
 pub mod delegation;
 
 pub mod agent_loop;

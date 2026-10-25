@@ -61,14 +61,8 @@ pub(super) fn start(
                     )
                 } == 0
                 {
-                    let _ = tx.try_send((
-                        generation,
-                        PortalEvent::Closed(format!(
-                            "Could not register {}. Another application may own it.",
-                            Action::ALL[index].shortcut()
-                        )),
-                    ));
-                    return;
+                    // Keep other bindings active when one belongs to another app.
+                    continue;
                 }
                 registered.0.push(id);
             }
@@ -76,9 +70,13 @@ pub(super) fn start(
                 .try_send((
                     generation,
                     PortalEvent::Ready(
-                        Action::ALL
-                            .into_iter()
-                            .map(|action| (action, action.shortcut().into()))
+                        registered
+                            .0
+                            .iter()
+                            .map(|id| {
+                                let action = Action::ALL[(*id - 1) as usize];
+                                (action, action.shortcut().into())
+                            })
                             .collect(),
                     ),
                 ))

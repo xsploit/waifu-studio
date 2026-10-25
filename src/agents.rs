@@ -1,5 +1,6 @@
 //! Manually reviewed external CLI tasks. No shell, automatic tools, or saved secrets.
 use bevy::prelude::Resource;
+use serde::{Deserialize, Serialize};
 use std::{
     io::Read,
     path::PathBuf,
@@ -14,7 +15,7 @@ use std::{
 };
 const MAX_PROMPT: usize = 32 * 1024;
 const MAX_OUTPUT: usize = 256 * 1024;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentProvider {
     #[default]
     Codex,
@@ -22,7 +23,7 @@ pub enum AgentProvider {
     Pi,
     Custom,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Access {
     #[default]
     ReadOnly,
@@ -55,6 +56,7 @@ impl AgentProvider {
                 "codex",
                 vec![
                     "exec",
+                    "--skip-git-repo-check",
                     "--json",
                     "--sandbox",
                     if file_edits {
@@ -67,7 +69,8 @@ impl AgentProvider {
             Self::Claude => (
                 "claude",
                 vec![
-                    "--bare",
+                    "--safe-mode",
+                    "--strict-mcp-config",
                     "--print",
                     "--permission-mode",
                     if file_edits { "acceptEdits" } else { "plan" },
@@ -103,13 +106,13 @@ impl AgentProvider {
         (exe, args.iter().map(|s| (*s).into()).collect())
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transport {
     #[default]
     Local,
     Ssh,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
     pub user: String,
@@ -140,6 +143,25 @@ struct Task {
     prompt: String,
     timeout: u64,
 }
+
+/// Frozen host configuration for a companion tool request. The model supplies
+/// only a prompt; it cannot change executable, arguments, directory or access.
+#[derive(Clone)]
+pub struct CompanionAgent(Task);
+impl CompanionAgent {
+    pub fn run(&self, prompt: &str, cancel: Arc<AtomicBool>) -> Result<String, String> {
+        if prompt.trim().is_empty() || prompt.len() > MAX_PROMPT || prompt.contains('\0') {
+            return Err("Task must contain 1–32768 UTF-8 bytes".into());
+        }
+        let mut task = self.0.clone();
+        task.prompt = prompt.into();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let (status, success) = execute(task, cancel, output.clone());
+        Ok(serde_json::json!({"success":success,"status":status,
+            "output":bounded_text(&output.lock().unwrap())})
+        .to_string())
+    }
+}
 struct Review {
     task: Task,
     display: String,
@@ -152,6 +174,97 @@ struct Running {
     observed: usize,
     origin: String,
 }
+#[derive(Serialize, Deserialize)]
+struct AgentPreferences {
+    transport: Transport,
+    ssh: SshConfig,
+    provider: AgentProvider,
+    access: Access,
+    executable: String,
+    args: Vec<String>,
+    working_dir: String,
+    timeout_seconds: u64,
+    #[serde(default)]
+    codex_model: String,
+    #[serde(default)]
+    claude_model: String,
+}
+impl From<&AgentState> for AgentPreferences {
+    fn from(state: &AgentState) -> Self {
+        Self {
+            transport: state.transport,
+            ssh: state.ssh.clone(),
+            provider: state.provider,
+            access: state.access,
+            executable: state.executable.clone(),
+            args: state.args.clone(),
+            working_dir: state.working_dir.clone(),
+            timeout_seconds: state.timeout_seconds,
+            codex_model: state.codex_model.clone(),
+            claude_model: state.claude_model.clone(),
+        }
+    }
+}
+
+// Windows npm shims are shell scripts. Resolve the actual native CLI (or its
+// JavaScript entry point) so reviewed prompts remain literal argv, without cmd.
+fn local_command(name: &str, args: Vec<String>) -> (String, Vec<String>) {
+    let paths: Vec<_> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    resolve_local_command(name, args, &paths)
+}
+fn resolve_local_command(
+    name: &str,
+    args: Vec<String>,
+    paths: &[PathBuf],
+) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    let node = paths
+        .iter()
+        .map(|p| p.join("node.exe"))
+        .find(|p| p.is_file());
+    for folder in paths {
+        let path = folder.join(if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.into()
+        });
+        if path.is_file() {
+            return (path.to_string_lossy().into_owned(), args);
+        }
+        #[cfg(windows)]
+        {
+            if name == "codex" {
+                for relative in [
+                    "node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+                    "node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/codex/codex.exe",
+                    "node_modules/@openai/codex/vendor/x86_64-pc-windows-msvc/codex/codex.exe",
+                ] {
+                    let path = folder.join(relative);
+                    if path.is_file() {
+                        return (path.to_string_lossy().into_owned(), args);
+                    }
+                }
+            }
+            let entry = match name {
+                "codex" => Some("node_modules/@openai/codex/bin/codex.js"),
+                "pi" => Some("node_modules/@mariozechner/pi-coding-agent/dist/cli.js"),
+                _ => None,
+            };
+            if let (Some(node), Some(entry)) = (&node, entry) {
+                let script = folder.join(entry);
+                if script.is_file() {
+                    let mut prefixed = vec![script.to_string_lossy().into_owned()];
+                    prefixed.extend(args);
+                    return (node.to_string_lossy().into_owned(), prefixed);
+                }
+            }
+        }
+    }
+    (name.into(), args)
+}
+
 #[derive(Resource)]
 pub struct AgentState {
     pub transport: Transport,
@@ -162,6 +275,8 @@ pub struct AgentState {
     pub args: Vec<String>,
     pub working_dir: String,
     pub prompt: String,
+    pub codex_model: String,
+    pub claude_model: String,
     pub output: String,
     pub status: String,
     pub error: Option<String>,
@@ -171,6 +286,7 @@ pub struct AgentState {
     completed_context: Option<String>,
     completion: Option<bool>,
     run_serial: u64,
+    preferences_path: Option<PathBuf>,
 }
 impl Default for AgentState {
     fn default() -> Self {
@@ -183,6 +299,8 @@ impl Default for AgentState {
             args: Vec::new(),
             working_dir: String::new(),
             prompt: String::new(),
+            codex_model: String::new(),
+            claude_model: String::new(),
             output: String::new(),
             status: "No agent task running".into(),
             error: None,
@@ -192,10 +310,93 @@ impl Default for AgentState {
             completed_context: None,
             completion: None,
             run_serial: 0,
+            preferences_path: None,
         }
     }
 }
 impl AgentState {
+    /// Automatic delegation is restricted to the built-in local read-only
+    /// adapters. Editing and SSH retain the existing reviewed task workflow.
+    pub fn companion_adapter(&self, provider: AgentProvider) -> Result<CompanionAgent, String> {
+        if !matches!(provider, AgentProvider::Codex | AgentProvider::Claude) {
+            return Err("Choose Codex or Claude for companion delegation".into());
+        }
+        let mut state = Self::default();
+        state.provider = provider;
+        state.working_dir = self.working_dir.clone();
+        state.timeout_seconds = self.timeout_seconds;
+        state.codex_model = self.codex_model.clone();
+        state.claude_model = self.claude_model.clone();
+        state.task_config("companion task").map(CompanionAgent)
+    }
+    pub fn load_preferences(path: PathBuf) -> Self {
+        let mut state = Self::default();
+        if let Ok(metadata) = std::fs::metadata(&path)
+            && metadata.is_file()
+            && metadata.len() <= 64 * 1024
+            && let Ok(bytes) = std::fs::read(&path)
+            && let Ok(saved) = serde_json::from_slice::<AgentPreferences>(&bytes)
+        {
+            state.transport = saved.transport;
+            state.ssh = saved.ssh;
+            state.provider = saved.provider;
+            state.access = saved.access;
+            state.executable = saved.executable;
+            state.args = saved.args;
+            state.working_dir = saved.working_dir;
+            state.timeout_seconds = saved.timeout_seconds.clamp(1, 600);
+            state.codex_model = saved.codex_model;
+            state.claude_model = saved.claude_model;
+        }
+        if state.working_dir.is_empty()
+            && let Some(parent) = path.parent()
+        {
+            let workspace = parent.join("agent-workspace");
+            match std::fs::create_dir_all(&workspace) {
+                Ok(()) => state.working_dir = workspace.to_string_lossy().into_owned(),
+                Err(error) => {
+                    state.error = Some(format!("Cannot prepare agent workspace: {error}"))
+                }
+            }
+        }
+        state.preferences_path = Some(path);
+        state
+    }
+    pub fn save_preferences(&mut self) {
+        let Some(path) = &self.preferences_path else {
+            return;
+        };
+        let result = (|| -> Result<(), String> {
+            use std::io::Write;
+            let bytes = serde_json::to_vec_pretty(&AgentPreferences::from(&*self))
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 64 * 1024 {
+                return Err("Agent settings exceed 64 KiB".into());
+            }
+            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let result = (|| -> std::io::Result<()> {
+                let mut file = options.open(&temporary)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                drop(file);
+                crate::durable_file::replace(&temporary, path)
+            })();
+            if result.is_err() {
+                let _ = std::fs::remove_file(&temporary);
+            }
+            result.map_err(|e| e.to_string())
+        })();
+        if let Err(error) = result {
+            self.error = Some(format!("Could not save agent settings: {error}"));
+        }
+    }
     pub fn is_busy(&self) -> bool {
         self.running.lock().unwrap().is_some()
     }
@@ -238,8 +439,25 @@ impl AgentState {
         let (executable, args) = if self.provider == AgentProvider::Custom {
             (self.executable.clone(), self.args.clone())
         } else {
-            let (e, a) = self.provider.command_with_access(self.access);
-            (e.into(), a)
+            let (e, mut a) = self.provider.command_with_access(self.access);
+            let model = match self.provider {
+                AgentProvider::Codex => self.codex_model.trim(),
+                AgentProvider::Claude => self.claude_model.trim(),
+                _ => "",
+            };
+            if model.len() > 256 || model.chars().any(char::is_control) {
+                return Err(
+                    "Agent model must be at most 256 characters without control characters".into(),
+                );
+            }
+            if !model.is_empty() {
+                a.extend(["--model".into(), model.into()]);
+            }
+            if self.transport == Transport::Local {
+                local_command(e, a)
+            } else {
+                (e.into(), a)
+            }
         };
         if executable.trim().is_empty()
             || executable.len() > 4096
@@ -675,6 +893,83 @@ fn execute(task: Task, cancel: Arc<AtomicBool>, output: Arc<Mutex<Vec<u8>>>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_delegation_freezes_local_read_only_scope_and_keeps_model_overrides() {
+        let mut state = AgentState::default();
+        state.working_dir = std::env::temp_dir().to_string_lossy().into_owned();
+        state.transport = Transport::Ssh;
+        state.access = Access::FileEdits;
+        state.executable = "arbitrary-command".into();
+        state.claude_model = "sonnet".into();
+        let adapter = state.companion_adapter(AgentProvider::Claude).unwrap();
+        assert_eq!(adapter.0.transport, Transport::Local);
+        assert_eq!(adapter.0.access, Access::ReadOnly);
+        assert!(
+            !adapter
+                .0
+                .args
+                .iter()
+                .any(|arg| arg.contains("Edit") || arg.contains("Write"))
+        );
+        assert!(
+            adapter
+                .0
+                .args
+                .windows(2)
+                .any(|args| args == ["--model", "sonnet"])
+        );
+        assert!(state.companion_adapter(AgentProvider::Custom).is_err());
+    }
+
+    #[test]
+    fn agent_preferences_restore_scope_without_saving_task_or_output() {
+        let root =
+            std::env::temp_dir().join(format!("waifu-agent-preferences-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("agents.json");
+        let mut state = AgentState::load_preferences(path.clone());
+        assert!(std::path::Path::new(&state.working_dir).is_dir());
+        state.provider = AgentProvider::Claude;
+        state.claude_model = "sonnet".into();
+        state.codex_model = "test-codex-model".into();
+        state.timeout_seconds = 90;
+        state.prompt = "private pending task".into();
+        state.output = "private tool output".into();
+        state.save_preferences();
+        assert!(state.error.is_none());
+        let restored = AgentState::load_preferences(path.clone());
+        assert_eq!(restored.provider, AgentProvider::Claude);
+        assert_eq!(restored.working_dir, state.working_dir);
+        assert_eq!(restored.claude_model, "sonnet");
+        assert_eq!(restored.codex_model, "test-codex-model");
+        let task = restored.task_config("read fixture").unwrap();
+        assert!(task.args.windows(2).any(|p| p == ["--model", "sonnet"]));
+        assert!(task.args.contains(&"--safe-mode".into()) && !task.args.contains(&"--bare".into()));
+        assert_eq!(restored.timeout_seconds, 90);
+        assert!(restored.prompt.is_empty() && restored.output.is_empty());
+        assert!(!std::fs::read_to_string(path).unwrap().contains("private"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_codex_npm_install_resolves_native_binary_and_literal_arguments() {
+        let root =
+            std::env::temp_dir().join(format!("waifu-cli-resolution-{}", uuid::Uuid::new_v4()));
+        let executable = root.join("node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"fixture only").unwrap();
+        let args = vec!["exec".into(), "literal & $(input)".into()];
+        let later = root.join("later-on-path");
+        std::fs::create_dir(&later).unwrap();
+        std::fs::write(later.join("codex.exe"), b"later desktop launcher").unwrap();
+        let (resolved, preserved) =
+            resolve_local_command("codex", args.clone(), &[root.clone(), later]);
+        assert_eq!(PathBuf::from(resolved), executable);
+        assert_eq!(preserved, args);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[allow(clippy::field_reassign_with_default)] // Drop prevents struct-update syntax.
     fn state() -> AgentState {
         let mut state = AgentState::default();

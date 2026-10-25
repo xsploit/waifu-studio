@@ -71,6 +71,26 @@ class PackageTests(unittest.TestCase):
             package.archive(self.root, archive)
         self.assertEqual(archive.read_bytes(), b"existing")
 
+    def test_platform_speech_bundle_keeps_notices_and_excludes_other_runtime(self):
+        repo = Path(self.temp.name) / "source"
+        for directory in ["assets/silero/windows-x86_64", "assets/silero/linux-x86_64", "docs", "vendor"]:
+            (repo / directory).mkdir(parents=True)
+        for relative in ["LICENSE", "README.md", "REFERENCES.md", "FEATURE-STATUS.md", "VALIDATION.md", "binary",
+                         "assets/silero/silero_vad.onnx", "assets/silero/SILERO-LICENSE.txt"]:
+            (repo / relative).write_text("fixture")
+        for platform, library in [("windows-x86_64", "onnxruntime.dll"), ("linux-x86_64", "libonnxruntime.so")]:
+            for name in [library, "LICENSE", "provenance.json"]:
+                (repo / "assets/silero" / platform / name).write_text("fixture")
+        for platform, other in [("windows-x86_64", "linux-x86_64"), ("linux-x86_64", "windows-x86_64")]:
+            output = Path(self.temp.name) / platform
+            package.copy_runtime(repo, repo / "binary", output, platform)
+            self.assertTrue((output / "assets/silero" / platform / "LICENSE").is_file())
+            self.assertTrue((output / "assets/silero/silero_vad.onnx").is_file())
+            self.assertFalse((output / "assets/silero" / other).exists())
+        (repo / "assets/silero/silero_vad.onnx").unlink()
+        with self.assertRaisesRegex(ValueError, "prepare_silero"):
+            package.copy_runtime(repo, repo / "binary", Path(self.temp.name) / "incomplete")
+
     def test_preview_requires_version_and_source_commit(self):
         path = self.root / package.MANIFEST
         data = json.loads(path.read_text())

@@ -1,6 +1,7 @@
 //! Optional CPU Silero ONNX VAD. Contract: upstream silero_vad/utils_vad.py
 //! OnnxWrapper (16 kHz, 512 samples, 64 context, recurrent [2,1,128]).
-//! The user supplies both model and native ONNX Runtime; nothing is downloaded.
+//! Release assets include a pinned model/runtime; explicit paths override them.
+//! Runtime loading performs no downloads.
 use ort::{environment::Environment, session::Session, value::Tensor};
 use std::{
     path::{Path, PathBuf},
@@ -43,6 +44,29 @@ fn environment(runtime: &str) -> Result<Environment, String> {
     cache.environment = Some(environment.clone());
     Ok(environment)
 }
+pub fn model_paths(model: &str, runtime: &str) -> (String, String) {
+    let root = crate::bundled::assets_path().join("silero");
+    let model = if model.trim().is_empty() {
+        root.join("silero_vad.onnx").to_string_lossy().into_owned()
+    } else {
+        model.into()
+    };
+    let runtime = if runtime.trim().is_empty() {
+        let (platform, library) = if cfg!(windows) {
+            ("windows-x86_64", "onnxruntime.dll")
+        } else {
+            ("linux-x86_64", "libonnxruntime.so")
+        };
+        root.join(platform)
+            .join(library)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        runtime.into()
+    };
+    (model, runtime)
+}
+
 pub struct SileroVad {
     session: Session,
     state: Vec<f32>,
@@ -56,8 +80,11 @@ impl SileroVad {
     }
 
     pub fn load(model: &str, runtime: &str) -> Result<Self, String> {
+        let (model_path, runtime_path) = model_paths(model, runtime);
+        let model = model_path.as_str();
+        let runtime = runtime_path.as_str();
         if !Path::new(model).is_file() || !Path::new(runtime).is_file() {
-            return Err("Select existing Silero ONNX model and ONNX Runtime library files".into());
+            return Err("Silero assets are missing. Use a complete release or run tools/prepare_silero.py for source builds".into());
         }
         if std::fs::metadata(model)
             .map_err(|_| "Cannot inspect Silero model")?

@@ -117,10 +117,16 @@ pub struct Studio {
     pub appraised_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
     pub appraisal_status: String,
     pub completed_chat: Option<(Uuid, Result<String, String>)>,
+    pub next_loop_turn: bool,
+    pub tool_runtime: waifu_studio::companion_tools::ToolRuntime,
+    pub loop_chat_job: Option<Uuid>,
     /// (job, character, emotion) parsed from that job's opt-in affect block.
     pub completed_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
     pub proposals: Vec<waifu_studio::delegation::TaskProposal>,
     pub attachments: Vec<waifu_studio::attachments::ImageAttachment>,
+    pub documents: Vec<waifu_studio::attachments::DocumentAttachment>,
+    pending_attachments: VecDeque<PathBuf>,
+    pub attachment_drop_hovered: bool,
     attachment_worker: Mutex<waifu_studio::attachments::AttachmentWorker>,
     pub voice_key: String,
     pub voice_busy: bool,
@@ -203,9 +209,15 @@ impl Studio {
             appraised_affect: None,
             appraisal_status: String::new(),
             completed_chat: None,
+            next_loop_turn: false,
+            tool_runtime: Default::default(),
+            loop_chat_job: None,
             completed_affect: None,
             proposals: Vec::new(),
             attachments: vec![],
+            documents: vec![],
+            pending_attachments: VecDeque::new(),
+            attachment_drop_hovered: false,
             attachment_worker: Mutex::new(Default::default()),
             dialog_open: Arc::new(AtomicBool::new(false)),
             unload_model: false,
@@ -266,6 +278,8 @@ impl Studio {
         self.affect.take_pending(id);
         self.stop_voice();
         self.attachments.clear();
+        self.documents.clear();
+        self.pending_attachments.clear();
         self.proposals.clear();
         self.attachment_worker = Mutex::new(Default::default());
         if !self.library.characters.iter().any(|c| c.id == id) {
@@ -304,6 +318,8 @@ impl Studio {
         self.cancel_chat();
         self.stop_voice();
         self.attachments.clear();
+        self.documents.clear();
+        self.pending_attachments.clear();
         self.proposals.clear();
         self.attachment_worker = Mutex::new(Default::default());
         self.library.characters.retain(|c| c.id != id);
@@ -683,6 +699,11 @@ impl Studio {
         self.stop_voice();
         self.speech_reply_id = Some(id);
         self.reply_speech_job = None;
+        // The loop chooses whether to narrate after it knows this is progress
+        // or a final answer. Never speak hidden protocol/tool proposals.
+        if self.loop_chat_job == Some(id) {
+            return;
+        }
         // Voice is on by default; without a hosted key, stay quiet and say so once.
         let voice = &self.library.voice;
         if voice.enabled
@@ -967,8 +988,8 @@ impl Studio {
             }
         });
     }
-    pub fn open_image(&self) {
-        if self.attachments.len() >= waifu_studio::attachments::MAX_ATTACHMENTS
+    pub fn open_attachment(&self) {
+        if self.attachments.len() + self.documents.len() >= waifu_studio::attachments::MAX_FILES
             || self.dialog_open.swap(true, Ordering::AcqRel)
         {
             return;
@@ -979,8 +1000,15 @@ impl Studio {
         std::thread::spawn(move || {
             let _guard = DialogGuard(flag);
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("Attach an image to your next message")
-                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                .set_title("Attach files to your next message")
+                .add_filter(
+                    "Images and documents",
+                    &[
+                        "png", "jpg", "jpeg", "webp", "pdf", "docx", "txt", "md", "csv", "json",
+                        "log",
+                    ],
+                )
+                .add_filter("All files (including source code)", &["*"])
                 .pick_file()
             {
                 let _ = tx.send(FileEvent::Image(path, character));
@@ -988,7 +1016,24 @@ impl Studio {
         });
     }
     pub fn preparing_image(&self) -> bool {
-        self.attachment_worker.lock().unwrap().is_busy()
+        !self.pending_attachments.is_empty() || self.attachment_worker.lock().unwrap().is_busy()
+    }
+    pub fn queue_attachment(&mut self, path: PathBuf) -> Result<(), String> {
+        if self.library.selected.is_none() {
+            return Err("Choose a character before attaching files".into());
+        }
+        let occupied = self.attachments.len()
+            + self.documents.len()
+            + self.pending_attachments.len()
+            + usize::from(self.attachment_worker.lock().unwrap().is_busy());
+        if occupied >= waifu_studio::attachments::MAX_FILES {
+            return Err("Attach up to two images and four documents per message".into());
+        }
+        self.pending_attachments.push_back(path);
+        Ok(())
+    }
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty() || !self.documents.is_empty() || self.preparing_image()
     }
     pub fn open_models(&self) {
         if self.dialog_open.swap(true, Ordering::AcqRel) {
@@ -1301,6 +1346,13 @@ impl Studio {
         memory: &mut waifu_studio::memory::MemoryState,
         semantic: Option<&mut waifu_studio::semantic_memory::SemanticMemory>,
     ) {
+        if self.preparing_image() {
+            self.notice = Some("Preparing attachments. Send when they are ready.".into());
+            return;
+        }
+        if self.composer.trim().is_empty() && self.has_attachments() {
+            self.composer = "Please review the attached files.".into();
+        }
         self.start_chat_with_semantic(memory, semantic, None);
     }
 
@@ -1436,18 +1488,20 @@ impl Studio {
             character.delegation.prompt_instruction()
         );
         let id = character.id;
-        let appraisal_input =
-            (external.is_none() && self.library.scene.affect.requests_appraisal()).then(|| {
-                (
-                    character.name.clone(),
-                    character.persona.clone(),
-                    waifu_studio::appraisal::bounded(
-                        query.trim(),
-                        waifu_studio::appraisal::MAX_MESSAGE_BYTES,
-                    )
-                    .to_owned(),
+        let appraisal_input = (external.is_none()
+            && !self.next_loop_turn
+            && self.library.scene.affect.requests_appraisal())
+        .then(|| {
+            (
+                character.name.clone(),
+                character.persona.clone(),
+                waifu_studio::appraisal::bounded(
+                    query.trim(),
+                    waifu_studio::appraisal::MAX_MESSAGE_BYTES,
                 )
-            });
+                .to_owned(),
+            )
+        });
         self.cancel_appraisal();
         self.facts.select_character(Some(id));
         let facts_context = if semantic_evidence && semantic_notes.is_some() {
@@ -1465,16 +1519,19 @@ impl Studio {
             self.reply_affect_config = Some(self.library.scene.affect.clone());
         }
         if external.is_none() {
-            let turn_id = Uuid::new_v4();
-            self.facts
-                .observe_user_turn(id, turn_id, self.composer.trim());
-            self.facts.triage_user_turn(
-                id,
-                turn_id,
-                self.composer.trim(),
-                &self.library.decision,
-                &self.library.scene.memory_triage,
-            );
+            // Host-generated loop instructions are not authored user memory.
+            if !self.next_loop_turn {
+                let turn_id = Uuid::new_v4();
+                self.facts
+                    .observe_user_turn(id, turn_id, self.composer.trim());
+                self.facts.triage_user_turn(
+                    id,
+                    turn_id,
+                    self.composer.trim(),
+                    &self.library.decision,
+                    &self.library.scene.memory_triage,
+                );
+            }
             self.turns.push(Turn {
                 external: None,
                 role: "user".into(),
@@ -1521,7 +1578,19 @@ impl Studio {
                 content,
             });
         }
+        if external.is_none()
+            && let Some(content) = waifu_studio::attachments::document_context(&self.documents)
+        {
+            context.push(Turn {
+                external: None,
+                role: "user".into(),
+                content,
+            });
+        }
         context.extend(self.turns[latest..].iter().cloned());
+        if external.is_none() {
+            self.documents.clear();
+        }
         self.pending_response.clear();
         self.reply_filter = Some(Default::default());
         self.error = None;
@@ -1531,7 +1600,16 @@ impl Studio {
         let timing = ReplyTiming::new(send_started);
         timing.mark(Stage::Prepared);
         self.reply_timing = Some(timing.clone());
-        self.job = Some(provider::spawn_chat_with_images_timed(
+        let native_tools = (external.is_none()
+            && !self.next_loop_turn
+            && self.library.selected_character().is_some_and(|character| {
+                character.delegation.tools.enabled
+                    && self
+                        .tool_runtime
+                        .matches_settings(&character.delegation.tools)
+            }))
+        .then(|| self.tool_runtime.clone());
+        self.job = Some(provider::spawn_chat_with_tools_timed(
             config,
             context,
             if external.is_some() {
@@ -1541,8 +1619,10 @@ impl Studio {
             },
             self.provider_tx.clone(),
             Some(timing.clone()),
+            native_tools,
         ));
         if let Some(job_id) = self.job.as_ref().map(|job| job.id) {
+            self.loop_chat_job = self.next_loop_turn.then_some(job_id);
             self.begin_reply_speech(job_id);
             if let Some((name, persona, message)) = appraisal_input {
                 let decision = self.library.decision.clone();
@@ -1576,6 +1656,28 @@ impl Studio {
     }
 }
 
+pub fn receive_attachment_drops(
+    mut events: MessageReader<bevy::window::FileDragAndDrop>,
+    mut studio: ResMut<Studio>,
+) {
+    use bevy::window::FileDragAndDrop;
+    for event in events.read() {
+        match event {
+            FileDragAndDrop::HoveredFile { .. } => studio.attachment_drop_hovered = true,
+            FileDragAndDrop::HoveredFileCanceled { .. } => studio.attachment_drop_hovered = false,
+            FileDragAndDrop::DroppedFile { path_buf, .. } => {
+                studio.attachment_drop_hovered = false;
+                studio.mode = ViewMode::Studio;
+                studio.click_through = false;
+                studio.tab = Tab::Chat;
+                if let Err(error) = studio.queue_attachment(path_buf.clone()) {
+                    studio.error = Some(error);
+                }
+            }
+        }
+    }
+}
+
 pub fn poll_studio(
     mut studio: ResMut<Studio>,
     mut loads: MessageWriter<LoadAvatar>,
@@ -1588,11 +1690,20 @@ pub fn poll_studio(
     let prepared = studio.attachment_worker.lock().unwrap().poll();
     if let Some(result) = prepared {
         match result {
-            Ok(image) if studio.attachments.len() < waifu_studio::attachments::MAX_ATTACHMENTS => {
+            Ok(waifu_studio::attachments::PreparedAttachment::Image(image))
+                if studio.attachments.len() < waifu_studio::attachments::MAX_ATTACHMENTS =>
+            {
                 studio.attachments.push(image)
             }
+            Ok(waifu_studio::attachments::PreparedAttachment::Document(document))
+                if studio.documents.len() < waifu_studio::attachments::MAX_DOCUMENTS =>
+            {
+                studio.documents.push(document)
+            }
+            Ok(_) => {
+                studio.error = Some("Attach up to two images and four documents per message".into())
+            }
             Err(error) => studio.error = Some(error),
-            _ => {}
         }
     }
     let files: Vec<_> = studio.file_rx.lock().unwrap().try_iter().collect();
@@ -1604,12 +1715,9 @@ pub fn poll_studio(
             }
             FileEvent::Image(path, character) => {
                 if character == studio.library.selected
-                    && studio.attachments.len() < waifu_studio::attachments::MAX_ATTACHMENTS
+                    && let Err(error) = studio.queue_attachment(path)
                 {
-                    let result = studio.attachment_worker.lock().unwrap().start(path);
-                    if let Err(error) = result {
-                        studio.error = Some(error);
-                    }
+                    studio.error = Some(error);
                 }
             }
             FileEvent::Animation(path) => {
@@ -1621,6 +1729,14 @@ pub fn poll_studio(
                 studio.library.scene.image = Some(path);
                 studio.save();
             }
+        }
+    }
+    if !studio.attachment_worker.lock().unwrap().is_busy()
+        && let Some(path) = studio.pending_attachments.pop_front()
+    {
+        let result = studio.attachment_worker.lock().unwrap().start(path);
+        if let Err(error) = result {
+            studio.error = Some(error);
         }
     }
     let events: Vec<_> = studio.provider_rx.lock().unwrap().try_iter().collect();
@@ -1644,6 +1760,29 @@ pub fn poll_studio(
                         studio.model_lists.insert(index, models);
                     }
                     Err(error) => state.error = Some(error),
+                }
+            }
+            ProviderEvent::ToolProgress(id, role, text)
+                if studio.job.as_ref().is_some_and(|j| j.id == id) =>
+            {
+                if role == "tool_status" {
+                    studio.notice = (!text.is_empty()).then_some(text);
+                } else if matches!(role.as_str(), "assistant_progress" | "tool_result") {
+                    if role == "assistant_progress"
+                        && studio.library.voice.enabled
+                        && studio
+                            .library
+                            .selected_character()
+                            .is_some_and(|c| c.delegation.speak_intermediate_text)
+                    {
+                        studio.speak(text.clone());
+                    }
+                    studio.turns.push(Turn {
+                        external: None,
+                        role,
+                        content: text,
+                    });
+                    trim_history(&mut studio.turns);
                 }
             }
             ProviderEvent::Delta(id, text) if studio.job.as_ref().is_some_and(|j| j.id == id) => {
@@ -1725,7 +1864,10 @@ pub fn poll_studio(
                     }
                 }
                 let streamed_speech = studio.finish_reply_speech(id);
-                if studio.library.voice.enabled && !streamed_speech {
+                if studio.library.voice.enabled
+                    && !streamed_speech
+                    && studio.loop_chat_job != Some(id)
+                {
                     studio.speak(
                         content
                             .split("```waifu_tasks")
@@ -2369,6 +2511,7 @@ fn apply_transcript(
         && transcript.auto_send
         && transcript.character.is_some()
         && studio.composer.trim().is_empty()
+        && !studio.preparing_image()
         && studio.job.is_none();
     if !studio.composer.is_empty() {
         studio.composer.push('\n');
@@ -2391,7 +2534,7 @@ fn apply_transcript(
 pub fn poll_assistant(
     mut semantic: ResMut<waifu_studio::semantic_memory::SemanticMemory>,
     mut board: ResMut<waifu_studio::task_board::TaskBoard>,
-    studio: Res<Studio>,
+    mut studio: ResMut<Studio>,
     mut memory: ResMut<waifu_studio::memory::MemoryState>,
     mut mcp: ResMut<waifu_studio::mcp::McpState>,
     mut agents: ResMut<waifu_studio::agents::AgentState>,
@@ -2408,12 +2551,49 @@ pub fn poll_assistant(
     board.poll();
     mcp.poll();
     agents.poll();
+    let settings = studio
+        .library
+        .selected_character()
+        .map(|character| character.delegation.tools.clone())
+        .unwrap_or_default();
+    studio.tool_runtime.refresh(&settings, &mcp, &agents);
 }
 
 #[cfg(test)]
 mod tests {
     include!("studio_external_reply_tests.rs");
     use super::*;
+
+    #[test]
+    fn native_file_drop_queues_multiple_files_and_switches_to_conversation() {
+        let (mut state, directory) = studio();
+        state.mode = ViewMode::Desktop;
+        state.tab = Tab::Scene;
+        let selected = state.library.selected.unwrap();
+        let mut app = App::new();
+        app.add_message::<bevy::window::FileDragAndDrop>()
+            .insert_resource(state)
+            .add_systems(Update, receive_attachment_drops);
+        for name in ["picture.PNG", "notes.md", "document.pdf"] {
+            app.world_mut()
+                .write_message(bevy::window::FileDragAndDrop::DroppedFile {
+                    window: Entity::PLACEHOLDER,
+                    path_buf: PathBuf::from(name),
+                });
+        }
+        app.update();
+        let mut state = app.world_mut().resource_mut::<Studio>();
+        assert_eq!(state.mode, ViewMode::Studio);
+        assert_eq!(state.tab, Tab::Chat);
+        assert_eq!(state.pending_attachments.len(), 3);
+        assert!(state.preparing_image());
+        state.select_character(selected);
+        assert!(state.pending_attachments.is_empty() && state.documents.is_empty());
+        drop(state);
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     use waifu_studio::data::Character;
     fn settle_input_fixture(
         studio: &mut Studio,

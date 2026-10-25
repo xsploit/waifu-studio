@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: Upload temporary Actions archives (requires available artifact storage)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +45,8 @@ jobs:
           cache-on-failure: true
       - name: Offline voice worker test dependencies
         run: npm ci --prefix tools/discord-voice --no-audit --no-fund
+      - name: Prepare bundled speech detection
+        run: python tools/prepare_silero.py
       - name: Package integrity tests
         run: python -m unittest discover -s tools -p test_package_linux.py -v
       - name: Native tests
@@ -58,6 +65,7 @@ jobs:
         shell: bash
         run: python tools/package_linux.py --repo . --binary target/release/waifu-studio --output dist/waifu-studio-linux-x86_64 --archive dist/waifu-studio-linux-x86_64.tar.gz --release "$RELEASE_VERSION"
       - uses: actions/upload-artifact@v7.0.2
+        if: github.event_name == 'workflow_dispatch' && inputs.upload_artifacts
         with:
           name: waifu-studio-${{ runner.os }}-x86_64
           path: |
@@ -65,4 +73,4 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
           compression-level: 0
-          retention-days: 14
+          retention-days: 1

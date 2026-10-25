@@ -100,6 +100,7 @@ pub struct ListenConfig {
     pub api_key_env: String,
     pub vad_threshold: f32,
     pub trailing_silence_ms: u32,
+    pub stop_on_silence: bool,
     pub trim_silence: bool,
     pub auto_send: bool,
 }
@@ -108,7 +109,7 @@ impl Default for ListenConfig {
         let mut config = Self {
             backend: SttBackend::default(),
             language: String::new(),
-            silero_enabled: false,
+            silero_enabled: true,
             silero_model: String::new(),
             silero_runtime: String::new(),
             silero_threshold: 0.5,
@@ -117,7 +118,8 @@ impl Default for ListenConfig {
             model: String::new(),
             api_key_env: String::new(),
             vad_threshold: 0.015,
-            trailing_silence_ms: 1200,
+            trailing_silence_ms: 3000,
+            stop_on_silence: true,
             trim_silence: false,
             auto_send: true,
         };
@@ -340,6 +342,7 @@ struct Recording {
     channels: usize,
     threshold: f32,
     silence_limit: usize,
+    stop_on_silence: bool,
     silence: usize,
     speech: bool,
     onset: usize,
@@ -364,6 +367,7 @@ impl Recording {
                 0.015
             },
             silence_limit: RATE * c.trailing_silence_ms.clamp(200, 5000) as usize / 1000,
+            stop_on_silence: c.stop_on_silence,
             silence: 0,
             speech: false,
             onset: 0,
@@ -413,7 +417,7 @@ impl Recording {
                     self.window = 0;
                 }
                 self.done = self.samples.len() >= MAX_SAMPLES
-                    || (self.speech && self.silence >= self.silence_limit);
+                    || (self.stop_on_silence && self.speech && self.silence >= self.silence_limit);
             }
         }
     }
@@ -586,7 +590,7 @@ fn capture(
                 Ok(p) => {
                     let (onset, hold) = neural_thresholds(c.silero_threshold);
                     d.activity_at(p >= onset, p >= hold, 512, 1024, processed);
-                    if d.speech && d.silence >= d.silence_limit {
+                    if d.stop_on_silence && d.speech && d.silence >= d.silence_limit {
                         d.done = true;
                     }
                 }
@@ -891,6 +895,44 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn patient_endpointing_preserves_pauses_and_manual_mode_only_hits_the_hard_cap() {
+        let config = ListenConfig::default();
+        assert_eq!(config.trailing_silence_ms, 3000);
+        assert!(config.stop_on_silence);
+        let mut automatic = Recording::new(16_000, 1, &config);
+        automatic.feed(&vec![0.2_f32; 8_000]);
+        automatic.feed(&vec![0_f32; 32_000]);
+        assert!(
+            !automatic.done,
+            "a two-second thinking pause must not end the turn"
+        );
+        automatic.feed(&vec![0.2_f32; 8_000]);
+        automatic.feed(&vec![0_f32; 64_000]);
+        assert!(automatic.done);
+        let mut manual = Recording::new(
+            16_000,
+            1,
+            &ListenConfig {
+                stop_on_silence: false,
+                ..config
+            },
+        );
+        manual.feed(&vec![0.2_f32; 8_000]);
+        manual.feed(&vec![0_f32; 96_000]);
+        assert!(!manual.done, "manual recording must survive a long pause");
+        manual.feed(&vec![0_f32; MAX_SAMPLES]);
+        assert!(manual.done);
+        assert_eq!(manual.samples.len(), MAX_SAMPLES);
+        let old: ListenConfig = serde_json::from_str(r#"{"trailing_silence_ms":800}"#).unwrap();
+        assert_eq!(old.trailing_silence_ms, 800);
+        assert!(
+            old.stop_on_silence,
+            "old saved silence preferences retain their meaning"
+        );
+    }
+
     #[test]
     fn neural_mode_callback_only_buffers_and_respects_recording_bound() {
         let c = ListenConfig::default();

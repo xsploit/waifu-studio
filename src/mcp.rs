@@ -58,6 +58,41 @@ pub struct McpTool {
     header_params: Vec<(Vec<String>, String)>,
 }
 
+/// A per-request grant bound to the endpoint and schema the user loaded.
+/// Only the explicitly selected tools enter this snapshot.
+#[derive(Clone)]
+pub struct CompanionMcp {
+    connection: Connection,
+    token: Option<String>,
+    pub tools: Vec<McpTool>,
+}
+impl CompanionMcp {
+    pub fn call(&self, name: &str, args: &Value, cancel: &AtomicBool) -> Result<String, String> {
+        let tool = self
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .ok_or("MCP tool is not enabled for this request")?;
+        if !args.is_object()
+            || serde_json::to_vec(args)
+                .map_err(|_| "Invalid arguments")?
+                .len()
+                > MAX_ARGUMENTS
+        {
+            return Err("MCP arguments must be an object within 64 KiB".into());
+        }
+        let cancelled = || cancel.load(Ordering::Relaxed);
+        if cancelled() {
+            return Err("Cancelled".into());
+        }
+        let mut session = Session::new(self.connection.clone(), self.token.clone(), &cancelled)?;
+        session
+            .call_tool(tool, args)
+            .map(|text| redact(&text, self.token.as_deref()))
+            .map_err(|error| redact(&error, self.token.as_deref()))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Era {
     Modern,
@@ -147,6 +182,39 @@ impl Drop for McpState {
 }
 
 impl McpState {
+    pub fn companion_identity(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.endpoint.hash(&mut hash);
+        self.tools_endpoint.hash(&mut hash);
+        self.session_token.hash(&mut hash);
+        self.generation.load(Ordering::SeqCst).hash(&mut hash);
+        self.is_busy().hash(&mut hash);
+        self.tools.len().hash(&mut hash);
+        hash.finish()
+    }
+    pub fn companion_snapshot(&self, endpoint: &str, allowed: &[String]) -> Option<CompanionMcp> {
+        if endpoint.is_empty()
+            || endpoint != self.endpoint.trim()
+            || endpoint != self.tools_endpoint
+        {
+            return None;
+        }
+        let tools: Vec<_> = self
+            .tools
+            .iter()
+            .filter(|tool| allowed.contains(&tool.name))
+            .cloned()
+            .collect();
+        if tools.is_empty() {
+            return None;
+        }
+        Some(CompanionMcp {
+            connection: self.connection.as_ref()?.clone(),
+            token: Some(self.session_token.trim().to_owned()).filter(|token| !token.is_empty()),
+            tools,
+        })
+    }
     pub fn is_busy(&self) -> bool {
         self.busy.load(Ordering::SeqCst)
     }
@@ -1195,6 +1263,56 @@ mod tests {
 
     fn never() -> bool {
         false
+    }
+
+    #[test]
+    fn companion_grant_binds_endpoint_and_calls_only_explicitly_enabled_tools() {
+        let (url, server) = server(vec![(
+            200,
+            "application/json",
+            "",
+            result(
+                1,
+                json!({"content":[{"type":"text","text":"MCP_NATIVE_READY"}]}),
+            ),
+        )]);
+        let mut state = McpState::default();
+        state.endpoint = url.clone();
+        state.tools_endpoint = url.clone();
+        state.connection = Some(session(&url).connection);
+        state.tools = vec![
+            parse_tool(&json!({"name":"echo","inputSchema":{"type":"object"}})).unwrap(),
+            parse_tool(&json!({"name":"other","inputSchema":{"type":"object"}})).unwrap(),
+        ];
+        assert!(
+            state
+                .companion_snapshot("https://different.example/mcp", &["echo".into()])
+                .is_none()
+        );
+        assert!(state.companion_snapshot(&url, &[]).is_none());
+        let snapshot = state.companion_snapshot(&url, &["echo".into()]).unwrap();
+        assert_eq!(snapshot.tools.len(), 1);
+        assert!(
+            snapshot
+                .call("other", &json!({}), &AtomicBool::new(false))
+                .is_err()
+        );
+        assert!(
+            snapshot
+                .call("echo", &json!({}), &AtomicBool::new(true))
+                .is_err()
+        );
+        let output = snapshot
+            .call("echo", &json!({"text":"literal"}), &AtomicBool::new(false))
+            .unwrap();
+        assert!(output.contains("MCP_NATIVE_READY"));
+        let seen = server.join().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].body["method"], "tools/call");
+        assert_eq!(seen[0].body["params"]["name"], "echo");
+        assert_eq!(seen[0].body["params"]["arguments"]["text"], "literal");
+        state.endpoint = "https://different.example/mcp".into();
+        assert!(state.companion_snapshot(&url, &["echo".into()]).is_none());
     }
 
     fn session(url: &str) -> Session<'static> {

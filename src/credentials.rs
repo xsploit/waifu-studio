@@ -2,13 +2,14 @@
 use std::{collections::BTreeMap, fmt, fs::File, io::Read, path::Path};
 
 const MAX_BYTES: u64 = 16 * 1024;
-const ALLOWED: [&str; 6] = [
+const ALLOWED: [&str; 7] = [
     "AI_GATEWAY_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "XAI_API_KEY",
     "FISH_API_KEY",
     "FISH_REFERENCE_ID",
+    "TAVILY_API_KEY",
 ];
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -319,7 +320,7 @@ mod tests {
 
     #[test]
     fn all_supported_chat_provider_keys_load_from_the_private_profile() {
-        let parsed = parse_credentials("AI_GATEWAY_API_KEY=gateway\nOPENROUTER_API_KEY=router\nOPENAI_API_KEY=openai\nXAI_API_KEY=xai\nFISH_API_KEY=fish\nFISH_REFERENCE_ID=voice\nUNRELATED_TOKEN=ignored\n").unwrap();
+        let parsed = parse_credentials("AI_GATEWAY_API_KEY=gateway\nOPENROUTER_API_KEY=router\nOPENAI_API_KEY=openai\nXAI_API_KEY=xai\nFISH_API_KEY=fish\nFISH_REFERENCE_ID=voice\nTAVILY_API_KEY=tavily\nUNRELATED_TOKEN=ignored\n").unwrap();
         assert_eq!(parsed.len(), ALLOWED.len());
         for key in ALLOWED {
             assert!(parsed.contains_key(key));

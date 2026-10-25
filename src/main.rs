@@ -380,7 +380,9 @@ fn run() -> Result<(), String> {
         .init_resource::<waifu_studio::fish_ws::FishWsState>()
         .init_resource::<waifu_studio::behavior::BehaviorState>()
         .init_resource::<waifu_studio::mcp::McpState>()
-        .init_resource::<waifu_studio::agents::AgentState>()
+        .insert_resource(waifu_studio::agents::AgentState::load_preferences(
+            directory.join("agents.json"),
+        ))
         .init_resource::<orchestration::OrchestrationState>()
         .init_resource::<motion_services::MotionServices>()
         .init_resource::<waifu_studio::voice_design::VoiceDesignState>()
@@ -415,6 +417,7 @@ fn run() -> Result<(), String> {
         .add_systems(
             Update,
             (
+                studio::receive_attachment_drops.before(studio::poll_studio),
                 studio::poll_studio,
                 sync_spring_physics,
                 sync_scene_members,

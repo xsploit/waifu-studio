@@ -29,3 +29,6 @@ conversation*.json
 # IDE state
 .idea/
 .vscode/
+
+# Pinned speech assets are prepared by tools/prepare_silero.py for each platform.
+/assets/silero/

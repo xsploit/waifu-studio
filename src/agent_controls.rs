@@ -48,6 +48,11 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AgentState) {
                 }
             });
         });
+        match state.provider {
+            AgentProvider::Codex => { changed |= kit::text_row(ui, "Codex model", "Leave blank to use your CLI default.", &mut state.codex_model, "CLI default").changed(); }
+            AgentProvider::Claude => { changed |= kit::text_row(ui, "Claude model", "Leave blank for your CLI default, or choose an available model such as sonnet.", &mut state.claude_model, "CLI default").changed(); }
+            _ => (),
+        }
         if state.provider != AgentProvider::Custom {
             kit::row(ui, "Task access", "Review permissions before running.", |ui| {
                 egui::ComboBox::from_id_salt("agent_access")
@@ -93,6 +98,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AgentState) {
             .changed();
         if changed {
             state.disarm();
+            state.save_preferences();
         }
         if ui.button("Review task").clicked()
             && let Err(e) = state.review()

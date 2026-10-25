@@ -305,6 +305,28 @@ pub(super) fn voice(
                 |ui| kit::toggle(ui, &mut listening.config.auto_send),
             )
             .changed();
+        changed |= c.row(
+            "Stop after silence",
+            "Turn off to keep recording through pauses; press the microphone shortcut again to finish.",
+            |ui| kit::toggle(ui, &mut listening.config.stop_on_silence),
+        ).changed();
+        if listening.config.stop_on_silence {
+            changed |= c
+                .row(
+                    "Pause allowance",
+                    "Wait this long before ending your turn.",
+                    |ui| {
+                        ui.add(
+                            egui::Slider::new(
+                                &mut listening.config.trailing_silence_ms,
+                                200..=5000,
+                            )
+                            .suffix(" ms"),
+                        )
+                    },
+                )
+                .changed();
+        }
         let openrouter = listening.config.backend == SttBackend::OpenAiCompatible
             && listening.config.endpoint.contains("openrouter.ai/");
         let current = match listening.config.backend {
@@ -874,7 +896,45 @@ pub(super) fn group_chat(
     });
 }
 
-pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState) {
+pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState, studio: &mut Studio) {
+    kit::section(ui, "Companion agent loop");
+    let mut changed = false;
+    if let Some(character) = studio.library.selected_character_mut() {
+        let settings = &mut character.delegation.tools;
+        kit::card(ui, |c| {
+            changed |= c
+                .row(
+                    "Use tools automatically",
+                    "Search, inspect results, delegate and continue during your conversation.",
+                    |ui| kit::toggle(ui, &mut settings.enabled),
+                )
+                .changed();
+            changed |= c.row("Tavily web search", if waifu_studio::companion_tools::tavily_ready() { "Private search key is available." } else { "Set TAVILY_API_KEY in your private credentials.env or environment, then restart." },
+                |ui| kit::toggle(ui, &mut settings.tavily)).changed();
+            changed |= c
+                .row(
+                    "Delegate to Codex",
+                    "Read-only tasks in the local workspace configured under Agent tasks.",
+                    |ui| kit::toggle(ui, &mut settings.codex),
+                )
+                .changed();
+            changed |= c
+                .row(
+                    "Delegate to Claude",
+                    "Read-only tasks using the configured Claude model and local login.",
+                    |ui| kit::toggle(ui, &mut settings.claude),
+                )
+                .changed();
+            changed |= c
+                .row(
+                    "Calls per message",
+                    "The companion gives a final answer when this budget is reached.",
+                    |ui| ui.add(egui::Slider::new(&mut settings.max_calls, 1..=16)),
+                )
+                .changed();
+            c.block(|ui| { ui.label("Off by default. Tool use adds service and model round trips. Your selected model must support OpenAI-compatible function calls; unsupported models report an error. Browser capabilities can be supplied by an MCP browser server. Load its tools below and enable the specific tools Hikari may call. Progress display and narration are under Agent tasks."); });
+        });
+    }
     let busy = mcp.is_busy();
     kit::section(ui, "Tool server");
     kit::card(ui, |c| {
@@ -925,8 +985,30 @@ pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState) {
         });
     });
     if !mcp.tools.is_empty() {
+        kit::section(ui, "Tools the companion may call");
+        if let Some(character) = studio.library.selected_character_mut() {
+            let settings = &mut character.delegation.tools;
+            let endpoint = mcp.endpoint.trim();
+            for tool in mcp.tools.iter().take(32) {
+                let mut enabled =
+                    settings.mcp_endpoint == endpoint && settings.mcp_tools.contains(&tool.name);
+                if ui.checkbox(&mut enabled, &tool.name).on_hover_text("Allow automatic calls to this tool during a chat request. Only enable tools whose effects you want the companion to perform.").changed() {
+                    if settings.mcp_endpoint != endpoint {
+                        settings.mcp_endpoint = endpoint.into();
+                        settings.mcp_tools.clear();
+                    }
+                    settings.mcp_tools.retain(|name| name != &tool.name);
+                    if enabled { settings.mcp_tools.push(tool.name.clone()); }
+                    changed = true;
+                }
+            }
+            ui.label("Grants are bound to this server address. Load tools again after restarting the app; access tokens stay in memory.");
+        }
         kit::section(ui, "Run a tool");
         kit::card(ui, |c| c.block(|ui| crate::mcp_controls::tools_ui(ui, mcp)));
+    }
+    if changed {
+        studio.save();
     }
 }
 
@@ -937,7 +1019,7 @@ pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
         if let Some(character) = studio.library.selected_character_mut() {
             let name = character.name.clone();
             if c.row(
-                "Suggest coding tasks",
+                "Allow task proposals",
                 &format!("{name} can suggest tasks. Review each before an agent runs."),
                 |ui| kit::toggle(ui, &mut character.delegation.enabled),
             )
@@ -947,12 +1029,32 @@ pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
                 studio.save();
             }
         }
+        let mut changed = false;
+        if let Some(character) = studio.library.selected_character_mut() {
+            changed |= c
+                .row(
+                    "Show intermediate text",
+                    "Display the companion's progress between tool calls.",
+                    |ui| kit::toggle(ui, &mut character.delegation.show_intermediate_text),
+                )
+                .changed();
+            changed |= c
+                .row(
+                    "Speak intermediate text",
+                    "Read progress aloud; final answers still follow your voice setting.",
+                    |ui| kit::toggle(ui, &mut character.delegation.speak_intermediate_text),
+                )
+                .changed();
+        }
+        if changed {
+            studio.save();
+        }
         c.row(
             "Suggested tasks",
             if proposals == 0 {
                 "Nothing waiting."
             } else {
-                "Review them under Advanced."
+                "Review and run them below."
             },
             |ui| {
                 ui.label(proposals.to_string());

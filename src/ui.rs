@@ -499,7 +499,7 @@ pub fn studio_ui(
                 }
                 Tab::Memory => memory_page::ui(ui, &mut studio, &mut memory, &mut semantic),
                 Tab::Tools => {
-                    settings_pages::tools(ui, &mut mcp);
+                    settings_pages::tools(ui, &mut mcp, &mut studio);
                     if let Some(context) = mcp.take_context() {
                         if studio.composer.len() + context.len() <= 32_000 {
                             if !studio.composer.is_empty() {
@@ -516,7 +516,7 @@ pub fn studio_ui(
                 }
                 Tab::Tasks => {
                     settings_pages::tasks(ui, &mut studio);
-                    settings_pages::advanced(ui, "tasks", |ui| {
+                    ui.scope(|ui| {
                         group(ui, "Task loop", |ui| {
                             crate::orchestration::ui(
                                 ui,
@@ -2327,7 +2327,7 @@ fn conversation_turn_label(turn: &waifu_studio::data::Turn, name: &str) -> Strin
     }
     match turn.role.as_str() {
         "user" => "You".into(),
-        "assistant" => name.into(),
+        "assistant" | "assistant_progress" => name.into(),
         _ => "Message".into(),
     }
 }
@@ -2359,7 +2359,22 @@ fn history(ctx: &egui::Context, studio: &Studio, name: &str, left: f32, height: 
                             .iter()
                             .skip(studio.turns.len().saturating_sub(60))
                         {
-                            if turn.role == "system" && turn.external.is_none() {
+                            let show_progress = studio
+                                .library
+                                .selected_character()
+                                .is_some_and(|c| c.delegation.show_intermediate_text);
+                            if matches!(turn.role.as_str(), "system" | "loop_instruction")
+                                && turn.external.is_none()
+                                || turn.role == "assistant_progress" && !show_progress
+                            {
+                                continue;
+                            }
+                            if turn.role == "tool_result" {
+                                if show_progress {
+                                    ui.collapsing("Tool result", |ui| {
+                                        ui.label(&turn.content);
+                                    });
+                                }
                                 continue;
                             }
                             ui.label(
@@ -2374,7 +2389,12 @@ fn history(ctx: &egui::Context, studio: &Studio, name: &str, left: f32, height: 
                                         },
                                     ),
                             );
-                            let text = ui.label(&turn.content);
+                            let visible = if turn.role == "assistant_progress" {
+                                turn.content.split("```waifu_tasks").next().unwrap_or("")
+                            } else {
+                                &turn.content
+                            };
+                            let text = ui.label(visible);
                             if ui.is_rect_visible(text.rect)
                                 && turn.role == "assistant"
                                 && turn.external.is_none()
@@ -2392,9 +2412,26 @@ fn history(ctx: &egui::Context, studio: &Studio, name: &str, left: f32, height: 
                             }
                             ui.add_space(10.0);
                         }
-                        if !studio.pending_response.is_empty() {
+                        let loop_turn = studio
+                            .job
+                            .as_ref()
+                            .is_some_and(|job| studio.loop_chat_job == Some(job.id));
+                        let show_progress = studio
+                            .library
+                            .selected_character()
+                            .is_some_and(|c| c.delegation.show_intermediate_text);
+                        if !studio.pending_response.is_empty() && (!loop_turn || show_progress) {
                             ui.label(RichText::new(name).small().strong().color(ACCENT));
-                            let text = ui.label(&studio.pending_response);
+                            let visible = if loop_turn {
+                                studio
+                                    .pending_response
+                                    .split("```waifu_tasks")
+                                    .next()
+                                    .unwrap_or("")
+                            } else {
+                                &studio.pending_response
+                            };
+                            let text = ui.label(visible);
                             if ui.is_rect_visible(text.rect)
                                 && let Some(timing) = &studio.reply_timing
                             {
@@ -2429,7 +2466,10 @@ fn composer(
                 .corner_radius(25)
                 .inner_margin(14)
                 .show(ui, |ui| {
-                    if !studio.attachments.is_empty() || studio.preparing_image() {
+                    if studio.attachment_drop_hovered {
+                        ui.colored_label(ACCENT, "Drop images, PDF, DOCX, text or code files here");
+                    }
+                    if studio.has_attachments() {
                         ui.horizontal_wrapped(|ui| {
                             let mut remove = None;
                             for (index, image) in studio.attachments.iter().enumerate() {
@@ -2440,6 +2480,13 @@ fn composer(
                             if let Some(index) = remove {
                                 studio.attachments.remove(index);
                             }
+                            let mut remove_document = None;
+                            for (index, document) in studio.documents.iter().enumerate() {
+                                if ui.small_button(format!("{} ×", document.name)).on_hover_text("Extracted text is sent with your next message; the original file is unchanged.").clicked() {
+                                    remove_document = Some(index);
+                                }
+                            }
+                            if let Some(index) = remove_document { studio.documents.remove(index); }
                             if studio.preparing_image() {
                                 ui.spinner();
                             }
@@ -2479,12 +2526,12 @@ fn composer(
                             popup_layout(ui, 300.0);
                             if ui
                                 .add_enabled(
-                                    !studio.preparing_image() && studio.attachments.len() < 2,
-                                    egui::Button::new("Attach image…"),
+                                    !studio.preparing_image() && studio.attachments.len() + studio.documents.len() < waifu_studio::attachments::MAX_FILES,
+                                    egui::Button::new("Attach files…"),
                                 )
                                 .clicked()
                             {
-                                studio.open_image();
+                                studio.open_attachment();
                                 ui.close();
                             }
                             if let Some(timing) = &studio.reply_timing {
@@ -2537,7 +2584,7 @@ fn composer(
                                     studio.cancel_chat();
                                 }
                             } else {
-                                let enabled = !studio.composer.trim().is_empty()
+                                let enabled = (!studio.composer.trim().is_empty() || studio.has_attachments())
                                     && studio.library.selected.is_some()
                                     && !studio.preparing_image();
                                 send_clicked = ui
@@ -2597,24 +2644,25 @@ fn composer_mode(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
     let mut enabled = studio
         .library
         .selected_character()
-        .is_some_and(|c| c.delegation.enabled);
+        .is_some_and(|c| c.delegation.tools.enabled);
     let was_enabled = enabled;
     let label = if compact {
         "Mode"
     } else if enabled {
-        "Suggest tasks"
+        "Agent loop on"
     } else {
-        "Chat only"
+        "Agent loop off"
     };
     ui.menu_button(RichText::new(label).size(14.0).color(if enabled { Color32::from_rgb(255, 145, 80) } else { MUTED }), |ui| {
         popup_layout(ui, 290.0);
         ui.label("Companion behavior");
         ui.add_enabled_ui(studio.library.selected.is_some(), |ui| {
-            ui.selectable_value(&mut enabled, false, "Chat only");
-            ui.selectable_value(&mut enabled, true, "Suggest coding tasks");
+            ui.selectable_value(&mut enabled, false, "Normal chat · loop off");
+            ui.selectable_value(&mut enabled, true, "Agent loop · use enabled tools");
         });
-        kit::note(ui, "Suggestions never execute by themselves. Review tasks or start a bounded loop in Tasks.");
-        if ui.button("Open task permissions & runner…").clicked() { studio.tab = Tab::Tasks; ui.close(); }
+        kit::note(ui, "Off by default. Search and tool round trips add latency. Choose allowed tools in Assistant tools.");
+        if ui.button("Choose search, MCP & delegation tools…").clicked() { studio.tab = Tab::Tools; ui.close(); }
+        if ui.button("Open reviewed coding tasks…").clicked() { studio.tab = Tab::Tasks; ui.close(); }
     });
     if enabled != was_enabled {
         if let Some(character) = studio
@@ -2623,7 +2671,7 @@ fn composer_mode(ui: &mut egui::Ui, studio: &mut Studio, compact: bool) {
             .iter_mut()
             .find(|c| Some(c.id) == studio.library.selected)
         {
-            character.delegation.enabled = enabled;
+            character.delegation.tools.enabled = enabled;
         }
         studio.save();
     }
@@ -3830,6 +3878,7 @@ mod composer_tests {
             voice: None,
         });
         library.selected = Some(character);
+        library.scene.reply_motion.mode = waifu_studio::data::ReplyMotionMode::EmotionMapped;
         library
             .scene
             .reply_motion
