@@ -1521,3 +1521,12 @@ Version `0.1.0-preview.1` excludes Elmer, Zome and Lazuli from the bundled catal
 Local optimized, locked all-target tests passed serially: 1,207 on Windows and 1,396 on Ubuntu 24.04 under WSL. Six Python package-integrity tests passed, including tagged-preview provenance checks. Package-scoped Rust formatting and GitHub workflow validation passed. Vendored upstream examples require source files outside this checkout, so formatting is scoped to `waifu-studio`, not all vendored packages.
 
 The staged source audit found no known local provider credentials or credential-shaped secrets. All retained bundle model hashes matched. Runtime archives exclude profiles and record file hashes plus the source commit. These checks do not establish native Wayland/KDE/Hyprland, every GPU/audio device, or long-session acceptance; see `docs/PREVIEW.md`.
+
+
+## Product walkthrough and CI test synchronization — 2026-10-25
+
+Expanded the product README with setup, a conversation-flow diagram, feature-by-feature workflows, credentials/data behavior and current preview limits. GitHub Markdown rendering succeeded (47 headings, seven tables, three images); 49 local documentation/image links and section anchors resolved. Updated stale bundled-profile counts, Fish library search behavior, microphone defaults and Windows integration/routine guidance.
+
+The first GitHub Linux job failed in `worker_retunes_in_place_without_restarting_smoothing_from_silence`. The test could send new settings after the first vowel output while initial PCM remained queued, then miss the brief invalidation before that queued audio republished output. The test now waits for the initial batch to drain before changing settings. Production worker behavior and packaged binaries are unchanged.
+
+Validation: all 12 `viseme_audio::tests` passed in release mode on Windows and Ubuntu 24.04/WSL; the updated retuning test passed 100 consecutive executions on each platform. The complete Linux library target passed all 1,088 tests serially. Package-scoped Rust formatting and diff whitespace checks passed. The original GitHub result remains a failed test receipt; a new workflow must validate the corrected revision.

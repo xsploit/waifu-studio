@@ -1002,11 +1002,15 @@ mod tests {
         for i in 0..4096 {
             session.ring.push((i as f32 * 0.17).sin() * 0.5);
         }
+        // The first output can arrive before this batch has drained. Retuning
+        // with queued PCM could invalidate and immediately republish between
+        // test polls, so wait for the batch boundary before changing settings.
         wait_until(|| {
-            session
-                .output
-                .snapshot(session.now(), 0)
-                .is_some_and(|w| w[0] > 0.9)
+            session.ring.read.load(Ordering::Acquire) == session.ring.write.load(Ordering::Acquire)
+                && session
+                    .output
+                    .snapshot(session.now(), 0)
+                    .is_some_and(|w| w[0] > 0.9)
         });
         session.revision.store(1, Ordering::Release);
         send.send(Command::Settings {
