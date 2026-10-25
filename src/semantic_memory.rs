@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     net::IpAddr,
     path::{Path, PathBuf},
@@ -937,10 +937,8 @@ fn write_atomic(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
         file.write_all(data)
             .and_then(|()| file.sync_all())
             .map_err(|e| e.to_string())?;
-        fs::rename(&temporary, root.join(name)).map_err(|e| e.to_string())?;
-        File::open(root)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())
+        drop(file);
+        crate::durable_file::replace(&temporary, &root.join(name)).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temporary);

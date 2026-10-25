@@ -13,87 +13,104 @@ pub fn ui(
     config: &VoiceConfig,
     session_key: &str,
 ) -> Option<String> {
+    state.reconcile_connection(config, Some(session_key));
     state.poll();
-    ui.label(egui::RichText::new("Fish voice library").strong());
-    kit::note(
-        ui,
-        "Read-only search. Uses the session key or the configured key environment variable; nothing is saved.",
-    );
+    ui.small("Search Fish voices, then choose a result.")
+        .on_hover_text(
+            "Uses the configured Fish key. Selecting a voice updates this character only.",
+        );
     let busy = state.is_busy();
     let mut search = false;
-    kit::group(ui, "Search filters", |ui| {
-        ui.add_enabled_ui(!busy, |ui| {
-            kit::row(
-                ui,
-                "Library",
-                "Search public voices or your own voices.",
-                |ui| {
-                    egui::ComboBox::from_id_salt("voice-library-scope")
-                        .selected_text(if state.query.own_only {
-                            "My voices"
-                        } else {
-                            "Public voices"
-                        })
-                        .width(240.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut state.query.own_only, false, "Public voices");
-                            ui.selectable_value(&mut state.query.own_only, true, "My voices");
-                        });
-                },
-            );
-            search |= kit::text_row(
-                ui,
-                "Title",
-                "Search by voice title.",
-                &mut state.query.title,
-                "Voice title",
-            )
-            .lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            kit::text_row(ui, "Tag", "Optional voice tag.", &mut state.query.tag, "");
-            kit::text_row(
-                ui,
-                "Language",
-                "Optional language filter.",
-                &mut state.query.language,
-                "",
-            );
-            {
-                kit::row(ui, "Sort voices", "Order the search results.", |ui| {
-                    egui::ComboBox::from_id_salt("voice-library-sort")
-                        .selected_text(state.query.sort_by.label())
-                        .show_ui(ui, |ui| {
-                            for sort in SortBy::ALL {
-                                ui.selectable_value(&mut state.query.sort_by, sort, sort.label());
-                            }
-                        });
-                });
-                kit::slider_row(
+    kit::card(ui, |card| {
+        card.block(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                kit::row(
                     ui,
-                    "Per page",
-                    "",
-                    egui::Slider::new(&mut state.query.page_size, 1..=MAX_PAGE_SIZE),
+                    "Library",
+                    "Search public voices or your own voices.",
+                    |ui| {
+                        egui::ComboBox::from_id_salt("voice-library-scope")
+                            .selected_text(if state.query.own_only {
+                                "My voices"
+                            } else {
+                                "Public voices"
+                            })
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut state.query.own_only,
+                                    false,
+                                    "Public voices",
+                                );
+                                ui.selectable_value(&mut state.query.own_only, true, "My voices");
+                            });
+                    },
                 );
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Search").clicked() {
-                    state.query.page_number = 1;
-                    search = true;
-                }
-                let page = state.query.page_number;
-                if ui.add_enabled(page > 1, egui::Button::new("◀")).clicked() {
-                    state.query.page_number = page - 1;
-                    search = true;
-                }
-                ui.label(format!("Page {page}"));
-                let more = u64::from(page) * u64::from(state.query.page_size) < state.page.total;
-                if ui
-                    .add_enabled(more && page < MAX_PAGE_NUMBER, egui::Button::new("▶"))
-                    .clicked()
-                {
-                    state.query.page_number = page + 1;
-                    search = true;
-                }
+                search |= kit::text_row(
+                    ui,
+                    "Title",
+                    "Search by voice title.",
+                    &mut state.query.title,
+                    "Voice title",
+                )
+                .lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                egui::CollapsingHeader::new("Advanced · filters")
+                    .id_salt("voice_library_filters")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        kit::text_row(ui, "Tag", "Optional voice tag.", &mut state.query.tag, "");
+                        kit::text_row(
+                            ui,
+                            "Language",
+                            "Optional language filter.",
+                            &mut state.query.language,
+                            "",
+                        );
+                        kit::row(ui, "Sort voices", "Order the search results.", |ui| {
+                            egui::ComboBox::from_id_salt("voice-library-sort")
+                                .selected_text(state.query.sort_by.label())
+                                .show_ui(ui, |ui| {
+                                    for sort in SortBy::ALL {
+                                        ui.selectable_value(
+                                            &mut state.query.sort_by,
+                                            sort,
+                                            sort.label(),
+                                        );
+                                    }
+                                });
+                        });
+                        kit::slider_row(
+                            ui,
+                            "Per page",
+                            "",
+                            egui::Slider::new(&mut state.query.page_size, 1..=MAX_PAGE_SIZE),
+                        );
+                    });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Search").clicked() {
+                        state.query.page_number = 1;
+                        search = true;
+                    }
+                    let page = state.query.page_number;
+                    if ui
+                        .add_enabled(page > 1, egui::Button::new("Previous"))
+                        .clicked()
+                    {
+                        state.query.page_number = page - 1;
+                        search = true;
+                    }
+                    ui.label(format!("Page {page}"));
+                    let more =
+                        u64::from(page) * u64::from(state.query.page_size) < state.page.total;
+                    if ui
+                        .add_enabled(more && page < MAX_PAGE_NUMBER, egui::Button::new("Next"))
+                        .clicked()
+                    {
+                        state.query.page_number = page + 1;
+                        search = true;
+                    }
+                });
             });
         });
     });
@@ -129,6 +146,7 @@ pub fn ui(
             egui::ComboBox::from_id_salt("voice-library-selection")
                 .selected_text(selected_title)
                 .width(240.0)
+                .truncate()
                 .show_ui(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("voice-library-results")

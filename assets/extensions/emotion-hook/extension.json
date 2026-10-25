@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "id": "studio.example.emotion-hook",
+  "version": "1.0.0",
+  "name": "Emotion observer hook",
+  "description": "Python 3 one-shot hook: records the original emotion-change metadata in latest.json, then exits. No private reply text or avatar actions.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "emotion.changed",
+      "handler": {
+        "program": "hook.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

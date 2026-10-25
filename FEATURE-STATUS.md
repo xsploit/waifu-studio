@@ -4,7 +4,7 @@ This is a substantial native foundation, **not a complete WebWaifu4 port or full
 
 | Requested capability | Implementation status | Scope and acceptance boundary |
 | --- | --- | --- |
-| Native desktop companion | Implemented | Rust/Bevy, local settings/library and native panels; no browser runtime required. Linux baseline rendered previously; other operating systems remain unverified. |
+| Native desktop companion | Implemented on Windows and Linux | Native Windows Studio/transparent companion and Linux offscreen rendering verified on 2026-10-24. Windows uses Win32/DWM geometry and Job Objects; Linux retains KWin/Hyprland and process groups. See `docs/CROSS-PLATFORM.md` and `VALIDATION.md` for platform and hardware boundaries. |
 | VRM 0.x / 1.0 and GLB/glTF avatars | Implemented | Import, switch and unload; failed replacements retain the visible avatar. Existing GPU evidence covers named fixtures, not arbitrary rigs. |
 | Bundled characters | Implemented | 22 distinct local VRMs, 3 exact recovered personalities, saved Hikari Fish reference and editable first-run defaults. Existing edits/deletions persist; Piper voice bindings are recorded but Piper inference is not implemented. |
 | Per-character customization | Scoped/partial | Name, persona, greeting, chat connection, scene, voice, facial controls and separate mesh-part visibility persist. Search/reset and stable reload keys are implemented. No general mesh/body/outfit editor or character-package exporter. |

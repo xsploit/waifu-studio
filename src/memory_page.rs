@@ -52,7 +52,7 @@ pub(super) fn ui(
             let mut in_chat = studio.facts.enabled && memory.enabled;
             if c.row(
                 "Use memories in chat",
-                &format!("{name} brings up what matters from memory when it's relevant."),
+                &format!("Let {name} recall relevant memories."),
                 |ui| kit::toggle(ui, &mut in_chat),
             )
             .changed()
@@ -69,7 +69,7 @@ pub(super) fn ui(
                 studio.facts.candidates_enabled && studio.library.scene.memory_triage.enabled;
             if c.row(
                 "Learn from chat",
-                "Suggests new memories from what you say. You approve each one.",
+                "Suggest memories for your review.",
                 |ui| kit::toggle(ui, &mut learn),
             )
             .changed()
@@ -108,11 +108,9 @@ pub(super) fn ui(
                 studio.save();
             }
             let mut reflect = studio.library.scene.automatic_reflection.enabled;
-            if c.row(
-                "Reflections",
-                &format!("Now and then {name} writes down what stood out. You approve it."),
-                |ui| kit::toggle(ui, &mut reflect),
-            )
+            if c.row("Reflections", "Draft reflections for your review.", |ui| {
+                kit::toggle(ui, &mut reflect)
+            })
             .changed()
             {
                 studio.library.scene.automatic_reflection.enabled = reflect;
@@ -126,7 +124,7 @@ pub(super) fn ui(
 
     let candidates = studio.facts.candidates().to_vec();
     if !candidates.is_empty() {
-        kit::section(ui, &format!("Waiting for your OK ({})", candidates.len()));
+        kit::section(ui, &format!("Review suggestions ({})", candidates.len()));
         kit::card(ui, |c| {
             for candidate in &candidates {
                 let mut hint = kind_label(candidate.kind).to_owned();
@@ -136,17 +134,20 @@ pub(super) fn ui(
                     hint.push_str(&format!(" · replaces “{}”", r.text));
                 }
                 let (accept, dismiss) = c.row(&candidate.text, &hint, |ui| {
-                    let dismiss = ui.button("Dismiss").clicked();
-                    let accept = ui
-                        .add_enabled(
-                            ready,
-                            egui::Button::new(
-                                RichText::new("Remember").color(egui::Color32::WHITE),
+                    ui.horizontal_wrapped(|ui| {
+                        let dismiss = ui.button("Dismiss").clicked();
+                        let accept = ui
+                            .add_enabled(
+                                ready,
+                                egui::Button::new(
+                                    RichText::new("Remember").color(egui::Color32::WHITE),
+                                )
+                                .fill(egui::Color32::from_rgb(184, 88, 96)),
                             )
-                            .fill(egui::Color32::from_rgb(184, 88, 96)),
-                        )
-                        .clicked();
-                    (accept, dismiss)
+                            .clicked();
+                        (accept, dismiss)
+                    })
+                    .inner
                 });
                 if accept && let Err(e) = studio.facts.accept_candidate(candidate.id) {
                     studio.error = Some(e);
@@ -185,13 +186,22 @@ pub(super) fn ui(
         }
         for record in &records {
             let asking = confirm == Some(record.id);
-            let clicked = c.row(&record.text, kind_label(record.kind), |ui| {
-                ui.add_enabled(
-                    ready,
-                    egui::Button::new(if asking { "Confirm" } else { "Forget" }),
-                )
-                .clicked()
+            let (clicked, cancel) = c.row(&record.text, kind_label(record.kind), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let clicked = ui
+                        .add_enabled(
+                            ready,
+                            egui::Button::new(if asking { "Confirm forget" } else { "Forget" }),
+                        )
+                        .clicked();
+                    let cancel = asking && ui.small_button("Cancel").clicked();
+                    (clicked, cancel)
+                })
+                .inner
             });
+            if cancel {
+                confirm = None;
+            }
             if clicked {
                 if asking {
                     confirm = None;
@@ -217,18 +227,18 @@ pub(super) fn ui(
             }
         }
         c.block(|ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let field = ui.add(
                     egui::TextEdit::singleline(&mut memory.draft)
                         .hint_text("Add something to remember…")
-                        .desired_width(ui.available_width() - 64.0),
+                        .desired_width((ui.available_width() - 64.0).max(1.0)),
                 );
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let add = ui.add_enabled(
                     ready && !memory.draft.trim().is_empty(),
                     egui::Button::new("Add"),
                 );
-                if (add.clicked() || enter) && !memory.draft.trim().is_empty() {
+                if ready && (add.clicked() || enter) && !memory.draft.trim().is_empty() {
                     match memory.add_note(memory.draft.trim().to_owned()) {
                         Ok(()) => memory.draft.clear(),
                         Err(e) => studio.error = Some(e),

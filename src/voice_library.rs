@@ -4,6 +4,7 @@ use crate::voice::VoiceConfig;
 use bevy::prelude::Resource;
 use serde::Deserialize;
 use std::{
+    hash::{Hash, Hasher},
     io::Read,
     sync::{
         Arc, Mutex,
@@ -183,6 +184,7 @@ pub struct VoiceLibraryState {
     generation: u64,
     pending: Option<Pending>,
     selected: Option<String>,
+    connection: Option<u64>,
 }
 impl Default for VoiceLibraryState {
     fn default() -> Self {
@@ -194,27 +196,56 @@ impl Default for VoiceLibraryState {
             generation: 0,
             pending: None,
             selected: None,
+            connection: None,
         }
     }
+}
+fn library_key(config: &VoiceConfig, session_key: Option<&str>) -> String {
+    let env_key = (!config.api_key_env.trim().is_empty())
+        .then(|| std::env::var(config.api_key_env.trim()).ok())
+        .flatten();
+    session_key
+        .filter(|key| !key.trim().is_empty())
+        .map(str::to_owned)
+        .or(env_key)
+        .unwrap_or_default()
 }
 impl VoiceLibraryState {
     pub fn is_busy(&self) -> bool {
         self.pending.is_some()
     }
+    /// Changing account/endpoint invalidates cached choices and pending results.
+    /// Only an in-memory fingerprint is retained, never the credential value.
+    pub fn reconcile_connection(&mut self, config: &VoiceConfig, session_key: Option<&str>) {
+        self.reconcile_key(config, &library_key(config, session_key));
+    }
+    fn reconcile_key(&mut self, config: &VoiceConfig, key: &str) {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        (
+            &self.endpoint,
+            &config.endpoint,
+            &config.api_key_env,
+            std::mem::discriminant(&config.adapter),
+            key,
+        )
+            .hash(&mut hash);
+        let current = hash.finish();
+        if self.connection.is_some_and(|previous| previous != current) {
+            self.cancel();
+            self.page = LibraryPage::default();
+            self.selected = None;
+            self.status = "Voice connection changed. Search again.".into();
+        }
+        self.connection = Some(current);
+    }
     /// Explicit Search action only. The key is used for this request and never stored.
     pub fn fetch(&mut self, config: &VoiceConfig, session_key: Option<&str>) -> Result<(), String> {
+        let key = library_key(config, session_key);
+        self.reconcile_key(config, &key);
         if self.is_busy() {
             return Err("Wait for the current search to finish or cancel it".into());
         }
         let url = self.query.url(&self.endpoint)?;
-        let env_key = (!config.api_key_env.trim().is_empty())
-            .then(|| std::env::var(config.api_key_env.trim()).ok())
-            .flatten();
-        let key = session_key
-            .filter(|key| !key.trim().is_empty())
-            .map(str::to_owned)
-            .or(env_key)
-            .unwrap_or_default();
         if key.trim().is_empty() || key.len() > 8192 || key.chars().any(char::is_control) {
             return Err(
                 "Provide a valid session key or configured key environment variable".into(),
@@ -503,6 +534,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn connection_changes_discard_cached_choices_and_late_search_results() {
+        let config = config();
+        let mut state = VoiceLibraryState::default();
+        state.reconcile_connection(&config, Some("synthetic-account-a"));
+        state.page = decode(BODY.as_bytes(), 5).unwrap();
+        assert!(state.select("abc123"));
+        state.reconcile_connection(&config, Some("synthetic-account-b"));
+        assert!(state.page.voices.is_empty());
+        assert!(state.take_selected().is_none());
+        state.generation = 1;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send((1, Ok(decode(BODY.as_bytes(), 5).unwrap())))
+            .unwrap();
+        state.pending = Some(Pending {
+            generation: 1,
+            receiver: Mutex::new(rx),
+            cancelled: cancelled.clone(),
+        });
+        state.endpoint = "http://127.0.0.1:9/model".into();
+        state.reconcile_connection(&config, Some("synthetic-account-b"));
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(
+            state.is_busy(),
+            "retain admission until the old worker closes"
+        );
+        state.poll();
+        assert!(!state.is_busy());
+        assert!(state.page.voices.is_empty());
+        assert!(!state.select("abc123"));
+    }
     #[test]
     fn query_and_endpoint_validation() {
         assert!(validate_endpoint("http://example.com/model").is_err());

@@ -20,23 +20,29 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FishLiveState) {
             },
         );
         ui.small(state.transport.capability());
-        kit::note(
-            ui,
-            "Uses hosted Fish settings and the selected model. Word timestamps time captions; they do not provide visemes. Focused replies use sentence requests; the displayed timings restart at zero for each request.",
-        );
+        ui.small("Word timings drive captions.")
+            .on_hover_text("Uses the hosted Fish settings and selected model. Word timings do not provide visemes. Focused replies use sentence requests; displayed timings restart at zero for each request.");
         ui.label(&state.status);
         ui.small("Use Stop speech above to cancel playback and the network stream.");
         if !state.words.is_empty() {
-            ui.label(format!("{} aligned words", state.words.len()));
-            egui::ScrollArea::vertical()
-                .max_height(100.0)
+            egui::CollapsingHeader::new("Advanced · word timings")
+                .id_salt("fish_live_timings")
+                .default_open(false)
                 .show(ui, |ui| {
-                    for word in state.words.iter().take(100) {
-                        ui.small(format!("{:.2}–{:.2}s  {}", word.start, word.end, word.text));
-                    }
-                    if state.words.len() > 100 {
-                        ui.small("Showing the first 100 words.");
-                    }
+                    ui.label(format!("{} aligned words", state.words.len()));
+                    egui::ScrollArea::vertical()
+                        .max_height(100.0)
+                        .show(ui, |ui| {
+                            for word in state.words.iter().take(100) {
+                                ui.small(format!(
+                                    "{:.2}–{:.2}s  {}",
+                                    word.start, word.end, word.text
+                                ));
+                            }
+                            if state.words.len() > 100 {
+                                ui.small("Showing the first 100 words.");
+                            }
+                        });
                 });
         }
     });

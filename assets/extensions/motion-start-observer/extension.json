@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "id": "studio.example.motion-start-observer",
+  "version": "1.0.0",
+  "name": "Motion activation observer",
+  "description": "Local Python 3 observation-only hook for animator clip activation. This does not prove a rendered frame and supplies no avatar authority.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "motion.playback.started",
+      "handler": {
+        "program": "observer.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

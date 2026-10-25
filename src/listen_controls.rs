@@ -8,144 +8,86 @@ pub fn ui(
     composer_empty: bool,
     catalog: &mut waifu_studio::model_catalog::ModelCatalog,
 ) {
-    kit::group(ui, "Microphone transcription", |ui| {
-        let mut enabled = state.config.enabled;
-        if kit::toggle_row(
-            ui,
-            "Enable microphone transcription",
-            "Start recording manually below.",
-            &mut enabled,
-        )
-        .changed()
-        {
-            state.set_enabled(enabled);
-        }
-        kit::note(
-            ui,
-            "Manual Start opens your microphone. Stop, speech followed by silence, or the 30-second limit uploads a WAV automatically; the default is to review the transcript before sending. Disable or Cancel stops recording and discards the result; an upload already sent cannot be recalled.",
-        );
-        kit::toggle_row(
-            ui,
-            "Send transcript automatically (optional)",
-            "",
-            &mut state.config.auto_send,
-        );
-        kit::note(
-            ui,
-            "Applies only to recordings started with an empty draft. Sends to the same selected character if chat and memory are ready; otherwise keeps the text for review. This may trigger paid chat and speech requests. Start is still manual; the microphone never restarts itself.",
-        );
-        let openrouter = state.config.backend == SttBackend::OpenAiCompatible
-            && state.config.endpoint.contains("openrouter.ai/");
-        let mut selected = if openrouter {
-            3
-        } else {
-            match state.config.backend {
-                SttBackend::OpenAiCompatible => 0,
-                SttBackend::FishAsr => 1,
-                SttBackend::VercelGateway => 2,
-            }
-        };
-        let previous = selected;
-        let labels = [
-            "OpenAI / local compatible",
-            "Fish ASR",
-            "Vercel AI Gateway",
-            "OpenRouter",
-        ];
-        kit::row(
-            ui,
-            "Transcription service",
-            "Choose the microphone transcription backend.",
-            |ui| {
-                egui::ComboBox::from_id_salt("stt_backend")
-                    .selected_text(labels[selected])
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        for (index, label) in labels.iter().enumerate() {
-                            ui.selectable_value(&mut selected, index, *label);
-                        }
-                    });
-            },
-        );
-        if previous != selected {
-            state.cancel();
-            match selected {
-                1 => state.config.preset(SttBackend::FishAsr),
-                2 => state.config.preset(SttBackend::VercelGateway),
-                3 => state.config.openrouter_preset(),
-                _ => state.config.preset(SttBackend::OpenAiCompatible),
-            }
-        }
+    kit::group(ui, "Microphone", |ui| {
+        ui.small("Start manually. Stop or silence sends audio; Cancel discards it.")
+            .on_hover_text("An upload already sent cannot be recalled.");
         let backend = state.config.backend;
         if backend == SttBackend::VercelGateway {
-            kit::note(
-                ui,
-                "Vercel transcription is a beta service; availability depends on your team. Uses the v4 transcription protocol.",
+            ui.small("Vercel transcription is beta.").on_hover_text(
+                "Availability depends on your team. Uses the v4 transcription protocol.",
             );
         }
-        kit::text_row(
-            ui,
-            "Transcription endpoint",
-            "Localhost and LAN endpoints are supported.",
-            &mut state.config.endpoint,
-            "Endpoint URL",
-        );
+        egui::CollapsingHeader::new("Advanced · transcription")
+            .id_salt("microphone_transcription")
+            .default_open(false)
+            .show(ui, |ui| {
+                kit::text_row(
+                    ui,
+                    "Endpoint",
+                    "Localhost and LAN endpoints are supported.",
+                    &mut state.config.endpoint,
+                    "Endpoint URL",
+                );
+                if ui.small_button("Refresh models").clicked() {
+                    catalog.retry(
+                        &state.config.endpoint,
+                        &state.config.api_key_env,
+                        &state.session_key,
+                        waifu_studio::model_catalog::CatalogKind::Transcription,
+                    );
+                }
+                kit::text_row(
+                    ui,
+                    "Model ID",
+                    "Transcription model served by this endpoint.",
+                    &mut state.config.model,
+                    "",
+                );
+                kit::text_row(
+                    ui,
+                    "Key variable",
+                    "Environment variable containing the key.",
+                    &mut state.config.api_key_env,
+                    "",
+                );
+                if state.config.backend != SttBackend::VercelGateway {
+                    kit::text_row(
+                        ui,
+                        "Language hint",
+                        "Optional language code, such as en or ja.",
+                        &mut state.config.language,
+                        "",
+                    );
+                }
+            });
         catalog.sync(
             &state.config.endpoint,
             &state.config.api_key_env,
             &state.session_key,
             waifu_studio::model_catalog::CatalogKind::Transcription,
         );
-        crate::ui::speech_model_picker(ui, "stt_models", catalog, &mut state.config.model);
-        if ui.small_button("Refresh transcription models").clicked() {
-            catalog.retry(
-                &state.config.endpoint,
-                &state.config.api_key_env,
-                &state.session_key,
-                waifu_studio::model_catalog::CatalogKind::Transcription,
-            );
-        }
-        kit::text_row(
-            ui,
-            "Model",
-            "Transcription model ID.",
-            &mut state.config.model,
-            "",
-        );
-        kit::text_row(
-            ui,
-            "API key env var",
-            "Environment variable containing the key.",
-            &mut state.config.api_key_env,
-            "",
-        );
-        if state.config.backend != SttBackend::VercelGateway {
-            kit::text_row(
-                ui,
-                "Language hint (optional, e.g. en or ja)",
-                "Optional language code, such as en or ja.",
-                &mut state.config.language,
-                "",
-            );
-        }
-        kit::secret_row(ui, "Session API key", "Not saved.", &mut state.session_key);
+
+        egui::CollapsingHeader::new("Advanced · speech detection")
+            .id_salt("microphone_detection")
+            .default_open(false)
+            .show(ui, |ui| {
         kit::toggle_row(
             ui,
-            "Use Silero neural VAD (optional local ONNX)",
-            "",
+            "Silero VAD",
+            "Use a local neural speech detector.",
             &mut state.config.silero_enabled,
         );
         if state.config.silero_enabled {
             kit::text_row(
                 ui,
-                "Silero ONNX model path (current 512-frame model)",
+                "Silero model",
                 "Current 512-frame ONNX model.",
                 &mut state.config.silero_model,
                 "File path",
             );
             kit::text_row(
                 ui,
-                "ONNX Runtime shared library path (trusted native library)",
+                "Runtime library",
                 "Trusted native ONNX Runtime library.",
                 &mut state.config.silero_runtime,
                 "File path",
@@ -170,6 +112,7 @@ pub fn ui(
             "",
             egui::Slider::new(&mut state.config.vad_threshold, 0.001..=0.2).logarithmic(true),
         );
+        });
         kit::row(
             ui,
             "Silence preset",
@@ -197,27 +140,26 @@ pub fn ui(
                     });
             },
         );
-        kit::note(
-            ui,
-            "Shorter silence starts transcription sooner, but may stop during a pause in your sentence.",
-        );
+        egui::CollapsingHeader::new("Advanced · recording")
+            .id_salt("microphone_recording")
+            .default_open(false)
+            .show(ui, |ui| {
         kit::slider_row(
             ui,
-            "Trailing silence ms",
-            "",
-            egui::Slider::new(&mut state.config.trailing_silence_ms, 200..=5000),
+            "Silence delay",
+            "Short delays can stop mid-sentence.",
+            egui::Slider::new(&mut state.config.trailing_silence_ms, 200..=5000).suffix(" ms"),
         );
         kit::toggle_row(
             ui,
-            "Trim detected silence before upload",
-            "",
+            "Trim silence",
+            "Trim the clip before upload.",
             &mut state.config.trim_silence,
         );
-        kit::note(
-            ui,
-            "Optional: keep 200 ms before and after detected speech, preserving pauses inside it. VAD can miss quiet speech; leave this off to upload the entire recording. It does not shorten the silence needed to stop recording.",
-        );
-        ui.horizontal(|ui| {
+        ui.small("Keeps 200 ms around detected speech.")
+            .on_hover_text("Pauses inside speech are preserved. VAD can miss quiet speech; turn trimming off to upload the entire recording. Trimming does not shorten the silence needed to stop recording.");
+        });
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
                     state.config.enabled && !state.is_busy(),

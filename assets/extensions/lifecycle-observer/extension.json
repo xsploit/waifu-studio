@@ -1,0 +1,54 @@
+{
+  "api_version": 1,
+  "id": "studio.example.lifecycle-observer",
+  "version": "1.0.0",
+  "name": "Lifecycle observer",
+  "description": "Local Python example that records the latest lifecycle metadata in its own data folder. Requires Python 3; never requests reply text or avatar control.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "process": {
+    "program": "observer.py"
+  },
+  "capabilities": [
+    "lifecycle.observe"
+  ],
+  "settings": [
+    {
+      "id": "record_events",
+      "label": "Record events",
+      "description": "Replace the latest-event receipt when lifecycle metadata arrives.",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "id": "event_group",
+      "label": "Event group",
+      "description": "Which metadata events to record.",
+      "type": "choice",
+      "default": "all",
+      "options": [
+        "all",
+        "speech"
+      ]
+    },
+    {
+      "id": "label",
+      "label": "Receipt label",
+      "description": "A plain text label for the startup receipt. Do not enter passwords.",
+      "type": "text",
+      "default": "Lifecycle observer",
+      "max_length": 128
+    },
+    {
+      "id": "every_n_events",
+      "label": "Record every N events",
+      "description": "Reduce how often the example replaces its metadata receipt.",
+      "type": "integer",
+      "default": 1,
+      "min": 1,
+      "max": 20
+    }
+  ]
+}

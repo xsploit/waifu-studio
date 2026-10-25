@@ -13,16 +13,9 @@ pub fn ui(
 ) -> bool {
     let before = config.clone();
     kit::group(ui, "Local behavior", |ui| {
-        kit::note(
-            ui,
-            "Optional local Idle / Thinking / Speaking controller. Emotion previews use an explicitly selected expression and decay over time. Automatic character emotion can separately use reply metadata or an opted-in Jev request; configure its source in the emotion controls.",
-        );
-        kit::toggle_row(
-            ui,
-            "Enable local behavior for this character",
-            "",
-            &mut config.enabled,
-        );
+        ui.small("Local expressions for idle, thinking, and speaking.")
+            .on_hover_text("Emotion previews use your selected expression and decay over time. Automatic emotion uses the source selected in Emotion controls: reply metadata or an opted-in Jev request.");
+        kit::toggle_row(ui, "Local behavior", "", &mut config.enabled);
         ui.label(format!(
             "Current state: {}",
             state.controller.phase().label()
@@ -31,7 +24,11 @@ pub fn ui(
             ui.label("Select a character to use behavior.");
         }
         ui.add_enabled_ui(config.enabled && character.is_some(), |ui| {
-        kit::group(ui, "Lifecycle expression mappings", |ui| {
+        egui::CollapsingHeader::new("Advanced · behavior")
+            .id_salt("behavior_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
+        kit::group(ui, "State expressions", |ui| {
             expression_picker(ui, "behavior_idle", "Idle", &mut config.idle_expression, available);
             expression_picker(ui, "behavior_thinking", "Thinking", &mut config.thinking_expression, available);
             expression_picker(ui, "behavior_speaking", "Speaking", &mut config.speaking_expression, available);
@@ -39,20 +36,23 @@ pub fn ui(
             kit::note(ui, "Empty mappings only track state. Manual expression controls take priority; blink, look and mouth remain with their existing controllers.");
         });
         kit::slider_row(ui, "Emotion strength limit", "", egui::Slider::new(&mut config.emotion_max, 0.0..=0.65));
-        kit::slider_row(ui, "Smoothing seconds", "", egui::Slider::new(&mut config.smoothing_seconds, 0.02..=5.0));
-        kit::slider_row(ui, "Emotion decay seconds", "", egui::Slider::new(&mut config.decay_seconds, 0.1..=60.0));
+        kit::slider_row(ui, "Smoothing", "", egui::Slider::new(&mut config.smoothing_seconds, 0.02..=5.0).suffix(" s"));
+        kit::slider_row(ui, "Emotion decay", "", egui::Slider::new(&mut config.decay_seconds, 0.1..=60.0).suffix(" s"));
+        });
         ui.separator();
         expression_picker(ui, "behavior_preview", "Preview expression", &mut state.preview_expression, available);
         kit::slider_row(ui, "Preview strength", "", egui::Slider::new(&mut state.preview_strength, 0.0..=1.0));
-        if ui.add_enabled(!state.preview_expression.is_empty(), egui::Button::new("Preview explicit emotion")).clicked() {
+        ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(!state.preview_expression.is_empty(), egui::Button::new("Preview emotion")).clicked() {
             let result = state.controller.select(character, config, available)
                 .and_then(|()| state.controller.token().ok_or_else(|| "Behavior is disabled".to_string()))
                 .and_then(|token| state.controller.emotion(token, &state.preview_expression, state.preview_strength));
             state.error = result.err();
         }
-        if ui.button("Interrupt behavior activity").clicked() && let Some(token) = state.controller.token() {
+        if ui.button("Interrupt").on_hover_text("Interrupt the current behavior activity.").clicked() && let Some(token) = state.controller.token() {
             state.error = state.controller.event(token, BehaviorEvent::Interrupted).err();
         }
+        });
     });
         if ui.button("Reset behavior output").clicked() {
             state.controller.reset();

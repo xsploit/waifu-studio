@@ -1,0 +1,17 @@
+{
+  "api_version": 1,
+  "id": "studio.example.javascript-observer",
+  "version": "1.0.0",
+  "name": "JavaScript lifecycle observer",
+  "description": "Local Node.js example that records lifecycle metadata and exits when the host is stopping. No packages, network or avatar actions.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "process": {
+    "program": "observer.js"
+  },
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

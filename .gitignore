@@ -5,6 +5,8 @@
 /dist/
 *.log
 *.tmp
+__pycache__/
+*.py[cod]
 
 # Credentials and machine-local configuration
 .env

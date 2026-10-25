@@ -1,6 +1,8 @@
 //! Explicit group replies, serialized and isolated per recipient.
 use crate::{
     data::{Library, Store, Turn, trim_history},
+    extension_lifecycle::{LifecycleEvent, LifecycleJournal, ReplyOutcome, SequencedEvent},
+    extension_protocol::EmotionOwner,
     memory::MemoryState,
     provider::{self, ProviderConfig, ProviderEvent},
     recipient_decision::DecisionConfig,
@@ -15,7 +17,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -78,11 +80,51 @@ enum Event {
         Option<DecisionConfig>,
     ),
     Progress(String, String),
-    Line(SceneLine),
-    Speech(Uuid, VoiceConfig, String),
+    Line {
+        reply_id: Uuid,
+        line: SceneLine,
+    },
+    Speech(Uuid, Uuid, VoiceConfig, String),
     Done,
-    Failed(String),
+    Failed {
+        reply: Option<(Uuid, Uuid)>,
+        error: String,
+    },
 }
+// A worker registers only replies it actually starts. Up to four recipients can
+// await source acceptance. Sharing this small ledger lets cancellation identify
+// in-flight work even before the first render-thread poll, without guessing from
+// the selection or reporting later recipients that never started.
+type PendingReplies = Arc<Mutex<Vec<(Uuid, Uuid)>>>;
+
+fn begin_reply(pending: &PendingReplies, cancel: &AtomicBool, character: Uuid) -> Option<Uuid> {
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cancel.load(Ordering::Acquire) {
+        return None;
+    }
+    let reply_id = Uuid::new_v4();
+    pending.push((reply_id, character));
+    Some(reply_id)
+}
+/// Admission is held by the worker closure, independently of UI cancellation.
+/// Dropping an unspawned closure or unwinding a worker releases it as well.
+struct HistoryWriter(Arc<AtomicUsize>);
+impl HistoryWriter {
+    fn admit(writers: &Arc<AtomicUsize>) -> Result<Self, String> {
+        writers
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "A previous scene history writer is still stopping".to_owned())?;
+        Ok(Self(writers.clone()))
+    }
+}
+impl Drop for HistoryWriter {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
 struct RoutingSnapshot {
     draft: String,
     revision: u64,
@@ -104,7 +146,10 @@ pub struct SceneChat {
     cancellation: Option<Arc<AtomicBool>>,
     events: Option<Mutex<mpsc::Receiver<Event>>>,
     active_recipients: Vec<Uuid>,
-    speech: VecDeque<(Uuid, VoiceConfig, String)>,
+    speech: VecDeque<(Uuid, Uuid, VoiceConfig, String)>,
+    pending_replies: PendingReplies,
+    history_writers: Arc<AtomicUsize>,
+    lifecycle: LifecycleJournal,
 }
 /// Matches the studio's eight-entry speech queue, so one submit never overflows it.
 const SPEECH_EVENTS: usize = 8;
@@ -218,16 +263,59 @@ impl SceneChat {
             events: None,
             active_recipients: vec![],
             speech: VecDeque::new(),
+            pending_replies: Default::default(),
+            history_writers: Default::default(),
+            lifecycle: Default::default(),
+        }
+    }
+    /// Source-local sequence numbers; a shared host journal assigns its own
+    /// sequence when forwarding each returned record's `event`.
+    pub fn drain_lifecycle(&mut self) -> Vec<SequencedEvent> {
+        self.lifecycle.drain()
+    }
+    /// Lifetime loss count; draining preserves this counter and forwards gaps.
+    pub fn lifecycle_dropped(&self) -> u64 {
+        self.lifecycle.dropped()
+    }
+    fn finish_reply(&mut self, reply_id: Uuid, character: Uuid, outcome: ReplyOutcome) {
+        let accepted = {
+            let mut pending = self
+                .pending_replies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending
+                .iter()
+                .position(|source| *source == (reply_id, character))
+                .map(|index| pending.remove(index))
+                .is_some()
+        };
+        if accepted {
+            self.lifecycle.record(LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome,
+            });
         }
     }
     pub fn affect_receipts(&self) -> &[SceneAffectReceipt] {
         &self.affect_receipts
     }
     pub fn tick_affect(&mut self, library: &Library, roster: &SceneRoster, seconds: f64) {
+        let lifecycle = &mut self.lifecycle;
         self.affect.entries.retain(|id, state| {
-            available(library, roster, *id)
+            let keep = available(library, roster, *id)
                 && state.config.enabled
-                && state.config == affect_config(library, *id)
+                && state.config == affect_config(library, *id);
+            if !keep && state.emotion != crate::reply_affect::AffectEmotion::Neutral {
+                lifecycle.record(LifecycleEvent::EmotionChanged {
+                    character: *id,
+                    owner: EmotionOwner::SceneChat,
+                    previous: state.emotion,
+                    emotion: crate::reply_affect::AffectEmotion::Neutral,
+                    reply_id: None,
+                });
+            }
+            keep
         });
         self.affect.tick(seconds);
     }
@@ -237,15 +325,45 @@ impl SceneChat {
     pub fn is_busy(&self) -> bool {
         self.cancellation.is_some()
     }
+    /// Remains true after cancellation until the history-writing worker exits.
+    /// Other history sinks must reject writes while this guard is held.
+    pub fn has_history_writer(&self) -> bool {
+        self.history_writers.load(Ordering::Acquire) != 0
+    }
     pub fn cancel(&mut self) {
         self.cancellation_revision = self.cancellation_revision.wrapping_add(1);
         if let Some(cancel) = self.cancellation.take() {
             cancel.store(true, Ordering::Release);
         }
+        let cancelled = {
+            let mut pending = self
+                .pending_replies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *pending)
+        };
+        for (reply_id, character) in cancelled {
+            self.lifecycle.record(LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome: ReplyOutcome::Cancelled,
+            });
+        }
         self.events = None;
         self.routing_snapshot = None;
         self.active_recipients.clear();
         self.speech.clear();
+        for (character, state) in &self.affect.entries {
+            if state.emotion != crate::reply_affect::AffectEmotion::Neutral {
+                self.lifecycle.record(LifecycleEvent::EmotionChanged {
+                    character: *character,
+                    owner: EmotionOwner::SceneChat,
+                    previous: state.emotion,
+                    emotion: crate::reply_affect::AffectEmotion::Neutral,
+                    reply_id: None,
+                });
+            }
+        }
         self.affect = Default::default();
         self.affect_receipts.clear();
         self.partial.clear();
@@ -258,7 +376,7 @@ impl SceneChat {
         library: &Library,
         roster: &SceneRoster,
     ) -> Result<(), String> {
-        if self.is_busy() || !self.recipients.is_empty() {
+        if self.is_busy() || self.has_history_writer() || !self.recipients.is_empty() {
             return Err("Clear explicit recipients before asking the decision model".into());
         }
         if self.draft.trim().is_empty() || self.draft.len() > 32_000 {
@@ -304,11 +422,19 @@ impl SceneChat {
         Ok(())
     }
     pub fn take_speech(&mut self) -> Option<(Uuid, VoiceConfig, String)> {
+        self.take_speech_with_reply()
+            .map(|(_, character, voice, text)| (character, voice, text))
+    }
+    /// The reply identity is captured by the source worker before generation;
+    /// streaming and final chunks of that reply keep the same identity.
+    pub fn take_speech_with_reply(&mut self) -> Option<(Uuid, Uuid, VoiceConfig, String)> {
         self.speech.pop_front()
     }
     pub fn submit(&mut self, library: &Library, roster: &SceneRoster) -> Result<(), String> {
-        if self.is_busy() {
-            return Err("Scene replies are already running".into());
+        if self.is_busy() || self.has_history_writer() {
+            return Err(
+                "Scene replies are running or their history writer is still stopping".into(),
+            );
         }
         let text = self.draft.trim().to_owned();
         if text.is_empty() || text.len() > 32_000 {
@@ -384,21 +510,40 @@ impl SceneChat {
         let (tx, rx) = mpsc::sync_channel(16);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
+        let pending_replies = PendingReplies::default();
+        let worker_pending = pending_replies.clone();
         let root = self.root.clone();
         let worker_text = text.clone();
+        // Admit before spawning; the closure owns the guard even if spawn fails.
+        let writer = HistoryWriter::admit(&self.history_writers)?;
         std::thread::Builder::new()
             .name("scene-chat".into())
             .spawn(move || {
-                let result = run(root, snapshots, worker_text, &worker_cancel, &tx);
+                let _writer = writer;
+                let mut reply_source = None;
+                let result = run(
+                    root,
+                    snapshots,
+                    worker_text,
+                    &worker_cancel,
+                    &worker_pending,
+                    &mut reply_source,
+                    &tx,
+                );
                 if !worker_cancel.load(Ordering::Acquire) {
-                    let _ = tx.send(match result {
+                    let event = match result {
                         Ok(()) => Event::Done,
-                        Err(e) => Event::Failed(e),
-                    });
+                        Err(error) => Event::Failed {
+                            reply: reply_source,
+                            error,
+                        },
+                    };
+                    let _ = tx.send(event);
                 }
             })
             .map_err(|_| "Could not start scene chat worker")?;
         self.cancellation = Some(cancel);
+        self.pending_replies = pending_replies;
         self.events = Some(Mutex::new(rx));
         self.active_recipients = ids;
         self.recalls.clear();
@@ -446,7 +591,22 @@ impl SceneChat {
                         self.affect.entries.entry(id).or_default().config = config;
                         let emotion = reply.map(|value| value.emotion);
                         let error = if let Some(reply) = reply {
-                            self.affect.apply_reply(id, reply).err().or(error)
+                            match self.affect.apply_reply_tracked(id, reply) {
+                                Ok(transition) => {
+                                    if let Some(transition) = transition {
+                                        self.lifecycle.record(LifecycleEvent::EmotionChanged {
+                                            character: id,
+                                            owner: EmotionOwner::SceneChat,
+                                            previous: transition.previous,
+                                            emotion: transition.emotion,
+                                            // Event::Affect carries no originating reply ID.
+                                            reply_id: None,
+                                        });
+                                    }
+                                    error
+                                }
+                                Err(error) => Some(error),
+                            }
                         } else {
                             error
                         };
@@ -505,23 +665,43 @@ impl SceneChat {
                     self.status = format!("{name} is replying…");
                     self.partial = text;
                 }
-                Event::Line(line) => {
+                Event::Line { reply_id, line } => {
+                    if let Some(character) = line.character {
+                        self.finish_reply(
+                            reply_id,
+                            character,
+                            ReplyOutcome::Completed {
+                                text: line.text.clone(),
+                            },
+                        );
+                    }
                     self.partial.clear();
                     self.status = format!("{} replied", line.name);
                     self.transcript.push_back(line);
                 }
-                Event::Speech(id, voice, text) => self.speech.push_back((id, voice, text)),
+                Event::Speech(reply_id, id, voice, text) => {
+                    self.speech.push_back((reply_id, id, voice, text))
+                }
                 Event::Done => {
                     self.cancellation = None;
                     self.events = None;
                     self.active_recipients.clear();
                     self.status = "Scene replies finished".into();
                 }
-                Event::Failed(e) => {
+                Event::Failed { reply, error } => {
+                    if let Some((reply_id, character)) = reply {
+                        self.finish_reply(
+                            reply_id,
+                            character,
+                            ReplyOutcome::Failed {
+                                error: error.clone(),
+                            },
+                        );
+                    }
                     self.cancellation = None;
                     self.events = None;
                     self.active_recipients.clear();
-                    self.status = e;
+                    self.status = error;
                 }
             }
         }
@@ -546,6 +726,7 @@ fn request_context(
     evidence: Option<String>,
 ) -> Vec<Turn> {
     let mut context = vec![Turn {
+        external: None,
         role: "system".into(),
         content: persona.into(),
     }];
@@ -553,17 +734,20 @@ fn request_context(
     context.extend(history.iter().rev().take(38).rev().cloned());
     if let Some(content) = notes {
         context.push(Turn {
+            external: None,
             role: "user".into(),
             content,
         });
     }
     if let Some(content) = evidence {
         context.push(Turn {
+            external: None,
             role: "user".into(),
             content,
         });
     }
     context.push(Turn {
+        external: None,
         role: "user".into(),
         content: text.into(),
     });
@@ -597,6 +781,8 @@ fn run(
     recipients: Vec<Recipient>,
     text: String,
     cancel: &AtomicBool,
+    pending: &PendingReplies,
+    reply_source: &mut Option<(Uuid, Uuid)>,
     tx: &mpsc::SyncSender<Event>,
 ) -> Result<(), String> {
     let store = Store {
@@ -607,9 +793,10 @@ fn run(
     let mut memory = MemoryState::load(root.join("memory"));
     let mut spoken = 0;
     for (index, recipient) in recipients.iter().cloned().enumerate() {
-        if cancel.load(Ordering::Acquire) {
+        let Some(reply_id) = begin_reply(pending, cancel, recipient.id) else {
             return Ok(());
-        }
+        };
+        *reply_source = Some((reply_id, recipient.id));
         let mut history = store.history(recipient.id)?;
         memory.select_character(Some(recipient.id));
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -650,6 +837,7 @@ fn run(
             context.insert(
                 context.len() - 1,
                 Turn {
+                    external: None,
                     role: "user".into(),
                     content,
                 },
@@ -716,8 +904,13 @@ fn run(
                             job.cancel();
                             return Ok(());
                         }
-                        tx.send(Event::Speech(recipient.id, recipient.voice.clone(), chunk))
-                            .map_err(|_| "Scene closed")?;
+                        tx.send(Event::Speech(
+                            reply_id,
+                            recipient.id,
+                            recipient.voice.clone(),
+                            chunk,
+                        ))
+                        .map_err(|_| "Scene closed")?;
                         spoken += 1;
                     }
                     if last_progress.elapsed() >= Duration::from_millis(50) {
@@ -745,10 +938,12 @@ fn run(
             let _ = speech.push(&filtered.tail);
         }
         history.push(Turn {
+            external: None,
             role: "user".into(),
             content: text.clone(),
         });
         history.push(Turn {
+            external: None,
             role: "assistant".into(),
             content: reply.clone(),
         });
@@ -770,15 +965,24 @@ fn run(
             ))
             .map_err(|_| "Scene closed")?;
         }
-        tx.send(Event::Line(SceneLine {
-            character: Some(recipient.id),
-            name: recipient.name.clone(),
-            text: reply.clone(),
-        }))
+        tx.send(Event::Line {
+            reply_id,
+            line: SceneLine {
+                character: Some(recipient.id),
+                name: recipient.name.clone(),
+                text: reply.clone(),
+            },
+        })
         .map_err(|_| "Scene closed")?;
+        *reply_source = None;
         if let Some(text) = speech.and_then(SpeechStream::finish) {
-            tx.send(Event::Speech(recipient.id, recipient.voice.clone(), text))
-                .map_err(|_| "Scene closed")?;
+            tx.send(Event::Speech(
+                reply_id,
+                recipient.id,
+                recipient.voice.clone(),
+                text,
+            ))
+            .map_err(|_| "Scene closed")?;
             spoken += 1;
         }
         // Speech has already been handed off. A short outstanding appraisal
@@ -799,6 +1003,231 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_history_writer_remains_admitted_through_owner_drop_until_worker_exits() {
+        let (root, library, roster, _) = voiced_scene(String::new(), &["Alice"]);
+        let mut state = SceneChat::new(root);
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.cancellation = Some(cancel.clone());
+        let writers = state.history_writers.clone();
+        let writer = HistoryWriter::admit(&writers).unwrap();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            let _writer = writer;
+            ready_tx.send(()).unwrap();
+            // Model the interval after the worker's last cancellation check and
+            // before its history save. Always bound waits, even on test failure.
+            if release_rx.recv_timeout(Duration::from_secs(2)).is_ok() {
+                assert!(worker_cancel.load(Ordering::Acquire));
+            }
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(state.is_busy());
+        assert!(state.has_history_writer());
+        state.cancel();
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(!state.is_busy());
+        assert!(state.has_history_writer());
+        assert!(
+            state
+                .submit(&library, &roster)
+                .unwrap_err()
+                .contains("writer")
+        );
+        assert!(HistoryWriter::admit(&writers).is_err());
+        state.cancel();
+        assert!(state.has_history_writer());
+        drop(state);
+        assert_eq!(writers.load(Ordering::Acquire), 1);
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(writers.load(Ordering::Acquire), 0);
+        let next = HistoryWriter::admit(&writers).unwrap();
+        assert_eq!(writers.load(Ordering::Acquire), 1);
+        drop(next);
+        assert_eq!(writers.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn history_writer_admission_releases_on_unspawned_closure_drop_and_worker_panic() {
+        let state = SceneChat::new(PathBuf::new());
+        let writer = HistoryWriter::admit(&state.history_writers).unwrap();
+        // A failed thread spawn drops its captured closure without running it.
+        let unspawned = move || {
+            let _writer = writer;
+        };
+        assert!(state.has_history_writer());
+        drop(unspawned);
+        assert!(!state.has_history_writer());
+        let writer = HistoryWriter::admit(&state.history_writers).unwrap();
+        let worker = std::thread::spawn(move || {
+            let _writer = writer;
+            panic!("simulated history worker panic");
+        });
+        assert!(worker.join().is_err());
+        assert!(!state.has_history_writer());
+        let next = HistoryWriter::admit(&state.history_writers).unwrap();
+        drop(next);
+        assert!(!state.has_history_writer());
+    }
+
+    #[test]
+    fn source_completions_keep_original_owners_after_transcript_trim() {
+        let mut state = SceneChat::new(PathBuf::new());
+        let (tx, rx) = mpsc::sync_channel(4);
+        state.events = Some(Mutex::new(rx));
+        let library = Library {
+            selected: Some(Uuid::new_v4()),
+            ..Default::default()
+        };
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let mut expected = vec![];
+        for (character, text) in [(a, "First source reply"), (b, "Second source reply")] {
+            let reply_id =
+                begin_reply(&state.pending_replies, &AtomicBool::new(false), character).unwrap();
+            tx.send(Event::Line {
+                reply_id,
+                line: SceneLine {
+                    character: Some(character),
+                    name: "Source".into(),
+                    text: text.into(),
+                },
+            })
+            .unwrap();
+            expected.push(LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome: ReplyOutcome::Completed { text: text.into() },
+            });
+        }
+        state.poll(&library, &SceneRoster::default());
+        assert_eq!(state.transcript.len(), 2);
+        // History retention runs independently of lifecycle forwarding. Both
+        // accepted replies can disappear from the transcript before a drain.
+        state.transcript.extend((0..80).map(|_| SceneLine {
+            character: None,
+            name: "You".into(),
+            text: "Later message".into(),
+        }));
+        state.poll(&library, &SceneRoster::default());
+        assert_eq!(state.transcript.len(), 80);
+        assert!(state.transcript.iter().all(|line| line.character.is_none()));
+        assert_eq!(
+            state
+                .drain_lifecycle()
+                .into_iter()
+                .map(|entry| entry.event)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        state.cancel();
+        assert!(
+            state.drain_lifecycle().is_empty(),
+            "Accepted replies must not later be cancelled"
+        );
+        assert_eq!(state.lifecycle_dropped(), 0);
+    }
+
+    #[test]
+    fn cancellation_before_first_poll_correlates_only_started_reply_and_rejects_late_events() {
+        let mut state = SceneChat::new(PathBuf::new());
+        let (tx, rx) = mpsc::sync_channel(4);
+        state.events = Some(Mutex::new(rx));
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.cancellation = Some(cancel.clone());
+        let character = Uuid::new_v4();
+        let never_started = Uuid::new_v4();
+        state.active_recipients = vec![character, never_started];
+        let reply_id = begin_reply(&state.pending_replies, &cancel, character).unwrap();
+        tx.send(Event::Speech(
+            reply_id,
+            character,
+            VoiceConfig::default(),
+            "Unaccepted speech".into(),
+        ))
+        .unwrap();
+        state.cancel();
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(begin_reply(&state.pending_replies, &cancel, never_started).is_none());
+        assert!(
+            tx.send(Event::Line {
+                reply_id,
+                line: SceneLine {
+                    character: Some(character),
+                    name: "Original source".into(),
+                    text: "Late result".into(),
+                }
+            })
+            .is_err()
+        );
+        let library = Library {
+            selected: Some(never_started),
+            ..Default::default()
+        };
+        state.poll(&library, &SceneRoster::default());
+        state.cancel();
+        assert!(state.transcript.is_empty() && state.take_speech_with_reply().is_none());
+        assert_eq!(
+            state
+                .drain_lifecycle()
+                .into_iter()
+                .map(|entry| entry.event)
+                .collect::<Vec<_>>(),
+            vec![LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome: ReplyOutcome::Cancelled,
+            }]
+        );
+        assert!(state.drain_lifecycle().is_empty());
+    }
+
+    #[test]
+    fn source_failure_is_correlated_once_and_batch_errors_do_not_invent_replies() {
+        let mut state = SceneChat::new(PathBuf::new());
+        let (tx, rx) = mpsc::sync_channel(4);
+        state.events = Some(Mutex::new(rx));
+        let character = Uuid::new_v4();
+        let reply_id =
+            begin_reply(&state.pending_replies, &AtomicBool::new(false), character).unwrap();
+        tx.send(Event::Failed {
+            reply: Some((reply_id, character)),
+            error: "Provider disconnected".into(),
+        })
+        .unwrap();
+        state.poll(&Library::default(), &SceneRoster::default());
+        assert_eq!(state.status, "Provider disconnected");
+        state.cancel();
+        assert_eq!(
+            state
+                .drain_lifecycle()
+                .into_iter()
+                .map(|entry| entry.event)
+                .collect::<Vec<_>>(),
+            vec![LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome: ReplyOutcome::Failed {
+                    error: "Provider disconnected".into()
+                },
+            }]
+        );
+        let (tx, rx) = mpsc::sync_channel(1);
+        state.events = Some(Mutex::new(rx));
+        tx.send(Event::Failed {
+            reply: None,
+            error: "Cannot prepare scene storage".into(),
+        })
+        .unwrap();
+        state.poll(&Library::default(), &SceneRoster::default());
+        assert_eq!(state.status, "Cannot prepare scene storage");
+        assert!(state.drain_lifecycle().is_empty());
+    }
+
     #[test]
     fn jev_scene_appraisal_uses_separate_source_and_keeps_chat_streaming() {
         use std::io::{BufRead, BufReader, Read, Write};
@@ -908,6 +1337,64 @@ mod tests {
         assert_eq!(chat.affect.entries[&ids[0]].emotion, reply.emotion);
         assert!(!chat.affect.take_pending(ids[0]));
         assert_eq!(chat.affect_receipts().len(), 1);
+        assert_eq!(
+            chat.drain_lifecycle()
+                .into_iter()
+                .map(|event| event.event)
+                .collect::<Vec<_>>(),
+            vec![LifecycleEvent::EmotionChanged {
+                character: ids[0],
+                owner: EmotionOwner::SceneChat,
+                previous: crate::reply_affect::AffectEmotion::Neutral,
+                emotion: reply.emotion,
+                reply_id: None,
+            }]
+        );
+        let mood = chat.affect.entries[&ids[0]].mood;
+        // Same-label accepted affect still updates mood without another change event.
+        tx.send(Event::Affect(
+            ids[0],
+            config.clone(),
+            Some(reply),
+            None,
+            None,
+        ))
+        .unwrap();
+        chat.poll(&library, &roster);
+        assert!(chat.affect.entries[&ids[0]].mood.valence > mood.valence);
+        assert!(chat.drain_lifecycle().is_empty());
+        let accepted = chat.affect.entries[&ids[0]].clone();
+        for invalid in [
+            Some(ReplyAffect {
+                valence: f64::NAN,
+                emotion: crate::reply_affect::AffectEmotion::Sad,
+                ..reply
+            }),
+            None,
+        ] {
+            tx.send(Event::Affect(
+                ids[0],
+                config.clone(),
+                invalid,
+                Some("provider failed or abstained".into()),
+                None,
+            ))
+            .unwrap();
+            chat.poll(&library, &roster);
+            assert_eq!(chat.affect.entries[&ids[0]], accepted);
+            assert!(chat.drain_lifecycle().is_empty());
+        }
+        // Restore the latest successful diagnostic before testing a stale result.
+        tx.send(Event::Affect(
+            ids[0],
+            config.clone(),
+            Some(reply),
+            None,
+            None,
+        ))
+        .unwrap();
+        chat.poll(&library, &roster);
+        assert!(chat.drain_lifecycle().is_empty());
         library.scene.affect.influence = 0.1;
         tx.send(Event::Affect(
             ids[0],
@@ -919,6 +1406,7 @@ mod tests {
         .unwrap();
         chat.poll(&library, &roster);
         assert!(chat.affect_receipts()[0].error.is_none());
+        assert!(chat.drain_lifecycle().is_empty());
         chat.tick_affect(&library, &roster, 0.016);
         assert!(
             chat.affect.entries.is_empty(),
@@ -930,9 +1418,102 @@ mod tests {
     }
 
     #[test]
+    fn scene_config_discard_and_cancel_report_resets_before_reapplying_affect() {
+        use crate::reply_affect::AffectEmotion;
+        for change_half_life in [false, true] {
+            let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice"]);
+            let character = ids[0];
+            let mut chat = SceneChat::new(root);
+            chat.active_recipients = ids;
+            let (tx, rx) = mpsc::sync_channel(4);
+            chat.events = Some(Mutex::new(rx));
+            let reply = ReplyAffect {
+                emotion: AffectEmotion::Happy,
+                valence: 0.8,
+                arousal: 0.4,
+                dominance: 0.2,
+            };
+            tx.send(Event::Affect(
+                character,
+                library.scene.affect.clone(),
+                Some(reply),
+                None,
+                None,
+            ))
+            .unwrap();
+            chat.poll(&library, &roster);
+            assert_eq!(
+                chat.affect.entries[&character].emotion,
+                AffectEmotion::Happy
+            );
+            if change_half_life {
+                library.scene.affect.half_life_seconds *= 2.0;
+            } else {
+                library.scene.affect.influence = 0.1;
+            }
+            chat.tick_affect(&library, &roster, 0.016);
+            assert!(chat.affect.entries.is_empty());
+            chat.tick_affect(&library, &roster, 0.016);
+            tx.send(Event::Affect(
+                character,
+                library.scene.affect.clone(),
+                Some(reply),
+                None,
+                None,
+            ))
+            .unwrap();
+            chat.poll(&library, &roster);
+            assert_eq!(
+                chat.affect.entries[&character].emotion,
+                AffectEmotion::Happy
+            );
+            chat.cancel();
+            chat.cancel();
+            assert!(chat.affect.entries.is_empty());
+            assert_eq!(
+                chat.drain_lifecycle()
+                    .into_iter()
+                    .map(|event| event.event)
+                    .collect::<Vec<_>>(),
+                [
+                    (AffectEmotion::Neutral, AffectEmotion::Happy),
+                    (AffectEmotion::Happy, AffectEmotion::Neutral),
+                    (AffectEmotion::Neutral, AffectEmotion::Happy),
+                    (AffectEmotion::Happy, AffectEmotion::Neutral),
+                ]
+                .into_iter()
+                .map(|(previous, emotion)| LifecycleEvent::EmotionChanged {
+                    character,
+                    owner: EmotionOwner::SceneChat,
+                    previous,
+                    emotion,
+                    reply_id: None,
+                })
+                .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn discarding_or_cancelling_neutral_scene_affect_emits_no_transition() {
+        let (root, mut library, roster, ids) = voiced_scene(String::new(), &["Alice"]);
+        let mut chat = SceneChat::new(root);
+        chat.affect.entries.insert(ids[0], Default::default());
+        library.scene.affect.influence = 0.1;
+        chat.tick_affect(&library, &roster, 0.016);
+        assert!(chat.affect.entries.is_empty());
+        assert!(chat.drain_lifecycle().is_empty());
+        chat.affect.entries.insert(ids[0], Default::default());
+        chat.cancel();
+        assert!(chat.affect.entries.is_empty());
+        assert!(chat.drain_lifecycle().is_empty());
+    }
+
+    #[test]
     fn query_dependent_recall_preserves_scene_history_prefix_and_stays_untrusted() {
         let history: Vec<_> = (0..50)
             .map(|i| Turn {
+                external: None,
                 role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
                 content: format!("history {i}"),
             })
@@ -1046,6 +1627,7 @@ mod tests {
                         Err(e) => panic!("{e}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
@@ -1256,6 +1838,7 @@ mod tests {
             .save_history(
                 a,
                 &[Turn {
+                    external: None,
                     role: "user".into(),
                     content: "Alice-only history".into(),
                 }],
@@ -1265,6 +1848,7 @@ mod tests {
             .save_history(
                 b,
                 &[Turn {
+                    external: None,
                     role: "user".into(),
                     content: "Bob-only history".into(),
                 }],
@@ -1297,11 +1881,14 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         state.cancellation = Some(cancel.clone());
         state.events = Some(Mutex::new(rx));
-        tx.send(Event::Line(SceneLine {
-            character: None,
-            name: "stale".into(),
-            text: "stale".into(),
-        }))
+        tx.send(Event::Line {
+            reply_id: Uuid::new_v4(),
+            line: SceneLine {
+                character: None,
+                name: "stale".into(),
+                text: "stale".into(),
+            },
+        })
         .unwrap();
         state.cancel();
         state.poll(&Library::default(), &SceneRoster::default());
@@ -1309,6 +1896,10 @@ mod tests {
         assert!(state.transcript.is_empty());
         assert!(state.take_speech().is_none());
         assert!(!state.is_busy());
+        assert!(
+            state.drain_lifecycle().is_empty(),
+            "No reply source ever started"
+        );
     }
     #[test]
     fn edited_draft_discards_recipient_suggestion() {
@@ -1336,14 +1927,24 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         for (id, name) in [(a, "A"), (b, "B")] {
-            tx.send(Event::Line(SceneLine {
-                character: Some(id),
-                name: name.into(),
-                text: name.into(),
-            }))
+            let reply_id =
+                begin_reply(&state.pending_replies, &AtomicBool::new(false), id).unwrap();
+            tx.send(Event::Line {
+                reply_id,
+                line: SceneLine {
+                    character: Some(id),
+                    name: name.into(),
+                    text: name.into(),
+                },
+            })
             .unwrap();
-            tx.send(Event::Speech(id, VoiceConfig::default(), name.into()))
-                .unwrap();
+            tx.send(Event::Speech(
+                reply_id,
+                id,
+                VoiceConfig::default(),
+                name.into(),
+            ))
+            .unwrap();
         }
         tx.send(Event::Done).unwrap();
         state.poll(&Library::default(), &SceneRoster::default());
@@ -1554,7 +2155,7 @@ mod tests {
         // Alice's provider has not finished: no transcript line yet.
         assert!(chat.is_busy());
         assert_eq!(chat.transcript.len(), 1);
-        let (id, voice, text) = chat.take_speech().unwrap();
+        let (alice_reply, id, voice, text) = chat.take_speech_with_reply().unwrap();
         assert_eq!((id, text.as_str()), (ids[0], FIRST.trim()));
         assert!(voice.enabled);
         gate_tx.send(()).unwrap();
@@ -1562,13 +2163,50 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while chat.is_busy() {
             chat.poll(&library, &roster);
-            spoken.extend(std::iter::from_fn(|| chat.take_speech()));
+            spoken.extend(std::iter::from_fn(|| chat.take_speech_with_reply()));
             assert!(Instant::now() < deadline, "timed out: {}", chat.status);
             std::thread::sleep(Duration::from_millis(2));
         }
-        spoken.extend(std::iter::from_fn(|| chat.take_speech()));
+        spoken.extend(std::iter::from_fn(|| chat.take_speech_with_reply()));
         assert_eq!(chat.status, "Scene replies finished");
-        let spoken: Vec<_> = spoken.into_iter().map(|(id, _, text)| (id, text)).collect();
+        assert!(
+            spoken
+                .iter()
+                .filter(|(_, character, _, _)| *character == ids[0])
+                .all(|(reply_id, _, _, _)| *reply_id == alice_reply)
+        );
+        let bob_reply = spoken
+            .iter()
+            .find(|(_, character, _, _)| *character == ids[1])
+            .unwrap()
+            .0;
+        assert_ne!(alice_reply, bob_reply);
+        let lifecycle = chat.drain_lifecycle();
+        assert_eq!(lifecycle.len(), 3);
+        assert_eq!(
+            lifecycle[0].event,
+            LifecycleEvent::EmotionChanged {
+                character: ids[0],
+                owner: EmotionOwner::SceneChat,
+                previous: crate::reply_affect::AffectEmotion::Neutral,
+                emotion: crate::reply_affect::AffectEmotion::Happy,
+                reply_id: None,
+            }
+        );
+        assert!(
+            matches!(&lifecycle[1].event, LifecycleEvent::ReplyFinished {
+            reply_id, character: Some(character), outcome: ReplyOutcome::Completed { text },
+        } if *reply_id == alice_reply && *character == ids[0] && text == &chat.transcript[1].text)
+        );
+        assert!(
+            matches!(&lifecycle[2].event, LifecycleEvent::ReplyFinished {
+            reply_id, character: Some(character), outcome: ReplyOutcome::Completed { text },
+        } if *reply_id == bob_reply && *character == ids[1] && text == &chat.transcript[2].text)
+        );
+        let spoken: Vec<_> = spoken
+            .into_iter()
+            .map(|(_, id, _, text)| (id, text))
+            .collect();
         assert_eq!(
             spoken,
             [
@@ -1658,6 +2296,8 @@ mod tests {
         chat.draft = "Hello".into();
         chat.submit(&library, &roster).unwrap();
         poll_until(&mut chat, &library, &roster, |c| !c.speech.is_empty());
+        let (reply_id, character, _, _) = chat.take_speech_with_reply().unwrap();
+        assert_eq!(character, ids[0]);
         chat.cancel();
         assert!(chat.take_speech().is_none());
         let _ = gate_tx.send(());
@@ -1670,6 +2310,17 @@ mod tests {
             root: root.join("scene-chat"),
         };
         assert!(store.history(ids[0]).unwrap().is_empty());
+        assert_eq!(
+            chat.drain_lifecycle()
+                .into_iter()
+                .map(|entry| entry.event)
+                .collect::<Vec<_>>(),
+            vec![LifecycleEvent::ReplyFinished {
+                reply_id,
+                character: Some(character),
+                outcome: ReplyOutcome::Cancelled,
+            }]
+        );
         drop(chat);
         std::fs::remove_dir_all(root).unwrap();
     }

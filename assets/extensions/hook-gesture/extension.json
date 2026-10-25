@@ -1,0 +1,15 @@
+{
+  "api_version": 1,
+  "id": "studio.example.hook-gesture",
+  "version": "1.0.0",
+  "name": "Reply gesture hook",
+  "description": "Python 3 one-shot hook: a completed reply launches one gentle nod request. The child waits for the motion result, then exits. No private reply text is requested.",
+  "provenance": { "author": "Waifu Studio contributors", "license": "MIT" },
+  "hooks": [{ "event": "reply.finished", "handler": { "program": "hook.py" } }],
+  "capabilities": ["lifecycle.observe", "motion.play"],
+  "settings": [
+    { "id": "motion", "label": "Gesture", "type": "motion", "default": "studio.example.hook-gesture/nod" },
+    { "id": "active", "label": "React to completed replies", "type": "toggle", "default": true }
+  ],
+  "content": { "motions": [{ "id": "nod", "name": "Hook: Gentle Nod", "asset": "motions/nod.bvh", "role": "gesture", "loopable": false }] }
+}

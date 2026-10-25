@@ -1402,8 +1402,6 @@ dependencies = [
 [[package]]
 name = "bevy_render"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc86a32b2eef9859e1e7d323c6d1a9150fe77aa17c30fd05abebc12f645929dc"
 dependencies = [
  "async-channel",
  "bevy_app",
@@ -6234,7 +6232,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "waifu-studio"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 dependencies = [
  "base64 0.22.1",
  "bevy",
@@ -6253,12 +6251,15 @@ dependencies = [
  "rfd",
  "rmpv",
  "rodio",
+ "rustls",
  "serde",
  "serde_json",
  "serde_vrm",
  "thiserror 2.0.21",
  "tungstenite",
  "uuid",
+ "wgpu",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

@@ -1,0 +1,68 @@
+name: Windows and Linux preview builds
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
+      - name: Pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          cache-on-failure: true
+      - name: Offline voice worker test dependencies
+        run: npm ci --prefix tools/discord-voice --no-audit --no-fund
+      - name: Package integrity tests
+        run: python -m unittest discover -s tools -p test_package_linux.py -v
+      - name: Native tests
+        run: cargo test --release --locked --all-targets -- --test-threads=1
+      - name: Release executable
+        run: cargo build --release --locked --bin waifu-studio
+      - name: Version
+        shell: bash
+        run: python -c 'import tomllib; print("RELEASE_VERSION=v" + tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])' >> "$GITHUB_ENV"
+      - name: Windows archive
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python tools/package_windows.py --repo . --binary target/release/waifu-studio.exe --output dist/waifu-studio-windows-x86_64 --archive dist/waifu-studio-windows-x86_64.zip --release "$RELEASE_VERSION"
+      - name: Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python tools/package_linux.py --repo . --binary target/release/waifu-studio --output dist/waifu-studio-linux-x86_64 --archive dist/waifu-studio-linux-x86_64.tar.gz --release "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: waifu-studio-${{ runner.os }}-x86_64
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

@@ -1,0 +1,43 @@
+{
+  "api_version": 1,
+  "id": "studio.example.twitch-replay",
+  "version": "1.0.0",
+  "name": "Twitch replay",
+  "description": "Offline Python 3 replay of one synthetic Twitch event. Delivers an attributed external message, then requests an original nod. No account, network, or provider call. Restart explicitly replays the selected example.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "process": {
+    "program": "replay.py"
+  },
+  "capabilities": [
+    "message.deliver",
+    "motion.play",
+    "lifecycle.observe"
+  ],
+  "settings": [
+    {
+      "id": "event",
+      "label": "Example event",
+      "type": "choice",
+      "options": [
+        "Subscription",
+        "Cheer",
+        "Chat message"
+      ],
+      "default": "Subscription"
+    }
+  ],
+  "content": {
+    "motions": [
+      {
+        "id": "nod",
+        "name": "Twitch replay: Gentle Nod",
+        "asset": "motions/nod.bvh",
+        "role": "gesture",
+        "loopable": false
+      }
+    ]
+  }
+}

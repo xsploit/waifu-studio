@@ -12,33 +12,15 @@ use waifu_studio::{
 
 /// Closed fold holding a page's complete original controls.
 pub(super) fn advanced(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(18.0);
-    let capture = ui.ctx().data(|data| {
-        data.get_temp::<bool>(egui::Id::new("capture-advanced"))
-            .unwrap_or(false)
-    });
-    let response = egui::CollapsingHeader::new(RichText::new("Advanced").size(14.0))
-        .id_salt((id, "advanced"))
-        .default_open(capture)
-        .show_unindented(ui, add);
-    let scroll_id = egui::Id::new(("capture-advanced-scrolled", id));
-    if capture
-        && !ui
-            .ctx()
-            .data(|data| data.get_temp::<bool>(scroll_id).unwrap_or(false))
-    {
-        response
-            .header_response
-            .scroll_to_me(Some(egui::Align::TOP));
-        ui.ctx().data_mut(|data| data.insert_temp(scroll_id, true));
-    }
+    kit::advanced(ui, id, add);
 }
 
 fn dropdown(ui: &mut egui::Ui, id: &str, current: usize, labels: &[&str]) -> usize {
     let mut selected = current;
     egui::ComboBox::from_id_salt(id)
         .selected_text(labels.get(current).copied().unwrap_or("—"))
-        .width(200.0)
+        .width(ui.available_width().min(240.0))
+        .truncate()
         .show_ui(ui, |ui| {
             for (index, label) in labels.iter().enumerate() {
                 ui.selectable_value(&mut selected, index, *label);
@@ -48,7 +30,7 @@ fn dropdown(ui: &mut egui::Ui, id: &str, current: usize, labels: &[&str]) -> usi
 }
 
 fn slider(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
-    ui.spacing_mut().slider_width = 160.0;
+    ui.spacing_mut().slider_width = (ui.available_width() - 72.0).clamp(48.0, 150.0);
     ui.add(egui::Slider::new(value, range).max_decimals(2))
         .changed()
 }
@@ -59,14 +41,14 @@ fn compact_models(
     catalog: &ModelCatalog,
     model: &mut String,
 ) -> bool {
-    ui.set_max_width(260.0);
-    let picked = model_dropdown(ui, salt, &catalog.models, model);
+    ui.set_max_width(ui.available_width().min(260.0));
     if catalog.loading {
         ui.spinner();
     } else if catalog.models.is_empty() {
         ui.label(RichText::new("⚠").color(super::ACCENT))
             .on_hover_text(&catalog.status);
     }
+    let picked = model_dropdown(ui, salt, &catalog.models, model);
     match picked {
         Some(picked) if picked != *model => {
             *model = picked;
@@ -76,12 +58,52 @@ fn compact_models(
     }
 }
 
+fn speech_output_hint(
+    output: waifu_studio::voice::VoiceOutput,
+    ready: Option<usize>,
+    has_character: bool,
+) -> String {
+    use waifu_studio::voice::VoiceOutput;
+    match (output, ready) {
+        (VoiceOutput::LocalOnly, _) => {
+            "New speech uses local speakers. Previews stay local.".into()
+        }
+        (VoiceOutput::LocalAndCalls, None) => {
+            "New speech uses local speakers. Call audio is unavailable in this session.".into()
+        }
+        (VoiceOutput::CallsOnly, None) => {
+            "Call audio is unavailable in this session. Previews stay local.".into()
+        }
+        (VoiceOutput::CallsOnly, Some(_)) if !has_character => {
+            "Select a character to use call output. Previews stay local.".into()
+        }
+        (VoiceOutput::LocalAndCalls, Some(_)) if !has_character => {
+            "New speech uses local speakers. Select a character for call output.".into()
+        }
+        (VoiceOutput::CallsOnly, Some(0)) => {
+            "No call output is ready. Set one up in Extensions. Applies to new speech.".into()
+        }
+        (VoiceOutput::CallsOnly, Some(count)) => format!(
+            "{count} call output{} ready. New speech uses no local speakers. Previews stay local.",
+            if count == 1 { "" } else { "s" }
+        ),
+        (_, Some(count)) if count > 0 => format!(
+            "New speech uses local speakers and {count} ready call output{}.",
+            if count == 1 { "" } else { "s" }
+        ),
+        _ => {
+            "New speech uses local speakers. Set up call outputs in Extensions to share it.".into()
+        }
+    }
+}
 pub(super) fn voice(
     ui: &mut egui::Ui,
     studio: &mut Studio,
     speech: &mut ModelCatalog,
     transcription: &mut ModelCatalog,
     listening: &mut ListeningState,
+    voices: &mut waifu_studio::voice_library::VoiceLibraryState,
+    ready_calls: Option<usize>,
 ) {
     kit::section(ui, "Voice");
     kit::card(ui, |c| {
@@ -103,7 +125,7 @@ pub(super) fn voice(
             .iter()
             .position(|a| *a == studio.library.voice.adapter)
             .unwrap_or(0);
-        let picked = c.row("Voice service", "", |ui| {
+        let picked = c.row("Voice service", "Keys are managed in Connections.", |ui| {
             dropdown(
                 ui,
                 "simple_voice_adapter",
@@ -119,12 +141,51 @@ pub(super) fn voice(
         if picked != current {
             studio.stop_voice();
             let enabled = studio.library.voice.enabled;
+            let output = studio.library.voice.output;
             studio.library.voice = VoiceConfig::preset(adapters[picked]);
             studio.library.voice.enabled = enabled;
+            studio.library.voice.output = output;
             studio.voice_key.clear();
             changed = true;
         }
+        let has_character = studio.library.selected.is_some();
         let voice = &mut studio.library.voice;
+        let outputs = [
+            waifu_studio::voice::VoiceOutput::LocalAndCalls,
+            waifu_studio::voice::VoiceOutput::LocalOnly,
+            waifu_studio::voice::VoiceOutput::CallsOnly,
+        ];
+        let current = outputs
+            .iter()
+            .position(|mode| *mode == voice.output)
+            .unwrap_or(0);
+        let hint = speech_output_hint(voice.output, ready_calls, has_character);
+        let picked = c.row("Speech output", &hint, |ui| {
+            dropdown(
+                ui,
+                "speech_output",
+                current,
+                &["Local + calls", "Local only", "Calls only"],
+            )
+        });
+        if picked != current {
+            voice.output = outputs[picked];
+            changed = true;
+        }
+        if has_character
+            && ready_calls == Some(0)
+            && voice.output != waifu_studio::voice::VoiceOutput::LocalOnly
+        {
+            c.row(
+                "Call setup",
+                "Connect a call output or review its permissions.",
+                |ui| {
+                    if ui.small_button("Extensions…").clicked() {
+                        studio.tab = super::Tab::Extensions;
+                    }
+                },
+            );
+        }
         if voice.adapter != VoiceAdapter::FishLocal {
             speech.sync(
                 &voice.endpoint,
@@ -136,7 +197,52 @@ pub(super) fn voice(
                 compact_models(ui, "simple_tts_models", speech, &mut voice.model)
             });
         }
+        let reference = matches!(
+            voice.adapter,
+            VoiceAdapter::FishHosted | VoiceAdapter::FishLocal
+        );
+        changed |= c.row(
+            "Voice",
+            if reference {
+                "Voice reference ID; leave empty to use the default."
+            } else {
+                "Voice name or ID supported by the selected model."
+            },
+            |ui| {
+                let value = if reference {
+                    &mut voice.reference_id
+                } else {
+                    &mut voice.voice
+                };
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .desired_width(ui.available_width().min(240.0))
+                        .hint_text("Default"),
+                )
+                .changed()
+            },
+        );
         changed |= c.row("Speed", "", |ui| slider(ui, &mut voice.speed, 0.5..=2.0));
+        let hosted = matches!(
+            voice.adapter,
+            VoiceAdapter::FishHosted | VoiceAdapter::Vercel
+        );
+        let key_loaded = !studio.voice_key.trim().is_empty()
+            || loaded_environment_key(&voice.api_key_env)
+            || (voice.adapter == VoiceAdapter::Vercel
+                && (loaded_environment_key("AI_GATEWAY_API_KEY")
+                    || loaded_environment_key("VERCEL_OIDC_TOKEN")));
+        if hosted && !key_loaded {
+            c.row(
+                "Connection setup",
+                "No key loaded. Manage your voice service in Connections.",
+                |ui| {
+                    if ui.small_button("Connections…").clicked() {
+                        studio.tab = super::Tab::Connections;
+                    }
+                },
+            );
+        }
         c.row(
             "Try it",
             "Plays a short sample with these settings.",
@@ -160,12 +266,30 @@ pub(super) fn voice(
         }
     });
 
+    if studio.library.voice.adapter == VoiceAdapter::FishHosted {
+        kit::section(ui, "Voice library");
+        kit::card(ui, |card| {
+            card.block(|ui| {
+                ui.collapsing("Browse Fish voices", |ui| {
+                    if let Some(id) = crate::voice_library_controls::ui(
+                        ui,
+                        voices,
+                        &studio.library.voice,
+                        &studio.voice_key,
+                    ) {
+                        studio.library.voice.reference_id = id;
+                        studio.save();
+                    }
+                });
+            });
+        });
+    }
     kit::section(ui, "Microphone");
     kit::card(ui, |c| {
         let mut changed = false;
         let mut enabled = listening.config.enabled;
         if c.row(
-            "Talk with your microphone",
+            "Use microphone",
             "Press the mic button in chat to speak instead of typing.",
             |ui| kit::toggle(ui, &mut enabled),
         )
@@ -176,7 +300,7 @@ pub(super) fn voice(
         }
         changed |= c
             .row(
-                "Send when you stop talking",
+                "Send after speech",
                 "Otherwise the transcript waits in the message box for you.",
                 |ui| kit::toggle(ui, &mut listening.config.auto_send),
             )
@@ -189,34 +313,37 @@ pub(super) fn voice(
             SttBackend::FishAsr => 2,
             SttBackend::OpenAiCompatible => 3,
         };
-        let picked = c.row("Transcription service", "", |ui| {
-            dropdown(
-                ui,
-                "simple_stt_backend",
-                current,
-                &[
-                    "Vercel AI Gateway",
-                    "OpenRouter",
-                    "Fish Audio",
-                    "Custom / local server",
-                ],
-            )
-        });
+        let picked = c.row(
+            "Transcription service",
+            "Keys are managed in Connections.",
+            |ui| {
+                dropdown(
+                    ui,
+                    "simple_stt_backend",
+                    current,
+                    &[
+                        "Vercel AI Gateway",
+                        "OpenRouter",
+                        "Fish Audio",
+                        "Custom / local server",
+                    ],
+                )
+            },
+        );
         if picked != current {
-            listening.cancel();
-            match picked {
-                0 => listening.config.preset(SttBackend::VercelGateway),
-                1 => listening.config.openrouter_preset(),
-                2 => listening.config.preset(SttBackend::FishAsr),
-                _ => listening.config.preset(SttBackend::OpenAiCompatible),
-            }
+            listening.change_service(|config| match picked {
+                0 => config.preset(SttBackend::VercelGateway),
+                1 => config.openrouter_preset(),
+                2 => config.preset(SttBackend::FishAsr),
+                _ => config.preset(SttBackend::OpenAiCompatible),
+            });
             changed = true;
         }
         let config = &mut listening.config;
         transcription.sync(
             &config.endpoint,
             &config.api_key_env,
-            "",
+            &listening.session_key,
             CatalogKind::Transcription,
         );
         changed |= c.row("Transcription model", "", |ui| {
@@ -229,7 +356,12 @@ pub(super) fn voice(
     });
 }
 
-pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarUi) {
+pub(super) fn scene(
+    ui: &mut egui::Ui,
+    studio: &mut Studio,
+    avatar: &mut AvatarUi,
+    animation: &mut waifu_studio::animation::AnimationState,
+) {
     kit::section(ui, "Look");
     kit::card(ui, |c| {
         let scene = &mut studio.library.scene;
@@ -276,21 +408,25 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
         }
     });
 
+    let mut physics = studio.library.scene.spring_physics.clone();
+    if crate::spring_physics_controls::ui(ui, &mut physics, &avatar.physics) {
+        studio.library.scene.spring_physics = physics;
+        studio.save();
+    }
+
     kit::section(ui, "Behavior");
     kit::card(ui, |c| {
         let mut changed = false;
         let scene = &mut studio.library.scene;
         changed |= c
-            .row(
-                "Expressions",
-                "Looks thoughtful while thinking and animated while speaking.",
-                |ui| kit::toggle(ui, &mut scene.behavior.enabled),
-            )
+            .row("Expressions", "Reacts while thinking and speaking.", |ui| {
+                kit::toggle(ui, &mut scene.behavior.enabled)
+            })
             .changed();
         let mut emotions = scene.affect.enabled;
         if c.row(
             "Emotions from chat",
-            "Reacts to the conversation with matching faces and moods.",
+            "Matches expressions to the conversation.",
             |ui| kit::toggle(ui, &mut emotions),
         )
         .changed()
@@ -302,7 +438,7 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
         let scene = &mut studio.library.scene;
         changed |= c
             .row(
-                "Head and eye movement",
+                "Head & eye movement",
                 "Looks around naturally, or follows your pointer.",
                 |ui| kit::toggle(ui, &mut avatar.gaze.config.enabled),
             )
@@ -320,7 +456,7 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
         changed |= c
             .row(
                 "Daily routine",
-                "Imagined activities through the week that can come up in chat.",
+                "Imagined activities that can come up in chat.",
                 |ui| kit::toggle(ui, &mut scene.routine.enabled),
             )
             .changed();
@@ -336,7 +472,7 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
             .position(|m| *m == scene.reply_motion.mode)
             .unwrap_or(0);
         let picked = c.row(
-            "Body motion after replies",
+            "Motion after replies",
             "Uses animations from your motion library.",
             |ui| {
                 dropdown(
@@ -355,6 +491,20 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
             studio.library.scene.gaze = avatar.gaze.config.clone();
             studio.library.scene.facial = avatar.facial.config.clone();
             studio.save();
+        }
+        let shared = super::companion_shared(c.ui.ctx());
+        let paused = super::lock(&shared).paused || animation.manual_controlled();
+        if paused {
+            c.row(
+                "Manual motion control",
+                "Reply gestures and playlists wait until you resume.",
+                |ui| {
+                    if ui.button("Resume automatic motion").clicked() {
+                        animation.resume_automatic_control();
+                        super::lock(&shared).resume();
+                    }
+                },
+            );
         }
         let connection = studio.library.decision.clone();
         let mut model = connection.model.clone();
@@ -390,7 +540,75 @@ pub(super) fn scene(ui: &mut egui::Ui, studio: &mut Studio, avatar: &mut AvatarU
     });
 }
 
-pub(super) fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
+fn session_input(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    key: &mut String,
+) -> egui::Response {
+    let id = ui.make_persistent_id(salt);
+    ui.add(
+        egui::TextEdit::singleline(key)
+            .id(id)
+            .password(true)
+            .desired_width(ui.available_width().min(240.0))
+            .hint_text("Use saved key"),
+    )
+}
+/// One location for memory-only overrides; saved/environment resolution stays unchanged.
+pub(super) fn session_keys(ui: &mut egui::Ui, studio: &mut Studio, listening: &mut ListeningState) {
+    kit::section(ui, "Session keys");
+    kit::note(
+        ui,
+        "These overrides last until the app closes. Leave a field empty to use saved credentials.",
+    );
+    kit::card(ui, |card| {
+        let index = studio.library.provider;
+        if let Some(provider) = studio.library.providers.get_mut(index)
+            && card
+                .row("Chat", &provider.name, |ui| {
+                    session_input(ui, ("chat-session", index), &mut provider.session_key)
+                })
+                .changed()
+        {
+            studio.connected = false;
+        }
+        card.row(
+            "Decision model",
+            "Uses the selected decision connection.",
+            |ui| {
+                session_input(
+                    ui,
+                    "decision-session",
+                    &mut studio.library.decision.session_key,
+                )
+            },
+        );
+        let voice_service = match studio.library.voice.adapter {
+            VoiceAdapter::FishHosted => "Fish Audio",
+            VoiceAdapter::Vercel => "Vercel AI Gateway",
+            VoiceAdapter::FishLocal => "Fish Speech · local",
+            VoiceAdapter::OpenAi => "Custom / local server",
+        };
+        card.row("Voice", voice_service, |ui| {
+            session_input(ui, "voice-session", &mut studio.voice_key)
+        });
+        let transcription_service = match listening.config.backend {
+            SttBackend::VercelGateway => "Vercel AI Gateway",
+            SttBackend::FishAsr => "Fish Audio",
+            SttBackend::OpenAiCompatible
+                if listening.config.endpoint.contains("openrouter.ai/") =>
+            {
+                "OpenRouter"
+            }
+            SttBackend::OpenAiCompatible => "Custom / local server",
+        };
+        card.row("Microphone", transcription_service, |ui| {
+            session_input(ui, "microphone-session", &mut listening.session_key)
+        });
+    });
+}
+
+pub(super) fn connections(ui: &mut egui::Ui, studio: &mut Studio, listening: &ListeningState) {
     kit::section(ui, "Chat");
     kit::card(ui, |c| {
         let previous = studio.library.provider;
@@ -419,12 +637,11 @@ pub(super) fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
             .map(|p| p.model.clone())
             .unwrap_or_default();
         let picked = c.row("Model", "", |ui| {
-            ui.set_max_width(260.0);
-            let picked = model_dropdown(ui, "simple_connection_models", &models, &current);
+            ui.set_max_width(ui.available_width().min(260.0));
             if loading {
                 ui.spinner();
             }
-            picked
+            model_dropdown(ui, "simple_connection_models", &models, &current)
         });
         if let Some(model) = picked
             && let Some(provider) = studio.library.providers.get_mut(index)
@@ -452,7 +669,7 @@ pub(super) fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
         let mut model = connection.model.clone();
         c.row(
             "Model",
-            "Small, fast choices: memories, emotions, motions, who replies.",
+            "Chooses memory suggestions, reactions and replies.",
             |ui| {
                 decision_model_compact(
                     ui,
@@ -470,32 +687,63 @@ pub(super) fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
     });
 
     kit::section(ui, "Keys");
-    let mut keys: Vec<(&str, String)> = Vec::new();
-    let mut add = |label: &'static str, env: &str| {
-        let env = env.trim();
-        if !env.is_empty() && !keys.iter().any(|(_, e)| e == env) {
-            keys.push((label, env.to_owned()));
-        }
-    };
-    if let Some(provider) = studio.library.providers.get(studio.library.provider) {
-        add("Chat", &provider.key_env);
-    }
-    add("Decision model", &studio.library.decision.key_env);
-    add("Voice", &studio.library.voice.api_key_env);
-    add("Microphone", &studio.library.listen.api_key_env);
+    let configured =
+        |session: &str, env: &str| !session.trim().is_empty() || loaded_environment_key(env);
+    let gateway =
+        loaded_environment_key("AI_GATEWAY_API_KEY") || loaded_environment_key("VERCEL_OIDC_TOKEN");
+    let decision = &studio.library.decision;
+    let voice = &studio.library.voice;
+    let keys = [
+        (
+            "Chat",
+            studio
+                .library
+                .providers
+                .get(studio.library.provider)
+                .is_some_and(|p| p.has_key()),
+        ),
+        (
+            "Decision model",
+            configured(&decision.session_key, &decision.key_env)
+                || (decision.key_env.trim() == "AI_GATEWAY_API_KEY" && gateway),
+        ),
+        (
+            "Voice",
+            configured(&studio.voice_key, &voice.api_key_env)
+                || (voice.adapter == VoiceAdapter::Vercel && gateway),
+        ),
+        (
+            "Microphone",
+            configured(&listening.session_key, &listening.config.api_key_env)
+                || (listening.config.backend == SttBackend::VercelGateway
+                    && listening.config.api_key_env.trim() == "AI_GATEWAY_API_KEY"
+                    && gateway),
+        ),
+    ];
     kit::card(ui, |c| {
-        for (label, env) in &keys {
-            let found = std::env::var_os(env).is_some_and(|v| !v.is_empty());
-            c.row(label, env, |ui| {
-                if found {
-                    ui.label(RichText::new("Ready").color(Color32::from_rgb(120, 190, 140)));
-                } else {
-                    ui.label(RichText::new("Missing").color(super::ACCENT))
-                        .on_hover_text("Add it to credentials.env in the app's data folder, or paste a session key under Advanced.");
-                }
+        for (label, loaded) in keys {
+            c.row(label, "", |ui| {
+                ui.label(RichText::new(if loaded { "Loaded" } else { "Not loaded" })
+                    .color(if loaded { Color32::from_rgb(120, 190, 140) } else { super::MUTED }))
+                    .on_hover_text("Reports saved or session credentials, not a successful connection. Local servers may not need a key.");
             });
         }
+        c.row(
+            "Session overrides",
+            "Saved gateway keys are reused automatically.",
+            |ui| {
+                if ui.small_button("Manage…").clicked() {
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(egui::Id::new(("open-advanced", "connections")), true)
+                    });
+                }
+            },
+        );
     });
+}
+fn loaded_environment_key(name: &str) -> bool {
+    !name.trim().is_empty()
+        && std::env::var(name.trim()).is_ok_and(|value| !value.trim().is_empty())
 }
 
 pub(super) fn group_chat(
@@ -558,7 +806,8 @@ pub(super) fn group_chat(
                     |ui| {
                         egui::ComboBox::from_id_salt("simple_add_companion")
                             .selected_text("Choose…")
-                            .width(200.0)
+                            .width(ui.available_width().min(240.0))
+                            .truncate()
                             .show_ui(ui, |ui| {
                                 for character in &library.characters {
                                     if Some(character.id) != library.selected
@@ -588,7 +837,7 @@ pub(super) fn group_chat(
                     .desired_width(f32::INFINITY)
                     .hint_text("Say something to the scene… (@name works too)"),
             );
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if busy {
                     ui.spinner();
                     if ui.button("Cancel").clicked() {
@@ -635,24 +884,15 @@ pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState) {
             |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     if ui
-                        .add(egui::TextEdit::singleline(&mut mcp.endpoint).desired_width(240.0))
+                        .add(
+                            egui::TextEdit::singleline(&mut mcp.endpoint)
+                                .desired_width(ui.available_width().min(240.0)),
+                        )
                         .changed()
                     {
                         mcp.disarm();
                     }
                 });
-            },
-        );
-        c.row(
-            "Access token",
-            "Optional. Kept for this session only.",
-            |ui| {
-                ui.add_enabled(
-                    !busy,
-                    egui::TextEdit::singleline(&mut mcp.session_token)
-                        .password(true)
-                        .desired_width(240.0),
-                );
             },
         );
         let status = mcp.status.clone();
@@ -665,6 +905,23 @@ pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState) {
             } else if ui.button("Load tools").clicked() {
                 mcp.list_tools();
             }
+        });
+        c.block(|ui| {
+            kit::advanced(ui, "tools_connection", |ui| {
+                kit::row(
+                    ui,
+                    "Access token",
+                    "Optional. Kept for this session only.",
+                    |ui| {
+                        ui.add_enabled(
+                            !busy,
+                            egui::TextEdit::singleline(&mut mcp.session_token)
+                                .password(true)
+                                .desired_width(ui.available_width().min(240.0)),
+                        );
+                    },
+                );
+            });
         });
     });
     if !mcp.tools.is_empty() {
@@ -680,8 +937,8 @@ pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
         if let Some(character) = studio.library.selected_character_mut() {
             let name = character.name.clone();
             if c.row(
-                &format!("Let {name} suggest coding tasks"),
-                "Suggestions wait for your review before any agent runs.",
+                "Suggest coding tasks",
+                &format!("{name} can suggest tasks. Review each before an agent runs."),
                 |ui| kit::toggle(ui, &mut character.delegation.enabled),
             )
             .changed()
@@ -702,4 +959,253 @@ pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
             },
         );
     });
+}
+
+#[cfg(test)]
+mod session_manager_tests {
+    use super::*;
+    fn frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        listening: &mut ListeningState,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800., 600.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| session_keys(ui, studio, listening),
+        );
+        output.textures_delta.clear();
+        output
+    }
+    fn text_rect(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| text_rect(shape, label)),
+            _ => None,
+        }
+    }
+    fn voice_frame(
+        ctx: &egui::Context,
+        studio: &mut Studio,
+        listening: &mut ListeningState,
+        size: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut speech = ModelCatalog::default();
+        let mut transcription = ModelCatalog::default();
+        let mut voices = waifu_studio::voice_library::VoiceLibraryState::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                voice(
+                    ui,
+                    studio,
+                    &mut speech,
+                    &mut transcription,
+                    listening,
+                    &mut voices,
+                    Some(0),
+                )
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+    fn click_events(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+    #[test]
+    fn voice_output_dropdown_clicks_fit_and_persist_all_modes_per_character() {
+        use waifu_studio::voice::VoiceOutput;
+        for size in [egui::vec2(1280., 800.), egui::vec2(800., 720.)] {
+            let root =
+                std::env::temp_dir().join(format!("voice-output-ui-{}", uuid::Uuid::new_v4()));
+            let (store, mut library) = waifu_studio::data::Store::open(root.clone()).unwrap();
+            let id = uuid::Uuid::new_v4();
+            library.characters.push(
+                serde_json::from_value(serde_json::json!({
+                    "id":id,"name":"Fixture","model":"fixture.vrm","persona":"","format":"vrm"
+                }))
+                .unwrap(),
+            );
+            library.selected = Some(id);
+            library.voice = VoiceConfig::preset(VoiceAdapter::FishLocal);
+            library.voice.endpoint = ":/invalid".into();
+            library.voice.api_key_env.clear();
+            library.voice.output = VoiceOutput::CallsOnly;
+            let mut studio = Studio::new(store, library);
+            let mut listening = ListeningState::default();
+            listening.config.endpoint = ":/invalid".into();
+            listening.config.api_key_env.clear();
+            let ctx = egui::Context::default();
+            let mut label = "Calls only";
+            for (pick, expected) in [
+                ("Local only", VoiceOutput::LocalOnly),
+                ("Local + calls", VoiceOutput::LocalAndCalls),
+                ("Calls only", VoiceOutput::CallsOnly),
+            ] {
+                let output = voice_frame(&ctx, &mut studio, &mut listening, size, vec![]);
+                let rect = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| text_rect(&shape.shape, label))
+                    .unwrap();
+                assert!(rect.min.x >= 0. && rect.max.x <= size.x);
+                voice_frame(
+                    &ctx,
+                    &mut studio,
+                    &mut listening,
+                    size,
+                    click_events(rect.center()),
+                );
+                let output = voice_frame(&ctx, &mut studio, &mut listening, size, vec![]);
+                let option = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| text_rect(&shape.shape, pick))
+                    .unwrap();
+                assert!(option.min.x >= 0. && option.max.x <= size.x);
+                voice_frame(
+                    &ctx,
+                    &mut studio,
+                    &mut listening,
+                    size,
+                    click_events(option.center()),
+                );
+                assert_eq!(studio.library.voice.output, expected);
+                let (_, saved) = waifu_studio::data::Store::open(root.clone()).unwrap();
+                assert_eq!(saved.voice.output, expected);
+                assert_eq!(
+                    saved
+                        .selected_character()
+                        .unwrap()
+                        .voice
+                        .as_ref()
+                        .unwrap()
+                        .output,
+                    expected
+                );
+                label = pick;
+            }
+            studio.library.selected = None;
+            let output = voice_frame(&ctx, &mut studio, &mut listening, size, vec![]);
+            assert!(output.shapes.iter().any(|shape| {
+                text_rect(
+                    &shape.shape,
+                    "Select a character to use call output. Previews stay local.",
+                )
+                .is_some()
+            }));
+            drop(studio);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+    fn shows_fixture_secret(shape: &egui::Shape) -> bool {
+        match shape {
+            egui::Shape::Text(text) => text.galley.job.text.contains("fixture-"),
+            egui::Shape::Vec(shapes) => shapes.iter().any(shows_fixture_secret),
+            _ => false,
+        }
+    }
+    #[test]
+    fn typing_session_keys_routes_to_each_feature_without_painting_or_saving_secrets() {
+        let root = std::env::temp_dir().join(format!("session-editor-{}", uuid::Uuid::new_v4()));
+        let (store, mut library) = waifu_studio::data::Store::open(root.clone()).unwrap();
+        library.provider = 0;
+        library.providers[0].session_key.clear();
+        library.decision.session_key.clear();
+        let mut studio = Studio::new(store, library);
+        studio.voice_key.clear();
+        let mut listening = ListeningState::default();
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut studio, &mut listening, vec![]);
+        for (label, key) in [
+            ("Chat", "fixture-chat-key"),
+            ("Decision model", "fixture-decision-key"),
+            ("Voice", "fixture-voice-key"),
+            ("Microphone", "fixture-microphone-key"),
+        ] {
+            let output = frame(&ctx, &mut studio, &mut listening, vec![]);
+            let rect = output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, label))
+                .unwrap();
+            let pos = egui::pos2(700., rect.center().y);
+            frame(
+                &ctx,
+                &mut studio,
+                &mut listening,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            let output = frame(
+                &ctx,
+                &mut studio,
+                &mut listening,
+                vec![egui::Event::Text(key.into())],
+            );
+            assert!(
+                !output
+                    .shapes
+                    .iter()
+                    .any(|shape| shows_fixture_secret(&shape.shape)),
+                "secret text must stay masked"
+            );
+        }
+        assert_eq!(studio.library.providers[0].session_key, "fixture-chat-key");
+        assert_eq!(studio.library.decision.session_key, "fixture-decision-key");
+        assert_eq!(studio.voice_key, "fixture-voice-key");
+        assert_eq!(listening.session_key, "fixture-microphone-key");
+        studio.store.save(&studio.library).unwrap();
+        let saved = std::fs::read_to_string(root.join("library.json")).unwrap();
+        assert!(!saved.contains("fixture-"));
+        assert!(
+            !serde_json::to_string(&listening.config)
+                .unwrap()
+                .contains("fixture-")
+        );
+        drop(studio);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

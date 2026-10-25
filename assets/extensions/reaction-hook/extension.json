@@ -1,0 +1,24 @@
+{
+  "api_version": 1,
+  "id": "studio.example.reaction-hook",
+  "version": "1.0.0",
+  "name": "Configurable reaction hook",
+  "description": "One-shot Python 3 reaction to a selected lifecycle event for the captured loaded character. Optional temporary expression and registered motion; no network or private reply text.",
+  "provenance": { "author": "Waifu Studio contributors", "license": "MIT" },
+  "hooks": [
+    { "event": "reply.finished", "handler": { "program": "hook.py" } },
+    { "event": "speech.started", "handler": { "program": "hook.py" } },
+    { "event": "speech.stopped", "handler": { "program": "hook.py" } },
+    { "event": "emotion.changed", "handler": { "program": "hook.py" } }
+  ],
+  "test_process": { "program": "hook.py", "args": ["--test"] },
+  "capabilities": ["lifecycle.observe", "motion.play", "expression.apply"],
+  "settings": [
+    { "id": "event", "label": "When", "type": "choice", "default": "Reply finished", "options": ["Reply finished", "Speech started", "Speech stopped", "Emotion changed"] },
+    { "id": "character", "label": "Character", "description": "Empty follows the loaded target. A saved character filters events; it never switches or retargets the loaded character.", "type": "character", "default": "" },
+    { "id": "motion", "label": "Motion", "type": "motion", "default": "studio.example.reaction-hook/nod" },
+    { "id": "expression", "label": "Expression", "description": "Optional expression at strength 0.75 for two seconds, overlapping the motion.", "type": "expression", "default": "" },
+    { "id": "active", "label": "React to events", "type": "toggle", "default": true }
+  ],
+  "content": { "motions": [{ "id": "nod", "name": "Reaction: Gentle Nod", "asset": "motions/nod.bvh", "role": "gesture", "loopable": false }] }
+}

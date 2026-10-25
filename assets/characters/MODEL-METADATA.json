@@ -1,29 +1,5 @@
 [
   {
-    "model": "models/55f2fa2ac87c-Elmer.vrm",
-    "sha256": "55f2fa2ac87cb8dfa21cb9b50eab7e549bacfd26077e51109be90bb20338376b",
-    "metadata": {
-      "name": "Elmer",
-      "version": "0.1.0",
-      "authors": [
-        "notelm"
-      ],
-      "copyrightInformation": "@　2025 notelm",
-      "thumbnailImage": 24,
-      "licenseUrl": "https://vrm.dev/licenses/1.0/",
-      "avatarPermission": "onlyAuthor",
-      "allowExcessivelyViolentUsage": false,
-      "allowExcessivelySexualUsage": false,
-      "commercialUsage": "personalNonProfit",
-      "allowPoliticalOrReligiousUsage": false,
-      "allowAntisocialOrHateUsage": false,
-      "creditNotation": "required",
-      "allowRedistribution": false,
-      "modification": "allowModificationRedistribution",
-      "otherLicenseUrl": "https://github.com/not-elm/desktop_homunculus"
-    }
-  },
-  {
     "model": "models/55badf725d08-AliciaSolid.vrm",
     "sha256": "55badf725d08ca7ab57c48e097adfea9c44d7025cef0065d128d23d853464058",
     "metadata": {
@@ -51,21 +27,6 @@
     }
   },
   {
-    "model": "models/848f99eb76e6-Zome.vrm",
-    "sha256": "848f99eb76e6e6fa3bed249b5e86be4e46e1d9a58a7b51ee1292d0d04dab6e52",
-    "metadata": {
-      "allowedUserName": "Everyone",
-      "author": "Yorshka",
-      "commercialUssageName": "Allow",
-      "licenseName": "Redistribution_Prohibited",
-      "sexualUssageName": "Allow",
-      "texture": 4,
-      "title": "ゾメちゃん",
-      "version": "1.3",
-      "violentUssageName": "Allow"
-    }
-  },
-  {
     "model": "models/0afa94b999e8-aldina.vrm",
     "sha256": "0afa94b999e8521aaae3f6df1eba386412800e08fa5f51232456e1471a876c5b",
     "metadata": {
@@ -81,22 +42,6 @@
       "commercialUssageName": "Allow",
       "otherPermissionUrl": "",
       "licenseName": "Redistribution_Prohibited"
-    }
-  },
-  {
-    "model": "models/78950b046daa-Lazuli_VRM.vrm",
-    "sha256": "78950b046daa169859025d1c1616e302da3a0980c29ef9d4049195f27f8ca462",
-    "metadata": {
-      "allowedUserName": "Everyone",
-      "author": "Elychiffon",
-      "commercialUssageName": "Disallow",
-      "licenseName": "Redistribution_Prohibited",
-      "reference": "https://elychiffon.booth.pm/items/5255692",
-      "sexualUssageName": "Allow",
-      "texture": 5,
-      "title": "ラズリ-Lazuli-",
-      "version": "v2.0.2",
-      "violentUssageName": "Allow"
     }
   },
   {
@@ -385,6 +330,138 @@
       "texture": 25,
       "title": "hikkyc2",
       "violentUssageName": "Disallow"
+    }
+  },
+  {
+    "model": "models/9cf6019d46d1-hikari-arkit.vrm",
+    "sha256": "9cf6019d46d143a0f3c06344bdd30b9c93884a18716942f1f00e336f13a9a8b2",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "",
+      "licenseName": "Redistribution_Prohibited",
+      "otherLicenseUrl": "",
+      "otherPermissionUrl": "",
+      "reference": "",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "cool_riko",
+      "version": "",
+      "violentUssageName": "Disallow"
+    },
+    "provenance": {
+      "source_file": "Cool_HIKKY_ARKit.vrm",
+      "exporter": "saturday06_blender_vrm_exporter_experimental_4.7.1",
+      "morph_targets": 133,
+      "arkit_channels": 52,
+      "expression_clips": 88,
+      "default_for": "Hikari-chan",
+      "license_note": "Original avatar license metadata retained. Private local use; no additional redistribution rights."
+    }
+  },
+  {
+    "model": "models/81453f3567d8-hikari-wardrobe.vrm",
+    "sha256": "81453f3567d8c57e2153a2aa232931a2e09b537c301ba82b8b8abfe3055ba21a",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "",
+      "licenseName": "Redistribution_Prohibited",
+      "otherLicenseUrl": "",
+      "otherPermissionUrl": "",
+      "reference": "",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "cool_riko",
+      "version": "",
+      "violentUssageName": "Disallow"
+    },
+    "provenance": {
+      "source_file": "Cool_HIKKY_Wardrobe.vrm",
+      "exporter": "saturday06_blender_vrm_exporter_experimental_4.7.1",
+      "morph_targets": 133,
+      "expression_clips": 89,
+      "license_note": "Original private avatar license retained; no additional redistribution rights."
+    }
+  },
+  {
+    "model": "models/7b7f106a9b2c-hikari-cel.vrm",
+    "sha256": "7b7f106a9b2cfccb6c02c485d64d73040e68e4209f46610b3e538e8a842049c6",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "",
+      "licenseName": "Redistribution_Prohibited",
+      "otherLicenseUrl": "",
+      "otherPermissionUrl": "",
+      "reference": "",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "cool_riko",
+      "version": "",
+      "violentUssageName": "Disallow"
+    },
+    "provenance": {
+      "source_file": "Cool_HIKKY_Cel.vrm",
+      "exporter": "saturday06_blender_vrm_exporter_experimental_4.7.1",
+      "morph_targets": 133,
+      "expression_clips": 88,
+      "license_note": "Original private avatar license retained; no additional redistribution rights."
+    }
+  },
+  {
+    "model": "models/99a95e9e829b-hikari-moto.vrm",
+    "sha256": "99a95e9e829bc9327833ddd8e1e8aa664ee7317020d2de32d7161a42dd3d92dd",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "",
+      "licenseName": "Redistribution_Prohibited",
+      "otherLicenseUrl": "",
+      "otherPermissionUrl": "",
+      "reference": "",
+      "sexualUssageName": "Disallow",
+      "texture": 23,
+      "title": "cool_riko",
+      "version": "",
+      "violentUssageName": "Disallow"
+    },
+    "provenance": {
+      "source_file": "Cool_HIKKY_Moto.vrm",
+      "exporter": "saturday06_blender_vrm_exporter_experimental_4.7.1",
+      "morph_targets": 81,
+      "expression_clips": 41,
+      "license_note": "Original private avatar license retained; no additional redistribution rights."
+    }
+  },
+  {
+    "model": "models/a4f45d37bdbb-hikari-refined.vrm",
+    "sha256": "a4f45d37bdbb1615dc610d518fb8cf35cac4d277780af595d97ccf48551b9cec",
+    "metadata": {
+      "allowedUserName": "OnlyAuthor",
+      "author": "bo3_0xff",
+      "commercialUssageName": "Disallow",
+      "contactInformation": "",
+      "licenseName": "Redistribution_Prohibited",
+      "otherLicenseUrl": "",
+      "otherPermissionUrl": "",
+      "reference": "",
+      "sexualUssageName": "Disallow",
+      "texture": 21,
+      "title": "cool_riko",
+      "version": "",
+      "violentUssageName": "Disallow"
+    },
+    "provenance": {
+      "source_file": "Cool_HIKKY_Refined.vrm",
+      "exporter": "saturday06_blender_vrm_exporter_experimental_4.7.1",
+      "morph_targets": 81,
+      "expression_clips": 41,
+      "license_note": "Original private avatar license retained; no additional redistribution rights."
     }
   }
 ]

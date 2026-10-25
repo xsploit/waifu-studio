@@ -1,27 +1,38 @@
-//! Causal polyphase windowed-sinc conversion to 16 kHz. Coefficients and history
+//! Causal polyphase windowed-sinc rate conversion. Coefficients and history
 //! are allocated once; the microphone callback does no allocation or trig.
 const BASE_TAPS: usize = 128;
 const PHASES: usize = 64;
-const TARGET: u64 = 16_000;
+pub(super) type Resampler = Polyphase<16_000, 4>;
 
-pub(super) struct Resampler {
+pub(crate) struct Polyphase<const TARGET: u64, const MAX_OUTPUT: usize> {
     rate: u64,
     phase: u64,
     history: Vec<f32>,
     cursor: usize,
     coefficients: Vec<Vec<f32>>,
 }
-impl Resampler {
-    pub(super) fn new(rate: u32) -> Self {
+impl<const TARGET: u64, const MAX_OUTPUT: usize> Polyphase<TARGET, MAX_OUTPUT> {
+    pub(crate) fn new(rate: u32) -> Self {
         assert!(
             (4000..=384_000).contains(&rate),
             "unsupported microphone rate"
         );
+        Self::with_rate_bounds(rate, 4000, 384_000)
+    }
+    /// Playback speed changes the effective clock without changing the native
+    /// microphone format contract enforced by `new`.
+    pub(crate) fn for_playback(rate: u32) -> Self {
+        Self::with_rate_bounds(rate, 2000, 768_000)
+    }
+    fn with_rate_bounds(rate: u32, minimum: u32, maximum: u32) -> Self {
+        assert!((minimum..=maximum).contains(&rate));
+        assert!((4000..=48_000).contains(&TARGET));
+        assert!(MAX_OUTPUT >= TARGET.div_ceil(minimum as u64) as usize);
         let taps = BASE_TAPS * rate.div_ceil(48_000) as usize;
         let coefficients = if rate == TARGET as u32 {
             Vec::new()
         } else {
-            // Retain speech below 7 kHz at the target rate, with a transition
+            // Retain 87.5% of target Nyquist, with a transition
             // band before Nyquist. At lower source rates protect their Nyquist.
             let cutoff = 0.4375 * (rate.min(TARGET as u32) as f64) / rate as f64;
             (0..PHASES)
@@ -54,10 +65,24 @@ impl Resampler {
             coefficients,
         }
     }
-    /// At most four outputs per input (the supported input minimum is 4 kHz).
-    pub(super) fn push(&mut self, sample: f32) -> ([f32; 4], usize) {
+    /// Conservative output count for a batch plus the causal filter tail.
+    pub(crate) fn output_bound_with_tail(&self, input: usize) -> usize {
+        ((input + self.tail_input_frames()) as u64 * TARGET).div_ceil(self.rate) as usize
+    }
+    /// Zero inputs needed to retain the causal filter tail at end of stream.
+    pub(crate) fn tail_input_frames(&self) -> usize {
         if self.rate == TARGET {
-            return ([sample, 0.0, 0.0, 0.0], 1);
+            0
+        } else {
+            self.history.len() - 1
+        }
+    }
+    /// Output capacity covers target/minimum-input-rate, checked at construction.
+    pub(crate) fn push(&mut self, sample: f32) -> ([f32; MAX_OUTPUT], usize) {
+        if self.rate == TARGET {
+            let mut output = [0.0; MAX_OUTPUT];
+            output[0] = sample;
+            return (output, 1);
         }
         self.history[self.cursor] = sample;
         self.cursor += 1;
@@ -65,7 +90,7 @@ impl Resampler {
             self.cursor = 0;
         }
         self.phase += TARGET;
-        let mut output = [0.0; 4];
+        let mut output = [0.0; MAX_OUTPUT];
         let mut count = 0;
         while self.phase >= self.rate {
             self.phase -= self.rate;

@@ -1,0 +1,68 @@
+{
+  "Subscription": {
+    "subscription": {
+      "type": "channel.subscribe",
+      "version": "1"
+    },
+    "event": {
+      "user_id": "10001",
+      "user_login": "example_viewer",
+      "user_name": "Example Viewer",
+      "broadcaster_user_id": "10002",
+      "broadcaster_user_login": "example_channel",
+      "broadcaster_user_name": "Example Channel",
+      "tier": "1000",
+      "is_gift": false
+    }
+  },
+  "Cheer": {
+    "subscription": {
+      "type": "channel.cheer",
+      "version": "1"
+    },
+    "event": {
+      "is_anonymous": false,
+      "user_id": "10001",
+      "user_login": "example_viewer",
+      "user_name": "Example Viewer",
+      "broadcaster_user_id": "10002",
+      "broadcaster_user_login": "example_channel",
+      "broadcaster_user_name": "Example Channel",
+      "message": "Cheer100 hello!",
+      "bits": 100
+    }
+  },
+  "Chat message": {
+    "subscription": {
+      "type": "channel.chat.message",
+      "version": "1"
+    },
+    "event": {
+      "broadcaster_user_id": "10002",
+      "broadcaster_user_login": "example_channel",
+      "broadcaster_user_name": "Example Channel",
+      "chatter_user_id": "10001",
+      "chatter_user_login": "example_viewer",
+      "chatter_user_name": "Example Viewer",
+      "message_id": "00000000-0000-4000-8000-000000000001",
+      "message": {
+        "text": "Hello Hikari!",
+        "fragments": [
+          {
+            "type": "text",
+            "text": "Hello Hikari!",
+            "cheermote": null,
+            "emote": null,
+            "mention": null
+          }
+        ]
+      },
+      "message_type": "text",
+      "badges": [],
+      "cheer": null,
+      "color": "#AABBCC",
+      "reply": null,
+      "channel_points_custom_reward_id": null
+    }
+  }
+}

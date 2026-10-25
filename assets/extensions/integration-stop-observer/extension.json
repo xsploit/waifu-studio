@@ -1,0 +1,28 @@
+{
+  "api_version": 1,
+  "id": "studio.example.integration-stop-observer",
+  "version": "1.0.0",
+  "name": "Integration exit observer",
+  "description": "Local Python 3 metadata-only hooks that distinguish host stop requests from confirmed persistent-process exits. No actions or network.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "extension.stopping",
+      "handler": {
+        "program": "observer.py"
+      }
+    },
+    {
+      "event": "extension.stopped",
+      "handler": {
+        "program": "observer.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

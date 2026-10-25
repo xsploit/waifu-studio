@@ -11,11 +11,9 @@ pub fn ui(
     facts: &waifu_studio::facts_memory::FactsMemoryState,
 ) {
     ui.separator();
-    kit::section(ui, "Semantic lookup (optional)");
-    kit::note(
-        ui,
-        "Finds related explicit notes or current accepted evidence records with an OpenAI-compatible /embeddings endpoint. The selected source is indexed in the background after opt-in. Use Find memories for current draft to send that draft as a lookup query. Matching results attach once when you send the same draft. Chat does not add new memories automatically.",
-    );
+    kit::section(ui, "Semantic lookup");
+    ui.small("Find related notes or accepted evidence.")
+        .on_hover_text("Uses an OpenAI-compatible /embeddings endpoint. After opt-in, the selected source is indexed in the background. Find memories for current draft sends that draft as a query; matches attach once when you send the same draft. Chat does not add memories automatically.");
     if !state.settings_loaded() {
         ui.label("Loading settings…");
         return;
@@ -53,10 +51,8 @@ pub fn ui(
                 });
         },
     );
-    kit::note(
-        ui,
-        "Evidence mode sends current accepted record text, type and quoted evidence to the embedding endpoint. Pending candidates and stale/expired/corrected records are excluded.",
-    );
+    ui.small("Evidence lookup uses accepted records only.")
+        .on_hover_text("Sends current accepted record text, type, and quoted evidence to the embedding endpoint. Pending candidates and stale, expired, or corrected records are excluded.");
     kit::text_row(
         ui,
         "API base URL",
@@ -72,18 +68,23 @@ pub fn ui(
         &mut s.key_env,
         "e.g. EMBEDDING_API_KEY",
     );
-    kit::slider_row(
-        ui,
-        "Results",
-        "Maximum matching entries.",
-        egui::Slider::new(&mut s.top_k, 1..=8),
-    );
-    kit::slider_row(
-        ui,
-        "Minimum similarity",
-        "",
-        egui::Slider::new(&mut s.min_score, -1.0..=1.0),
-    );
+    egui::CollapsingHeader::new("Advanced · matching")
+        .id_salt("semantic_matching_advanced")
+        .default_open(false)
+        .show(ui, |ui| {
+            kit::slider_row(
+                ui,
+                "Results",
+                "Maximum matching entries.",
+                egui::Slider::new(&mut s.top_k, 1..=8),
+            );
+            kit::slider_row(
+                ui,
+                "Minimum similarity",
+                "",
+                egui::Slider::new(&mut s.min_score, -1.0..=1.0),
+            );
+        });
     kit::toggle_row(ui, "Allow non-local endpoint", "", &mut s.allow_remote);
     if s.allow_remote {
         ui.colored_label(
@@ -91,7 +92,7 @@ pub fn ui(
             "Selected memory entries and looked-up drafts will be sent to this server, which may charge per request.",
         );
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
                 state.settings_dirty(),

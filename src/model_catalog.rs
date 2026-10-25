@@ -76,7 +76,7 @@ impl Default for ModelCatalog {
         let (tx, rx) = mpsc::channel();
         Self {
             models: Vec::new(),
-            status: "Choose a speech provider to discover models".into(),
+            status: "Choose a connection to load models".into(),
             loading: false,
             fingerprint: String::new(),
             signature: None,
@@ -154,7 +154,7 @@ impl ModelCatalog {
             match result {
                 Ok(models) => {
                     self.status = if models.is_empty() {
-                        "No matching models advertised; enter a model ID manually".into()
+                        "No models listed; use an exact model ID".into()
                     } else {
                         format!("{} models available", models.len())
                     };
@@ -187,7 +187,7 @@ impl ModelCatalog {
             .iter()
             .map(|s| (*s).into())
             .collect();
-            self.status = "Fish hosted models (documented model list)".into();
+            self.status = "Fish models · documented list".into();
             return;
         }
         let key_env = key_env.trim().to_owned();
@@ -195,11 +195,11 @@ impl ModelCatalog {
         let generation = self.generation;
         let tx = self.tx.clone();
         let Some(permit) = Worker::acquire() else {
-            self.status = "Model discovery is busy; retry shortly".into();
+            self.status = "Model discovery busy · retry shortly".into();
             return;
         };
         self.loading = true;
-        self.status = "Loading available models…".into();
+        self.status = "Loading models…".into();
         if std::thread::Builder::new()
             .name("speech-catalog".into())
             .spawn(move || {

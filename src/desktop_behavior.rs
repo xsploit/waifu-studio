@@ -18,10 +18,11 @@ use std::{
 };
 use waifu_studio::{
     animation::{AnimationState, BvhClip, parse_vrma},
+    desktop_interaction::SurfaceId,
     desktop_interaction::{
-        DesktopInteraction, DesktopSurface, InteractionFrame, InteractionInput, InteractionState,
-        ScreenRect, SurfaceId,
+        DesktopInteraction, InteractionFrame, InteractionInput, InteractionState,
     },
+    desktop_occlusion::{DesktopOcclusion, DesktopOcclusionPlugin},
     desktop_platform::{DesktopBridge, DesktopSnapshot},
     loading::AvatarLoadState,
 };
@@ -29,16 +30,17 @@ use waifu_studio::{
 pub struct DesktopBehaviorPlugin;
 impl Plugin for DesktopBehaviorPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DesktopInteraction>()
+        app.add_plugins(DesktopOcclusionPlugin)
+            .init_resource::<DesktopInteraction>()
             .init_resource::<DesktopGrab>()
             .init_resource::<DesktopMenu>()
             .init_resource::<DesktopMotions>()
             .init_resource::<DesktopPlatform>()
-            .init_resource::<DesktopPointerHit>()
             .add_systems(
                 PostUpdate,
                 grab_companion.after(bevy::transform::TransformSystems::Propagate),
             )
+            .add_systems(PostUpdate, sync_occlusion.after(grab_companion))
             .add_systems(Update, (sync_desktop_platform, play_desktop_motion))
             .add_systems(
                 Update,
@@ -81,7 +83,7 @@ fn consume_desktop_move_request(
     mut settings: ResMut<DesktopSettings>,
     mut primary: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    let Some(request) = settings.move_requested.take() else {
+    let Some(mut request) = settings.move_requested.take() else {
         return;
     };
     let Ok(mut window) = primary.single_mut() else {
@@ -89,6 +91,24 @@ fn consume_desktop_move_request(
         return;
     };
     settings.placement_status = if let Some(bridge) = &platform.bridge {
+        let placement = bridge.snapshot().ok().and_then(|snapshot| {
+            verified_snap_placement(
+                &settings,
+                &snapshot,
+                request.logical_origin,
+                window.resolution.size(),
+            )
+        });
+        let Some(placement) = placement else {
+            settings.placement_status =
+                "Could not snap: waiting for verified desktop bounds.".into();
+            return;
+        };
+        request.logical_origin = Vec2::from_array(placement.window_origin);
+        request.native_position_supported = false;
+        window
+            .resolution
+            .set(placement.avatar_size[0], placement.avatar_size[1]);
         route_move_request(
             request,
             &mut window,
@@ -99,36 +119,36 @@ fn consume_desktop_move_request(
     };
 }
 
-#[derive(Resource, Default, Clone, Copy)]
-pub(crate) struct DesktopPointerHit {
-    pub avatar_hit: bool,
-    /// A global cursor remains observable while native hit testing is disabled.
-    pub tracking_available: bool,
-    sampled_at: Option<Instant>,
+fn verified_snap_placement(
+    settings: &DesktopSettings,
+    snapshot: &DesktopSnapshot,
+    target: Vec2,
+    size: Vec2,
+) -> Option<waifu_studio::desktop_perch::PerchPlacement> {
+    let area = snapshot
+        .surfaces
+        .iter()
+        .filter(|surface| matches!(surface.id, SurfaceId::Monitor(_)))
+        .min_by(|a, b| {
+            let distance = |rect: waifu_studio::desktop_interaction::ScreenRect| {
+                target.distance_squared(target.max(rect.origin).min(rect.origin + rect.size))
+            };
+            distance(a.rect).total_cmp(&distance(b.rect))
+        })?;
+    waifu_studio::desktop_perch::calculate_placement(
+        &settings.perch,
+        waifu_studio::desktop_perch::ViewportRect {
+            origin: area.rect.origin.to_array(),
+            size: area.rect.size.to_array(),
+        },
+        size.to_array(),
+    )
 }
-impl DesktopPointerHit {
-    pub fn hit_test(
-        self,
-        manual_pass: bool,
-        recovery_ready: bool,
-        dragging: bool,
-        menu_open: bool,
-        now: Instant,
-    ) -> bool {
-        if manual_pass {
-            // Full passthrough needs a separate recovery window. Automatic
-            // margin passthrough can recover from the global cursor itself.
-            return !recovery_ready;
-        }
-        if dragging || menu_open {
-            return true;
-        }
-        let fresh = self
-            .sampled_at
-            .and_then(|at| now.checked_duration_since(at))
-            .is_some_and(|age| age <= Duration::from_millis(500));
-        !self.tracking_available || !fresh || self.avatar_hit
-    }
+
+/// Native input stays enabled unless the user explicitly chose full
+/// passthrough and its separate recovery window is ready.
+pub(crate) fn desktop_accepts_input(manual_pass: bool, recovery_ready: bool) -> bool {
+    !manual_pass || !recovery_ready
 }
 
 fn trusted_viewport_cursor(snapshot: &DesktopSnapshot, now: Instant) -> Option<Vec2> {
@@ -140,72 +160,33 @@ fn trusted_viewport_cursor(snapshot: &DesktopSnapshot, now: Instant) -> Option<V
     cursor.is_finite().then_some(cursor)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn track_desktop_pointer(
     studio: Res<Studio>,
     platform: Res<DesktopPlatform>,
     state: Res<AvatarLoadState>,
-    primary: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<PrimaryEguiContext>>,
-    parents: Query<&ChildOf>,
-    outlines: Query<(), With<MeshMaterial3d<bevy_shader_mtoon::OutlineMaterial>>>,
-    mut raycast: MeshRayCast,
-    mut hit: ResMut<DesktopPointerHit>,
     mut gaze_pointer: ResMut<waifu_studio::gaze::GazePointer>,
 ) {
-    *hit = DesktopPointerHit::default();
-    gaze_pointer.update(None, Instant::now());
-    if studio.mode != ViewMode::Desktop {
+    let now = Instant::now();
+    gaze_pointer.update(None, now);
+    if studio.mode != ViewMode::Desktop || state.active.is_none() {
         return;
     }
-    let (Ok(window), Ok((camera, transform)), Some(root)) =
-        (primary.single(), cameras.single(), state.active)
-    else {
-        return;
-    };
-    let now = Instant::now();
-    let snapshot = platform
+    if let Some(snapshot) = platform
         .bridge
         .as_ref()
-        .and_then(|bridge| bridge.snapshot().ok());
-    let trusted = snapshot
-        .as_ref()
-        .and_then(|snapshot| trusted_viewport_cursor(snapshot, now));
-    gaze_pointer.update(
-        trusted,
-        snapshot
-            .as_ref()
-            .map_or(now, |snapshot| snapshot.received_at),
-    );
-    let Some(cursor) = trusted.or_else(|| window.cursor_position()) else {
-        return;
-    };
-    let Ok(ray) = camera.viewport_to_world(transform, cursor) else {
-        return;
-    };
-    hit.avatar_hit = !raycast
-        .cast_ray(
-            ray,
-            &MeshRayCastSettings {
-                filter: &|entity| {
-                    (entity == root
-                        || parents
-                            .iter_ancestors(entity)
-                            .any(|ancestor| ancestor == root))
-                        && outlines.get(entity).is_err()
-                },
-                ..default()
-            },
-        )
-        .is_empty();
-    // Native window cursors alone cannot safely recover hover after passthrough.
-    hit.tracking_available = trusted.is_some();
-    hit.sampled_at = Some(now);
+        .and_then(|bridge| bridge.snapshot().ok())
+    {
+        gaze_pointer.update(
+            trusted_viewport_cursor(&snapshot, now),
+            snapshot.received_at,
+        );
+    }
 }
 
 #[derive(Resource, Default)]
 pub(crate) struct DesktopGrab {
     pub active: bool,
+    bridge_drag: bool,
     compositor_seen: bool,
     started: Option<std::time::Instant>,
     avatar: Option<Entity>,
@@ -216,16 +197,66 @@ struct DesktopPlatform {
     bridge: Option<Arc<DesktopBridge>>,
     pending: Option<Mutex<mpsc::Receiver<Result<DesktopBridge, String>>>>,
     attempted: bool,
+    above_panels: Option<bool>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_occlusion(
+    mut commands: Commands,
+    studio: Res<Studio>,
+    settings: Res<DesktopSettings>,
+    grab: Res<DesktopGrab>,
+    interaction: Res<DesktopInteraction>,
+    platform: Res<DesktopPlatform>,
+    state: Res<AvatarLoadState>,
+    cameras: Query<(Entity, &Camera, &GlobalTransform), With<crate::runtime::StudioCamera>>,
+    bones: Query<(Entity, &HumanBoneName, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
+) {
+    for (entity, camera, camera_transform) in &cameras {
+        let mask = (|| {
+            if studio.mode != ViewMode::Desktop
+                || !settings.window_occlusion
+                || !settings.sitting
+                || grab.active
+            {
+                return None;
+            }
+            let seat = interaction.seated_surface()?;
+            let snapshot = platform.bridge.as_ref()?.snapshot().ok()?;
+            let root = state.active?;
+            let (_, _, hips) = bones.iter().find(|(entity, bone, _)| {
+                **bone == HumanBoneName::Hips
+                    && (*entity == root
+                        || parents
+                            .iter_ancestors(*entity)
+                            .any(|ancestor| ancestor == root))
+            })?;
+            // A small relative depth clearance keeps the contact surface just
+            // behind the pelvis, independent of avatar/world scale.
+            let depth = camera.world_to_ndc(camera_transform, hips.translation())?.z * 0.99;
+            Some(DesktopOcclusion::for_seat(
+                &snapshot,
+                seat,
+                depth,
+                Instant::now(),
+            ))
+        })()
+        .unwrap_or_default();
+        commands.entity(entity).insert(mask);
+    }
 }
 
 fn sync_desktop_platform(
     studio: Res<Studio>,
     mut settings: ResMut<DesktopSettings>,
     mut platform: ResMut<DesktopPlatform>,
+    #[cfg(windows)] primary: Query<&bevy::window::RawHandleWrapper, With<PrimaryWindow>>,
 ) {
     if studio.mode != ViewMode::Desktop || !settings.kwin_window_surfaces {
         platform.pending = None;
         platform.attempted = false;
+        platform.above_panels = None;
         if let Some(bridge) = platform.bridge.take() {
             // Unloading a compositor script may block on D-Bus, never the frame loop.
             std::thread::spawn(move || drop(bridge));
@@ -234,11 +265,24 @@ fn sync_desktop_platform(
         return;
     }
     if !platform.attempted {
+        #[cfg(windows)]
+        let native_window = {
+            let Ok(handle) = primary.single() else {
+                return;
+            };
+            let wgpu::rwh::RawWindowHandle::Win32(handle) = handle.get_window_handle() else {
+                return;
+            };
+            handle.hwnd.get() as usize
+        };
         platform.attempted = true;
         settings.surface_status = "Starting temporary desktop window tracking…".into();
         let (sender, receiver) = mpsc::sync_channel(1);
         platform.pending = Some(Mutex::new(receiver));
         std::thread::spawn(move || {
+            #[cfg(windows)]
+            let _ = sender.send(DesktopBridge::start_windows(native_window));
+            #[cfg(not(windows))]
             let _ = sender.send(DesktopBridge::start("Waifu Studio"));
         });
     }
@@ -256,9 +300,24 @@ fn sync_desktop_platform(
         }
     }
     if let Some(bridge) = &platform.bridge {
-        settings.surface_status = match bridge.snapshot() {
+        let stacking_error = bridge.request_keep_above(settings.always_on_top).err();
+        let snapshot = bridge.snapshot();
+        settings.surface_status = match snapshot {
             Ok(snapshot) if snapshot.own_window_rect.is_some() => {
-                "Desktop geometry connected; drag above a window edge to sit.".into()
+                if platform.above_panels != snapshot.own_above_panels {
+                    platform.above_panels = snapshot.own_above_panels;
+                    info!(
+                        "Desktop companion above panels: {:?}",
+                        snapshot.own_above_panels
+                    );
+                }
+                stacking_error.unwrap_or_else(|| {
+                    if settings.always_on_top && snapshot.own_above_panels == Some(false) {
+                        "Desktop connected; waiting for the compositor to place the companion above panels.".into()
+                    } else {
+                        "Desktop geometry connected; drag above a window edge or taskbar to sit.".into()
+                    }
+                })
             }
             Ok(_) => "Desktop bridge connected; waiting for the companion window.".into(),
             Err(error) => error,
@@ -324,7 +383,7 @@ fn play_desktop_motion(
 ) {
     if studio.mode != ViewMode::Desktop || !settings.automatic_motions {
         if let Some(previous) = motions.previous.take() {
-            *animation = previous;
+            animation.restore_parked(previous);
         }
         motions.selected = None;
         return;
@@ -345,7 +404,7 @@ fn play_desktop_motion(
     };
     let (clip, path) = (clip.clone(), path.clone());
     if motions.previous.is_none() {
-        motions.previous = Some(std::mem::take(&mut *animation));
+        motions.previous = Some(animation.park_for_desktop());
     }
     animation.select_clip(clip, Some(path));
     motions.selected = Some(next);
@@ -358,24 +417,26 @@ fn grab_companion(
     menu: Res<DesktopMenu>,
     platform: Res<DesktopPlatform>,
     buttons: Res<ButtonInput<MouseButton>>,
+    mut mouse_events: MessageReader<bevy::input::mouse::MouseButtonInput>,
     state: Res<AvatarLoadState>,
     mut grab: ResMut<DesktopGrab>,
     mut interaction: ResMut<DesktopInteraction>,
     mut settings: ResMut<DesktopSettings>,
-    mut primary: Query<
-        (Entity, &mut Window, Option<&bevy::window::OnMonitor>),
-        With<PrimaryWindow>,
-    >,
+    mut primary: Query<(Entity, &mut Window), With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<PrimaryEguiContext>>,
     (bones, globals): (
         Query<(Entity, &HumanBoneName, &GlobalTransform)>,
         Query<&GlobalTransform>,
     ),
     parents: Query<&ChildOf>,
-    outlines: Query<(), With<MeshMaterial3d<bevy_shader_mtoon::OutlineMaterial>>>,
-    monitors: Query<&bevy::window::Monitor>,
-    mut raycast: MeshRayCast,
 ) {
+    // App-wide ButtonInput also sees auxiliary windows. Only a real press
+    // delivered to the companion window may start moving it.
+    let pressed_window = mouse_events
+        .read()
+        .filter(|event| event.button == MouseButton::Left && event.state.is_pressed())
+        .map(|event| event.window)
+        .last();
     if studio.mode != ViewMode::Desktop {
         *grab = DesktopGrab::default();
         *interaction = DesktopInteraction::default();
@@ -385,11 +446,8 @@ fn grab_companion(
         }
         return;
     }
-    let (
-        Ok((window_entity, mut window, current_monitor)),
-        Ok((camera, camera_transform)),
-        Some(root),
-    ) = (primary.single_mut(), cameras.single(), state.active)
+    let (Ok((window_entity, mut window)), Ok((camera, camera_transform)), Some(root)) =
+        (primary.single_mut(), cameras.single(), state.active)
     else {
         fail_sit_request(
             &mut settings,
@@ -429,27 +487,24 @@ fn grab_companion(
         .or_else(|| native_origin.map(|origin| origin.as_vec2() / window.scale_factor()));
     if !studio.click_through
         && !menu.blocks_drag()
-        && buttons.just_pressed(MouseButton::Left)
+        && pressed_window == Some(window_entity)
         && let Some(cursor) = cursor
-        && let Ok(ray) = camera.viewport_to_world(camera_transform, cursor)
-        && !raycast
-            .cast_ray(
-                ray,
-                &MeshRayCastSettings {
-                    filter: &|entity| descendant(entity) && outlines.get(entity).is_err(),
-                    ..default()
-                },
-            )
-            .is_empty()
+        && cursor.is_finite()
     {
         grab.active = true;
         grab.compositor_seen = false;
         grab.started = Some(std::time::Instant::now());
         settings.sitting = false;
         settings.sit_requested = None;
-        // Use the compositor's native pointer grab: no global-cursor polling or
-        // arbitrary surface positioning is required for moving on Wayland.
-        window.start_drag_move();
+        // Hyprland cannot report native drag completion. Keep Wayland's normal
+        // implicit pointer grab and move through its bridge instead, so release
+        // is delivered to us. KWin can observe a compositor-owned native grab.
+        grab.bridge_drag = snapshot.as_ref().is_some_and(|sample| {
+            sample.own_window_rect.is_some() && sample.own_interactive_move.is_none()
+        });
+        if !grab.bridge_drag {
+            window.start_drag_move();
+        }
         if let Some(origin) = logical_origin {
             let frame = InteractionFrame {
                 avatar_origin: origin,
@@ -471,11 +526,15 @@ fn grab_companion(
     }
     let compositor_drag = snapshot
         .as_ref()
-        .is_some_and(|snapshot| snapshot.own_interactive_move);
-    grab.compositor_seen |= grab.active && compositor_drag;
+        .and_then(|snapshot| snapshot.own_interactive_move);
+    grab.compositor_seen |= grab.active && compositor_drag == Some(true);
     let released = native_drag_released(
         &grab,
-        compositor_drag,
+        if grab.bridge_drag {
+            None
+        } else {
+            compositor_drag
+        },
         snapshot
             .as_ref()
             .filter(|snapshot| snapshot.own_window_rect.is_some())
@@ -493,6 +552,32 @@ fn grab_companion(
                 "Finish moving the companion before requesting a seat.".into();
         }
         settings.sitting = false;
+        if grab.bridge_drag
+            && let (Some(sample), Some(bridge)) = (&snapshot, &platform.bridge)
+            && let Some(rect) = sample.own_window_rect
+        {
+            let frame = InteractionFrame {
+                avatar_origin: rect.origin,
+                avatar_size: window.resolution.size(),
+                hips_offset: Vec2::ZERO,
+                root_offset: Vec2::ZERO,
+                feet_offset: None,
+                pixels_per_unit: 1.,
+                surfaces: &[],
+                own_window_ids: &[],
+            };
+            let output = interaction.handle(
+                InteractionInput::Move {
+                    cursor: sample.cursor,
+                },
+                &frame,
+            );
+            if let Err(error) = bridge.request_move(output.window_origin) {
+                settings.sitting_status = format!("Could not move the companion: {error}");
+                grab.active = false;
+                *interaction = DesktopInteraction::default();
+            }
+        }
         return;
     }
     // Native Wayland intentionally does not disclose global surface positions.
@@ -559,27 +644,11 @@ fn grab_companion(
         .world_to_viewport(camera_transform, hip_transform.translation() + Vec3::Y)
         .map_or(window.height() / 2.0, |above| above.distance(hips));
     let scale = window.scale_factor();
-    let monitor = current_monitor.and_then(|current| monitors.get(current.0).ok());
-    let fallback_surfaces: Vec<_> = monitor
-        .into_iter()
-        .map(|monitor| DesktopSurface {
-            id: SurfaceId::WorkArea(0),
-            // Full monitor floor only; this is not an inferred taskbar/work-area edge.
-            rect: ScreenRect {
-                origin: monitor.physical_position.as_vec2() / scale,
-                size: Vec2::new(
-                    monitor.physical_width as f32,
-                    monitor.physical_height as f32,
-                ) / scale,
-            },
-            z_order: i32::MAX,
-        })
-        .collect();
+    // A monitor bottom is not the taskbar top. Without a compositor snapshot,
+    // leave placement manual instead of snapping the avatar under an unknown bar.
     let surfaces = snapshot
         .as_ref()
-        .map_or(fallback_surfaces.as_slice(), |snapshot| {
-            snapshot.surfaces.as_slice()
-        });
+        .map_or(&[][..], |snapshot| snapshot.surfaces.as_slice());
     let own_ids = snapshot
         .as_ref()
         .map_or(&[][..], |snapshot| snapshot.own_window_ids.as_slice());
@@ -684,17 +753,18 @@ fn fail_sit_request(
 
 fn native_drag_released(
     grab: &DesktopGrab,
-    compositor_drag: bool,
+    compositor_drag: Option<bool>,
     sampled_at: Option<std::time::Instant>,
     left_pressed: bool,
     focused: bool,
     now: std::time::Instant,
 ) -> bool {
     const START_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
-    if !grab.active || compositor_drag {
+    if !grab.active || compositor_drag == Some(true) {
         return false;
     }
-    let waiting = sampled_at.is_some()
+    let waiting = compositor_drag.is_some()
+        && sampled_at.is_some()
         && !grab.compositor_seen
         && grab
             .started
@@ -702,10 +772,11 @@ fn native_drag_released(
     // KWin can start and finish a short drag between samples, consuming the
     // button release. Only a distinct sample received after the startup grace
     // can confirm this case; repeatedly cloning a cached premove frame cannot.
-    let fresh_native_end = grab
-        .started
-        .zip(sampled_at)
-        .is_some_and(|(start, at)| at.saturating_duration_since(start) >= START_GRACE);
+    let fresh_native_end = compositor_drag == Some(false)
+        && grab
+            .started
+            .zip(sampled_at)
+            .is_some_and(|(start, at)| at.saturating_duration_since(start) >= START_GRACE);
     !waiting && (grab.compositor_seen || fresh_native_end || !left_pressed || !focused)
 }
 
@@ -725,6 +796,44 @@ fn finish_native_drop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waifu_studio::desktop_interaction::{DesktopSurface, ScreenRect, SurfaceId};
+
+    #[test]
+    fn verified_snap_uses_usable_bounds_above_the_panel() {
+        let mut snapshot = DesktopSnapshot {
+            received_at: Instant::now(),
+            surfaces: Vec::new(),
+            own_window_ids: Vec::new(),
+            own_window_rect: None,
+            own_interactive_move: None,
+            own_above_panels: None,
+            cursor: Vec2::ZERO,
+        };
+        snapshot.surfaces = vec![DesktopSurface {
+            id: SurfaceId::Monitor(1),
+            rect: ScreenRect {
+                origin: Vec2::new(-1920., 0.),
+                size: Vec2::new(1920., 1040.),
+            },
+            z_order: i32::MAX,
+        }];
+        let mut settings = DesktopSettings::default();
+        settings.perch.mode = waifu_studio::desktop_perch::PerchMode::ScreenRight;
+        let p = verified_snap_placement(
+            &settings,
+            &snapshot,
+            Vec2::new(-500., 500.),
+            Vec2::new(420., 640.),
+        )
+        .unwrap();
+        assert!(p.window_origin[1] + p.avatar_size[1] <= 1040.);
+        assert!(p.window_origin[0] + p.avatar_size[0] <= 0.);
+        snapshot.surfaces.clear();
+        assert!(
+            verified_snap_placement(&settings, &snapshot, Vec2::ZERO, Vec2::new(420., 640.))
+                .is_none()
+        );
+    }
 
     #[test]
     fn snap_routes_logical_coordinates_through_bridge_and_only_uses_supported_native_fallback() {
@@ -770,60 +879,20 @@ mod tests {
     }
 
     #[test]
-    fn transparent_margin_passes_clicks_but_avatar_drag_menu_and_recovery_remain_interactive() {
-        let now = Instant::now();
-        let margin = DesktopPointerHit {
-            avatar_hit: false,
-            tracking_available: true,
-            sampled_at: Some(now),
-        };
-        assert!(!margin.hit_test(false, true, false, false, now));
+    fn ordinary_companion_always_receives_clicks_and_passthrough_requires_explicit_recovery() {
+        for recovery_ready in [false, true] {
+            assert!(
+                desktop_accepts_input(false, recovery_ready),
+                "A failed or stale mesh/hover test must never disable native input"
+            );
+        }
         assert!(
-            !margin.hit_test(false, false, false, false, now),
-            "Fresh global tracking recovers automatic hover without controls"
-        );
-        assert!(
-            DesktopPointerHit {
-                avatar_hit: true,
-                ..margin
-            }
-            .hit_test(false, false, false, false, now)
-        );
-        assert!(
-            margin.hit_test(false, false, false, false, now + Duration::from_secs(1)),
-            "Losing global tracking restores input even without controls"
-        );
-        assert!(
-            DesktopPointerHit {
-                avatar_hit: true,
-                ..margin
-            }
-            .hit_test(false, true, false, false, now)
-        );
-        assert!(margin.hit_test(false, true, true, false, now));
-        assert!(margin.hit_test(false, true, false, true, now));
-        assert!(
-            margin.hit_test(true, false, false, false, now),
+            desktop_accepts_input(true, false),
             "Never disable the only recovery surface"
         );
         assert!(
-            !DesktopPointerHit {
-                avatar_hit: true,
-                ..margin
-            }
-            .hit_test(true, true, true, true, now),
-            "Explicit manual passthrough remains authoritative"
-        );
-        assert!(
-            DesktopPointerHit {
-                tracking_available: false,
-                ..margin
-            }
-            .hit_test(false, true, false, false, now)
-        );
-        assert!(
-            margin.hit_test(false, true, false, false, now + Duration::from_millis(501)),
-            "Stale hover must restore native input"
+            !desktop_accepts_input(true, true),
+            "Explicit full passthrough remains available"
         );
     }
 
@@ -838,7 +907,8 @@ mod tests {
                 origin: Vec2::new(-500., 200.),
                 size: Vec2::new(420., 640.),
             }),
-            own_interactive_move: false,
+            own_interactive_move: Some(false),
+            own_above_panels: None,
             cursor: Vec2::new(-350., 350.),
         };
         assert_eq!(
@@ -914,7 +984,7 @@ mod tests {
         let now = start + Duration::from_millis(200);
         assert!(native_drag_released(
             &grab,
-            false,
+            Some(false),
             Some(start + Duration::from_millis(160)),
             true,
             true,
@@ -923,7 +993,7 @@ mod tests {
         assert!(
             !native_drag_released(
                 &grab,
-                false,
+                Some(false),
                 Some(start - Duration::from_millis(20)),
                 true,
                 true,
@@ -934,7 +1004,7 @@ mod tests {
         assert!(
             !native_drag_released(
                 &grab,
-                false,
+                Some(false),
                 Some(start + Duration::from_millis(100)),
                 true,
                 true,
@@ -945,7 +1015,7 @@ mod tests {
         assert!(
             !native_drag_released(
                 &grab,
-                true,
+                Some(true),
                 Some(start + Duration::from_millis(160)),
                 true,
                 true,
@@ -953,6 +1023,53 @@ mod tests {
             ),
             "An active compositor drag must keep the grabbed state"
         );
+    }
+
+    #[test]
+    fn unsupported_native_drag_status_never_means_released_while_held() {
+        let start = Instant::now();
+        let grab = DesktopGrab {
+            active: true,
+            started: Some(start),
+            ..default()
+        };
+        let now = start + Duration::from_secs(3);
+        assert!(!native_drag_released(
+            &grab,
+            None,
+            Some(now),
+            true,
+            true,
+            now
+        ));
+        assert!(!native_drag_released(&grab, None, None, true, true, now));
+        assert!(native_drag_released(
+            &grab,
+            None,
+            Some(now),
+            false,
+            true,
+            now
+        ));
+        assert!(native_drag_released(
+            &grab,
+            None,
+            Some(now),
+            true,
+            false,
+            now
+        ));
+        // Ordinary bridge drags must also finish on a quick release, without
+        // waiting out the grace used only for observable native grabs.
+        let quick = start + Duration::from_millis(20);
+        assert!(native_drag_released(
+            &grab,
+            None,
+            Some(quick),
+            false,
+            true,
+            quick
+        ));
     }
 
     #[test]

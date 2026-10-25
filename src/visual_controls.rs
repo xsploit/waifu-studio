@@ -3,8 +3,8 @@ use waifu_studio::settings_kit as kit;
 use waifu_studio::visuals::{MaterialTuning, ToneMap, VisualPreset, VisualSettings, VisualState};
 
 const PRESETS: [(&str, VisualPreset); 5] = [
-    ("Neutral (original studio look)", VisualPreset::Neutral),
-    ("WebWaifu4 (ACES, exposure 0.85)", VisualPreset::WebWaifu4),
+    ("Neutral", VisualPreset::Neutral),
+    ("WebWaifu4", VisualPreset::WebWaifu4),
     ("Soft anime", VisualPreset::SoftAnime),
     ("Neon", VisualPreset::Neon),
     ("Cinematic", VisualPreset::Cinematic),
@@ -24,12 +24,9 @@ fn rgb(ui: &mut egui::Ui, label: &str, color: &mut [f32; 3]) {
 /// Returns true when saved settings changed. Root persists only on true.
 pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
     let before = state.settings.clone();
-    ui.spacing_mut().slider_width = (ui.available_width().min(520.0) - 150.0).max(140.0);
     if state.suppressed {
-        kit::note(
-            ui,
-            "Camera effects are suspended in transparent desktop mode to preserve transparency; saved settings are retained. Material tuning still applies.",
-        );
+        ui.small("Camera effects pause in transparent desktop mode.")
+            .on_hover_text("Saved settings are retained. Material tuning still applies.");
     }
 
     kit::group(ui, "Look preset", |ui| {
@@ -45,9 +42,8 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
                     }
                 });
         });
-        ui.small(
-        "Presets change camera effects; the WebWaifu4 preset also enables its PBR material values.",
-    );
+        ui.small("Presets adjust camera effects.")
+            .on_hover_text("Neutral restores the original studio look. WebWaifu4 uses ACES, exposure 0.85, and its PBR material values.");
     });
     kit::group(ui, "Camera effects", |ui| {
         kit::toggle_row(ui, "Enable postprocessing", "", &mut state.settings.enabled);
@@ -74,19 +70,24 @@ egui::ComboBox::from_id_salt("tone_mapping")
             state.settings.exposure
         ));
         kit::slider_row(ui, "Saturation", "", egui::Slider::new(&mut state.settings.saturation, 0.0..=2.0));
+        egui::CollapsingHeader::new("Advanced · camera")
+            .id_salt("visual_camera_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
         kit::slider_row(ui, "Contrast", "", egui::Slider::new(&mut state.settings.contrast, 0.5..=1.8));
         kit::slider_row(ui, "Gamma exponent", "", egui::Slider::new(&mut state.settings.gamma, 0.5..=2.0));
         kit::slider_row(ui, "Bloom", "", egui::Slider::new(&mut state.settings.bloom, 0.0..=0.5));
         kit::slider_row(ui, "Chromatic aberration", "", egui::Slider::new(&mut state.settings.chromatic_aberration, 0.0..=0.015).fixed_decimals(4)
                 ,);
         kit::note(ui, "Gamma is an exponent: values above 1 darken midtones. Chromatic aberration uses at most 8 samples.");
-        kit::toggle_row(ui, "WebWaifu4 RGB color correction", "", &mut state.settings.rgb_correction);
+        kit::toggle_row(ui, "RGB correction", "WebWaifu4 color tuning.", &mut state.settings.rgb_correction);
         ui.add_enabled_ui(state.settings.rgb_correction, |ui| {
             kit::note(ui, "Linear RGB power and gain before tonemapping. WebWaifu4 defaults: power 1.40 / 1.45 / 1.45, gain 1.10 each.");
             for (index, channel) in ["Red", "Green", "Blue"].into_iter().enumerate() {
                 kit::slider_row(ui, format!("{channel} power"), "", egui::Slider::new(&mut state.settings.rgb_power[index], 0.1..=4.0));
                 kit::slider_row(ui, format!("{channel} gain"), "", egui::Slider::new(&mut state.settings.rgb_gain[index], 0.0..=4.0));
             }
+        });
         });
     });
     });
@@ -104,34 +105,40 @@ egui::ComboBox::from_id_salt("tone_mapping")
                     }
                 });
         });
-        kit::note(
-            ui,
-            "Use the character's Toon shading mode. Crisp cel shading uses a sharp light/shadow boundary; Original restores authored MToon values. Textures are preserved.",
-        );
+        ui.small("Applies in Toon shading mode.")
+            .on_hover_text("Crisp cel shading sharpens the light/shadow boundary. Original restores authored MToon values. Textures are preserved.");
         kit::toggle_row(
             ui,
-            "Tune MToon materials (WebWaifu4 \"MToon Material\")",
-            "",
+            "Tune toon materials",
+            "Off restores the model’s authored values.",
             &mut m.mtoon,
         );
         ui.add_enabled_ui(m.mtoon, |ui| {
         rgb(ui, "Shade color", &mut m.shade_color);
+        egui::CollapsingHeader::new("Advanced · toon materials")
+            .id_salt("visual_toon_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
         kit::slider_row(ui, "Shade shift", "", egui::Slider::new(&mut m.shade_shift, -1.0..=1.0).step_by(0.05));
-        kit::slider_row(ui, "Toony", "", egui::Slider::new(&mut m.toony, 0.0..=1.0).step_by(0.05));
-        kit::slider_row(ui, "GI equalize", "", egui::Slider::new(&mut m.gi_equalization, 0.0..=1.0).step_by(0.05));
+        kit::slider_row(ui, "Toon strength", "", egui::Slider::new(&mut m.toony, 0.0..=1.0).step_by(0.05));
+        kit::slider_row(ui, "GI balance", "Global illumination equalization.", egui::Slider::new(&mut m.gi_equalization, 0.0..=1.0).step_by(0.05));
         rgb(ui, "Rim color", &mut m.rim_color);
         kit::slider_row(ui, "Rim lift", "", egui::Slider::new(&mut m.rim_lift, 0.0..=1.0).step_by(0.05));
         kit::slider_row(ui, "Rim power", "", egui::Slider::new(&mut m.rim_fresnel_power, 0.1..=10.0).step_by(0.1));
         kit::slider_row(ui, "Rim light", "", egui::Slider::new(&mut m.rim_lighting_mix, 0.0..=1.0).step_by(0.05));
-        caption(ui, "OUTLINE");
+        caption(ui, "Outline");
         rgb(ui, "Outline color", &mut m.outline_color);
         kit::slider_row(ui, "Outline size", "", egui::Slider::new(&mut m.outline_thickness, 0.0005..=0.02).step_by(0.0005).fixed_decimals(4)
                 ,);
         kit::slider_row(ui, "Outline alpha", "", egui::Slider::new(&mut m.outline_alpha, 0.0..=1.0).step_by(0.05));
-        kit::note(ui, "Off restores each model's own values. Outline visibility is the Character outlines checkbox above; models without authored outlines keep none.");
+        kit::note(ui, "Character outlines controls visibility. Models without authored outlines keep none.");
+        });
     });
     });
-    kit::group(ui, "Authored MToon maps", |ui| {
+    egui::CollapsingHeader::new("Advanced · authored toon maps")
+        .id_salt("visual_maps_advanced")
+        .default_open(false)
+        .show(ui, |ui| {
         kit::slider_row(
             ui,
             "Matcap strength",
@@ -156,39 +163,49 @@ egui::ComboBox::from_id_salt("tone_mapping")
         );
     });
     kit::group(ui, "Realistic shading (PBR)", |ui| {
-        kit::toggle_row(ui, "Tune the Lit / PBR shading mode", "", &mut m.pbr);
+        kit::toggle_row(
+            ui,
+            "Tune PBR materials",
+            "Visible in Lit / PBR shading mode.",
+            &mut m.pbr,
+        );
         ui.add_enabled_ui(m.pbr, |ui| {
-            kit::slider_row(
-                ui,
-                "Roughness",
-                "",
-                egui::Slider::new(&mut m.roughness, 0.0..=1.0).step_by(0.05),
-            );
-            kit::slider_row(
-                ui,
-                "Metalness",
-                "",
-                egui::Slider::new(&mut m.metalness, 0.0..=1.0).step_by(0.05),
-            );
-            kit::slider_row(
-                ui,
-                "Specular",
-                "",
-                egui::Slider::new(&mut m.specular, 0.0..=1.0).step_by(0.05),
-            );
-            kit::slider_row(
-                ui,
-                "Clearcoat",
-                "",
-                egui::Slider::new(&mut m.clearcoat, 0.0..=1.0).step_by(0.05),
-            );
-            kit::slider_row(
-                ui,
-                "Clear rough",
-                "",
-                egui::Slider::new(&mut m.clearcoat_roughness, 0.0..=1.0).step_by(0.05),
-            );
-            ui.small("Visible when Model shading is Lit / PBR.");
+            egui::CollapsingHeader::new("Advanced · PBR materials")
+                .id_salt("visual_pbr_advanced")
+                .default_open(false)
+                .show(ui, |ui| {
+                    kit::slider_row(
+                        ui,
+                        "Roughness",
+                        "",
+                        egui::Slider::new(&mut m.roughness, 0.0..=1.0).step_by(0.05),
+                    );
+                    kit::slider_row(
+                        ui,
+                        "Metalness",
+                        "",
+                        egui::Slider::new(&mut m.metalness, 0.0..=1.0).step_by(0.05),
+                    );
+                    kit::slider_row(
+                        ui,
+                        "Specular",
+                        "",
+                        egui::Slider::new(&mut m.specular, 0.0..=1.0).step_by(0.05),
+                    );
+                    kit::slider_row(
+                        ui,
+                        "Clearcoat",
+                        "",
+                        egui::Slider::new(&mut m.clearcoat, 0.0..=1.0).step_by(0.05),
+                    );
+                    kit::slider_row(
+                        ui,
+                        "Clearcoat roughness",
+                        "",
+                        egui::Slider::new(&mut m.clearcoat_roughness, 0.0..=1.0).step_by(0.05),
+                    );
+                    ui.small("Visible when Model shading is Lit / PBR.");
+                });
         });
     });
     ui.horizontal_wrapped(|ui| {

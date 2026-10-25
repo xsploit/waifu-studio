@@ -6,23 +6,24 @@ use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     let before = config.clone();
-    kit::toggle_row(ui, "Show fictional weekly routine", "", &mut config.enabled);
-    kit::note(
+    kit::toggle_row(
         ui,
-        "Imagined character activities in this computer's local timezone. Each activity lasts until the next anchor; these are not bookings or measured presence.",
+        "Weekly routine",
+        "Fictional character activities.",
+        &mut config.enabled,
     );
+    ui.small("Uses this computer’s local time.")
+        .on_hover_text("Each imagined activity lasts until the next anchor. These are not bookings or measured presence.");
     ui.add_enabled_ui(config.enabled, |ui| {
         kit::toggle_row(
             ui,
-            "Share fictional activity with chat",
-            "",
+            "Share activity with chat",
+            "Include the current and next fictional activity.",
             &mut config.share_with_chat,
         );
     });
-    kit::note(
-        ui,
-        "When enabled, ordinary replies receive the current and next imagined activity. No background messages or extra model calls.",
-    );
+    ui.small("Uses ordinary replies; no extra model calls.")
+        .on_hover_text("Sharing adds the current and next imagined activity to ordinary replies. No background messages are sent.");
     if let Some((day, minute)) = local_clock() {
         ui.label(format!(
             "Local clock: {} {:02}:{:02}",
@@ -51,7 +52,7 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     let mut remove = None;
     for (index, anchor) in config.anchors.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
-            kit::row(ui, "Activity time", "Weekly local-time anchor.", |ui| {
+            kit::row(ui, "Day", "", |ui| {
                 egui::ComboBox::from_id_salt("weekday")
                     .selected_text(
                         DAYS.get(usize::from(anchor.day))
@@ -63,35 +64,33 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
                             ui.selectable_value(&mut anchor.day, day as u8, *label);
                         }
                     });
-                let mut hour = anchor.minute / 60;
-                let mut minute = anchor.minute % 60;
-                let changed = ui
-                    .add(
-                        egui::DragValue::new(&mut hour)
-                            .range(0..=23)
-                            .prefix("Hour "),
-                    )
-                    .changed()
-                    | ui.add(
-                        egui::DragValue::new(&mut minute)
-                            .range(0..=59)
-                            .prefix("Minute "),
-                    )
-                    .changed();
-                if changed {
-                    anchor.minute = hour * 60 + minute;
-                }
-                if ui.button("Remove").clicked() {
-                    remove = Some(index);
-                }
             });
-            kit::row(ui, "Fictional activity", "", |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut anchor.activity)
-                        .char_limit(MAX_LABEL_CHARS)
-                        .hint_text("Fictional activity")
-                        .desired_width(240.0),
-                );
+            kit::row(ui, "Time", "Local 24-hour time.", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let mut hour = anchor.minute / 60;
+                    let mut minute = anchor.minute % 60;
+                    let changed = ui
+                        .add(egui::DragValue::new(&mut hour).range(0..=23).prefix("H "))
+                        .changed()
+                        | ui.add(egui::DragValue::new(&mut minute).range(0..=59).prefix("M "))
+                            .changed();
+                    if changed {
+                        anchor.minute = hour * 60 + minute;
+                    }
+                });
+            });
+            kit::row(ui, "Activity", "Fictional activity at this time.", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut anchor.activity)
+                            .char_limit(MAX_LABEL_CHARS)
+                            .hint_text("Fictional activity")
+                            .desired_width(150.0),
+                    );
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(index);
+                    }
+                });
             });
         });
     }
@@ -101,7 +100,7 @@ pub fn ui(ui: &mut egui::Ui, config: &mut RoutineConfig) -> bool {
     if ui
         .add_enabled(
             config.anchors.len() < MAX_ANCHORS,
-            egui::Button::new("Add activity anchor"),
+            egui::Button::new("Add activity"),
         )
         .clicked()
     {

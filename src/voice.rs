@@ -33,10 +33,20 @@ impl VoiceDelivery {
         matches!(self, Self::LiveWebSocket | Self::TimestampWebSocket)
     }
 }
+/// Speech delivery preference; call routing still requires an explicitly
+/// permitted, ready extension. CallsOnly deliberately has no local fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VoiceOutput {
+    #[default]
+    LocalAndCalls,
+    LocalOnly,
+    CallsOnly,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceConfig {
     pub enabled: bool,
+    pub output: VoiceOutput,
     pub adapter: VoiceAdapter,
     /// Complete endpoint URL, including /v1/tts or /v1/audio/speech.
     pub endpoint: String,
@@ -60,6 +70,7 @@ impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            output: VoiceOutput::default(),
             adapter: VoiceAdapter::FishHosted,
             endpoint: "https://api.fish.audio/v1/tts".into(),
             model: "s2.1-pro-free".into(),
@@ -104,9 +115,9 @@ impl VoiceConfig {
                 config.delivery = VoiceDelivery::HttpWavStream;
             }
             VoiceAdapter::OpenAi => {
-                config.endpoint = "https://api.openai.com/v1/audio/speech".into();
+                config.endpoint = "http://127.0.0.1:8000/v1/audio/speech".into();
                 config.model = "tts-1".into();
-                config.api_key_env = "OPENAI_API_KEY".into();
+                config.api_key_env.clear();
                 config.delivery = VoiceDelivery::Buffered;
             }
             VoiceAdapter::Vercel => {
@@ -722,6 +733,34 @@ mod tests {
         time::Instant,
     };
     #[test]
+    fn speech_output_migrates_old_settings_and_preserves_explicit_local_only() {
+        let old: VoiceConfig =
+            serde_json::from_str(r#"{"adapter":"Vercel","model":"existing-model","speed":1.33}"#)
+                .unwrap();
+        assert_eq!(old.output, VoiceOutput::LocalAndCalls);
+        assert_eq!(old.model, "existing-model");
+        for output in [VoiceOutput::LocalOnly, VoiceOutput::CallsOnly] {
+            let saved = VoiceConfig {
+                output,
+                ..old.clone()
+            };
+            let restored: VoiceConfig =
+                serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+            assert_eq!(restored.output, output);
+            assert_eq!(restored.adapter, VoiceAdapter::Vercel);
+            assert_eq!(restored.speed, 1.33);
+        }
+    }
+    #[test]
+    fn new_custom_speech_preset_stays_local_without_hosted_credentials() {
+        let config = VoiceConfig::preset(VoiceAdapter::OpenAi);
+        assert_eq!(config.endpoint, "http://127.0.0.1:8000/v1/audio/speech");
+        assert!(config.api_key_env.is_empty());
+        let old: VoiceConfig = serde_json::from_str(r#"{"adapter":"OpenAi","endpoint":"https://custom.example/v1/audio/speech","api_key_env":"EXISTING_KEY"}"#).unwrap();
+        assert_eq!(old.endpoint, "https://custom.example/v1/audio/speech");
+        assert_eq!(old.api_key_env, "EXISTING_KEY");
+    }
+    #[test]
     fn consecutive_chunks_reuse_tcp_without_reusing_authorization() {
         fn read_request(stream: &mut std::net::TcpStream) -> std::io::Result<String> {
             stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -1225,6 +1264,7 @@ mod tests {
                 let mut config = VoiceConfig {
                     adapter,
                     enabled,
+                    output: VoiceOutput::LocalOnly,
                     endpoint: "https://custom.example/speech".into(),
                     model: "drama-3".into(),
                     reference_id: "test-reference".into(),
@@ -1273,6 +1313,7 @@ mod tests {
         ] {
             let mut config = VoiceConfig {
                 enabled: true,
+                output: VoiceOutput::LocalOnly,
                 adapter,
                 endpoint: "https://custom.example/speech".into(),
                 model: "my-model".into(),

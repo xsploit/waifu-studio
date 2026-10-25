@@ -65,6 +65,35 @@ fn compute_thread_probe(metrics: bool, requested: Option<&str>) -> Option<usize>
         .filter(|threads| (1..=64).contains(threads))
 }
 
+/// Diagnostic-only surface queue-latency request; ordinary launches retain None.
+fn frame_latency_probe(metrics: bool, requested: Option<&str>) -> Option<std::num::NonZeroU32> {
+    metrics
+        .then_some(requested)
+        .flatten()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| (1..=3).contains(value))
+        .and_then(std::num::NonZeroU32::new)
+}
+
+/// Prefer Mailbox with a renderer-enforced FIFO fallback on unsupported surfaces.
+/// Explicit diagnostic candidates take precedence over the legacy no-vsync probe.
+fn presentation_policy(
+    metrics: bool,
+    requested: Option<&str>,
+    legacy_no_vsync: bool,
+) -> bevy::window::PresentMode {
+    use bevy::window::PresentMode;
+    if !metrics {
+        return PresentMode::Mailbox;
+    }
+    match requested {
+        Some("fifo") => PresentMode::Fifo,
+        Some("mailbox") => PresentMode::Mailbox,
+        _ if legacy_no_vsync => PresentMode::AutoNoVsync,
+        _ => PresentMode::Mailbox,
+    }
+}
+
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DesktopWindowInput;
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -83,11 +112,15 @@ pub fn primary_window() -> Window {
             CompositeAlphaMode::PreMultiplied
         },
         resolution: (1280, 900).into(),
-        present_mode: if runtime_probe("WAIFU_RUNTIME_NO_VSYNC") {
-            bevy::window::PresentMode::AutoNoVsync
-        } else {
-            default()
-        },
+        desired_maximum_frame_latency: frame_latency_probe(
+            std::env::var_os("WAIFU_RUNTIME_METRICS").is_some(),
+            std::env::var("WAIFU_RUNTIME_FRAME_LATENCY").ok().as_deref(),
+        ),
+        present_mode: presentation_policy(
+            std::env::var_os("WAIFU_RUNTIME_METRICS").is_some(),
+            std::env::var("WAIFU_RUNTIME_PRESENT_MODE").ok().as_deref(),
+            runtime_probe("WAIFU_RUNTIME_NO_VSYNC"),
+        ),
         ..default()
     }
 }
@@ -97,7 +130,9 @@ impl Plugin for StudioRuntimePlugin {
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         app.add_systems(Last, reclaim_avatar_load_memory);
         if std::env::var_os("WAIFU_RUNTIME_METRICS").is_some() {
-            app.add_systems(Last, log_runtime_metrics);
+            app.init_resource::<crate::runtime_metrics::FramePhases>()
+                .add_systems(Last, log_runtime_metrics);
+            crate::runtime_metrics::install_render_probes(app);
         }
         app.insert_resource(WinitSettings {
             focused_mode: UpdateMode::reactive_low_power(Duration::from_secs_f64(1.0 / 60.0)),
@@ -196,13 +231,20 @@ fn log_runtime_metrics(
     desktop: Res<DesktopSettings>,
     winit: Res<WinitSettings>,
     mut sample: Local<RuntimeSample>,
+    phase_data: (
+        ResMut<crate::runtime_metrics::FramePhases>,
+        Option<Res<crate::runtime_metrics::RenderPhases>>,
+    ),
 ) {
+    let (mut phases, render_phases) = phase_data;
     let now = Instant::now();
+    phases.end(now);
     let focused = windows.iter().any(|window| window.focused);
     let Some(start) = sample.start else {
         sample.start = Some(now);
         sample.last = Some(now);
         sample.focus = Some(focused);
+        phases.clear_samples();
         return;
     };
     sample.frames += 1;
@@ -242,6 +284,43 @@ fn log_runtime_metrics(
             windows.iter().next().map(|window| window.present_mode),
             bevy::tasks::ComputeTaskPool::get().thread_num(),
         );
+        let phases = phases.take_window();
+        let render_installed = render_phases.is_some();
+        let render = render_phases
+            .as_ref()
+            .map(|p| p.take_window())
+            .unwrap_or_default();
+        let (width, height) = windows.iter().next().map_or((0, 0), |window| {
+            (
+                window.resolution.physical_width(),
+                window.resolution.physical_height(),
+            )
+        });
+        info!(
+            "Runtime phase metrics: pacing_sleep_ms_p50={:.3} pacing_sleep_ms_p99={:.3} sampled_main_work_ms_p50={:.3} sampled_main_work_ms_p99={:.3} between_main_ms_p50={:.3} between_main_ms_p99={:.3} sleep_samples={} work_samples={} between_samples={} windows={} sampled_window_physical={}x{} present_is_requested=true prepare_windows_bracket_ms_p50={:.3} prepare_windows_bracket_ms_p99={:.3} render_system_bracket_ms_p50={:.3} render_system_bracket_ms_p99={:.3} prepare_samples={} render_samples={} render_probe_installed={} desired_frame_latency_requested={:?}",
+            phases.sleep_ms.0,
+            phases.sleep_ms.1,
+            phases.work_ms.0,
+            phases.work_ms.1,
+            phases.between_ms.0,
+            phases.between_ms.1,
+            phases.sleep_samples,
+            phases.work_samples,
+            phases.between_samples,
+            windows.iter().count(),
+            width,
+            height,
+            render.prepare_ms.0,
+            render.prepare_ms.1,
+            render.render_ms.0,
+            render.render_ms.1,
+            render.prepare_samples,
+            render.render_samples,
+            render_installed,
+            windows.iter().next().and_then(|window| window
+                .desired_maximum_frame_latency
+                .map(std::num::NonZeroU32::get))
+        );
         sample.start = Some(now);
         sample.frames = 0;
         sample.frame_ms.clear();
@@ -259,7 +338,11 @@ fn pace_frames(
     settings: Res<DesktopSettings>,
     playing: Query<(), With<crate::studio::SpokenAudio>>,
     mut last: Local<Option<Instant>>,
+    mut phases: Option<ResMut<crate::runtime_metrics::FramePhases>>,
 ) {
+    if let Some(phases) = phases.as_mut() {
+        phases.begin(Instant::now());
+    }
     let focused = windows.iter().any(|window| window.focused);
     let active = studio.job.is_some() || studio.voice_busy || !playing.is_empty();
     let rate = polling_rate(&settings, focused, studio.mode, active) as f64;
@@ -267,7 +350,13 @@ fn pace_frames(
     if let Some(previous) = *last
         && let Some(remaining) = interval.checked_sub(previous.elapsed())
     {
+        let before = phases.as_ref().map(|_| Instant::now());
         std::thread::sleep(remaining);
+        if let Some(before) = before
+            && let Some(phases) = phases.as_mut()
+        {
+            phases.slept(before.elapsed());
+        }
     }
     *last = Some(Instant::now());
 }
@@ -329,7 +418,7 @@ fn frame_cadence(
 }
 
 #[derive(Component)]
-struct StudioCamera;
+pub(crate) struct StudioCamera;
 #[derive(Component)]
 struct Backdrop;
 #[derive(Component)]
@@ -349,7 +438,7 @@ struct DesktopControlsPass;
 #[derive(Resource, Default)]
 struct DesktopState {
     controls: Option<(Entity, Entity)>,
-    controls_dismissed: bool,
+    companion_size: Option<Vec2>,
     original_window: Option<(
         bool,
         WindowLevel,
@@ -375,7 +464,7 @@ struct Orbit {
     framing: Option<(Entity, u8)>,
     portrait: bool,
     room_view: bool,
-    sitting: bool,
+    desktop: bool,
 }
 
 impl Default for Orbit {
@@ -389,7 +478,7 @@ impl Default for Orbit {
             framing: None,
             portrait: true,
             room_view: false,
-            sitting: false,
+            desktop: false,
         }
     }
 }
@@ -450,15 +539,24 @@ fn desktop_windows(
     mut studio: ResMut<Studio>,
     mut state: ResMut<DesktopState>,
     mut desktop: ResMut<DesktopSettings>,
-    mut primary: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut primary: Query<
+        (
+            &mut Window,
+            &mut CursorOptions,
+            Option<&bevy::window::OnMonitor>,
+        ),
+        With<PrimaryWindow>,
+    >,
+    monitors: Query<(
+        Entity,
+        &bevy::window::Monitor,
+        Has<bevy::window::PrimaryMonitor>,
+    )>,
     control_windows: Query<(), With<DesktopControlWindow>>,
     control_contexts: Query<(), (With<DesktopControlCamera>, With<EguiContext>)>,
     mut close_requests: MessageReader<WindowCloseRequested>,
-    pointer: Option<Res<crate::desktop_behavior::DesktopPointerHit>>,
-    grab: Option<Res<crate::desktop_behavior::DesktopGrab>>,
-    menu: Option<Res<crate::desktop_menu::DesktopMenu>>,
 ) {
-    let Ok((mut window, mut cursor)) = primary.single_mut() else {
+    let Ok((mut window, mut cursor, current_monitor)) = primary.single_mut() else {
         return;
     };
     if let Some((width, height)) = desktop.resize_requested.take() {
@@ -475,7 +573,7 @@ fn desktop_windows(
         // Closing auxiliary controls dismisses only that window. Keep the
         // companion interactive so its right-click menu remains recoverable.
         state.controls = None;
-        state.controls_dismissed = true;
+        desktop.controls_requested = false;
         commands.entity(camera).try_despawn();
         commands.entity(controls).try_despawn();
         studio.click_through = false;
@@ -490,8 +588,29 @@ fn desktop_windows(
                 window.resolution.clone(),
                 window.position,
             ));
-            window.resolution.set(420.0, 640.0);
             studio.frame_requested = true;
+        }
+        let monitor = current_monitor
+            .and_then(|current| monitors.get(current.0).ok())
+            .or_else(|| monitors.iter().find(|(_, _, primary)| *primary));
+        let limit = monitor.map(|(_, monitor, _)| {
+            Vec2::new(
+                // An exact monitor-sized transparent window can trigger the
+                // Windows fullscreen presentation path and lose desktop alpha.
+                monitor
+                    .physical_width
+                    .saturating_sub(u32::from(cfg!(windows))) as f32,
+                monitor
+                    .physical_height
+                    .saturating_sub(u32::from(cfg!(windows))) as f32,
+            ) / monitor.scale_factor as f32
+        });
+        let size = companion_window_size(desktop.avatar_zoom, limit);
+        if state.companion_size != Some(size) {
+            // Grow the render surface with the avatar instead of pushing her
+            // head out of a fixed rectangle by moving the lens closer.
+            window.resolution.set(size.x, size.y);
+            state.companion_size = Some(size);
         }
         if window.decorations {
             window.decorations = false;
@@ -507,7 +626,7 @@ fn desktop_windows(
         if window.window_level != level {
             window.window_level = level;
         }
-        if state.controls.is_none() && !state.controls_dismissed {
+        if state.controls.is_none() && desktop.controls_requested {
             // Begin interactive. Passthrough can only be switched on once the
             // controls' own context is installed on a subsequent frame.
             cursor.hit_test = true;
@@ -538,28 +657,20 @@ fn desktop_windows(
                 .id();
             state.controls = Some((controls, camera));
         } else if let Some((controls, camera)) = state.controls {
-            let hit_test = pointer.as_deref().copied().unwrap_or_default().hit_test(
+            let hit_test = crate::desktop_behavior::desktop_accepts_input(
                 studio.click_through,
                 control_windows.contains(controls) && control_contexts.contains(camera),
-                grab.as_ref().is_some_and(|grab| grab.active),
-                menu.as_ref().is_some_and(|menu| menu.is_open()),
-                Instant::now(),
             );
             if cursor.hit_test != hit_test {
                 cursor.hit_test = hit_test;
             }
         } else {
             studio.click_through = false;
-            cursor.hit_test = pointer.as_deref().copied().unwrap_or_default().hit_test(
-                false,
-                false,
-                grab.as_ref().is_some_and(|grab| grab.active),
-                menu.as_ref().is_some_and(|menu| menu.is_open()),
-                Instant::now(),
-            );
+            cursor.hit_test = true;
         }
     } else {
-        state.controls_dismissed = false;
+        state.companion_size = None;
+        desktop.controls_requested = false;
         if !cursor.hit_test {
             cursor.hit_test = true;
         }
@@ -581,6 +692,21 @@ fn desktop_windows(
             commands.entity(controls).try_despawn();
         }
     }
+}
+
+fn companion_window_size(zoom: f32, monitor: Option<Vec2>) -> Vec2 {
+    let zoom = if zoom.is_finite() {
+        zoom.clamp(0.5, 4.0)
+    } else {
+        1.0
+    };
+    let size = Vec2::new(420.0, 640.0) * zoom;
+    let fit = monitor
+        .filter(|size| size.is_finite() && size.min_element() > 32.0)
+        .map_or(1.0, |limit| {
+            ((limit - Vec2::splat(16.0)) / size).min_element().min(1.0)
+        });
+    (size * fit).round()
 }
 
 /// Explicit positioning request only; no external window enumeration or compositor changes.
@@ -658,6 +784,7 @@ fn desktop_controls(
     let Ok(mut context) = contexts.single_mut() else {
         return;
     };
+    crate::ui::ensure_style(context.get_mut());
     let mut root_ui = egui::Ui::new(
         context.get_mut().clone(),
         egui::Id::new("desktop-controls"),
@@ -667,26 +794,40 @@ fn desktop_controls(
         kit::section(ui, "Desktop companion");
         ui.add_space(7.0);
         ui.label("This window always stays interactive.");
-        kit::note(ui, "Right-click the companion for its radial menu. Grab it with the left button to move it.");
-        if kit::toggle_row(ui, "Automatic desktop animations", "", &mut desktop.automatic_motions).changed() {
+        kit::note(ui, "Right-click for the companion menu. Left-drag to move.");
+        if kit::toggle_row(
+            ui,
+            "Automatic desktop animations",
+            "",
+            &mut desktop.automatic_motions,
+        )
+        .changed()
+        {
             desktop.mark_dirty();
         }
-        kit::toggle_row(ui, "Pass clicks through the character window", "", &mut studio.click_through);
+        kit::toggle_row(
+            ui,
+            "Pass clicks through the character window",
+            "",
+            &mut studio.click_through,
+        );
         let mut sitting = desktop.sit_requested.unwrap_or(desktop.sitting);
-        if kit::toggle_row(ui, "Sit on a detected edge", "", &mut sitting)
-            .changed()
-        {
+        if kit::toggle_row(ui, "Sit on a detected edge", "", &mut sitting).changed() {
             desktop.request_sitting(sitting);
         }
-        if !desktop.sitting_status.is_empty() { ui.small(&desktop.sitting_status); }
+        if !desktop.sitting_status.is_empty() {
+            ui.small(&desktop.sitting_status);
+        }
         if ui.button("Snap to bottom right").clicked() {
             desktop.perch.mode = waifu_studio::desktop_perch::PerchMode::ScreenRight;
             desktop.mark_dirty();
             desktop.perch_requested = true;
         }
-        if !desktop.placement_status.is_empty() { ui.small(&desktop.placement_status); }
+        if !desktop.placement_status.is_empty() {
+            ui.small(&desktop.placement_status);
+        }
         ui.add_space(5.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Move companion").clicked() {
                 studio.click_through = false;
                 if let Ok(mut window) = window.single_mut() {
@@ -864,8 +1005,7 @@ fn tag_avatar(
 
 #[allow(clippy::too_many_arguments)]
 fn camera_controls(
-    desktop: Res<DesktopSettings>,
-    menu: Res<crate::desktop_menu::DesktopMenu>,
+    mut desktop: ResMut<DesktopSettings>,
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -875,9 +1015,10 @@ fn camera_controls(
     primary: Query<(Entity, &Window), With<PrimaryWindow>>,
     mut studio: ResMut<Studio>,
 ) {
-    let Ok((primary_entity, window)) = primary.single() else {
-        return;
-    };
+    // Rendering to an image still needs configuration/recenter updates. Only
+    // actual desktop input depends on the presence of a focused native window.
+    let primary = primary.single().ok();
+    let focused = primary.is_some_and(|(_, window)| window.focused);
     let (pointer_captured, keyboard_captured) = contexts
         .single_mut()
         .map(|mut context| {
@@ -890,7 +1031,7 @@ fn camera_controls(
         .unwrap_or((false, false));
     let scroll: f32 = wheel
         .read()
-        .filter(|event| event.window == primary_entity)
+        .filter(|event| primary.is_some_and(|(entity, _)| event.window == entity))
         .map(|event| {
             event.y
                 * if event.unit == MouseScrollUnit::Pixel {
@@ -900,37 +1041,32 @@ fn camera_controls(
                 }
         })
         .sum();
-    if window.focused && !keyboard_captured && keys.just_pressed(KeyCode::KeyF) {
+    let scene_visible = studio.mode == ViewMode::Desktop || studio.tab == crate::studio::Tab::Chat;
+    // The preview/settings pages own their input, including focus shortcuts.
+    if scene_visible && focused && !keyboard_captured && keys.just_pressed(KeyCode::KeyF) {
         studio.frame_requested = true;
-    }
-    if window.focused
-        && !keyboard_captured
-        && keys.just_pressed(KeyCode::Escape)
-        && studio.mode == ViewMode::Desktop
-        && !menu.is_open()
-    {
-        studio.mode = ViewMode::Studio;
-        studio.click_through = false;
     }
     let frame_requested = studio.frame_requested;
     if frame_requested {
         studio.frame_requested = false;
     }
     for (mut orbit, mut transform, mut projection) in &mut camera {
+        let desktop_mode = studio.mode == ViewMode::Desktop;
         let room_view = studio.library.scene.room_view && studio.mode != ViewMode::Desktop;
-        let sitting = desktop.sitting && studio.mode == ViewMode::Desktop;
-        let portrait =
-            studio.library.scene.portrait && !sitting && studio.mode != ViewMode::Desktop;
+        let portrait = studio.library.scene.portrait && studio.mode != ViewMode::Desktop;
+        // Sitting changes the pose, not the lens or apparent avatar size. A
+        // refit here captures transient animation bounds and can zoom/crop the
+        // head while the seated crossfade is still moving through that fit.
         if frame_requested
             || orbit.room_view != room_view
             || orbit.portrait != portrait
-            || orbit.sitting != sitting
+            || orbit.desktop != desktop_mode
         {
             orbit.framed = None;
             orbit.framing = None;
             orbit.portrait = portrait;
-            orbit.sitting = sitting;
             orbit.room_view = room_view;
+            orbit.desktop = desktop_mode;
             if let Projection::Perspective(p) = projection.as_mut() {
                 p.fov = if room_view { 45.0_f32 } else { 35.0_f32 }.to_radians();
             }
@@ -944,9 +1080,7 @@ fn camera_controls(
         // Settings pages draw on egui's background layer, which egui does not
         // report as pointer-captured; scrolling them must not zoom the hidden
         // scene camera. Only the conversation view steers the camera.
-        let scene_visible =
-            studio.mode == ViewMode::Desktop || studio.tab == crate::studio::Tab::Chat;
-        if window.focused && !pointer_captured && !studio.click_through && scene_visible {
+        if focused && !pointer_captured && !studio.click_through && scene_visible {
             if studio.mode == ViewMode::Studio && buttons.pressed(MouseButton::Left) {
                 orbit.yaw -= motion.delta.x * 0.006;
                 orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(-1.35, 1.35);
@@ -959,7 +1093,15 @@ fn camera_controls(
                     * 0.0012;
                 orbit.focus += pan;
             }
-            orbit.radius = (orbit.radius * (-scroll * 0.10).exp()).clamp(0.05, 1000.0);
+            if desktop_mode {
+                if scroll != 0.0 {
+                    desktop.avatar_zoom =
+                        (desktop.avatar_zoom * (scroll * 0.10).exp()).clamp(0.5, 4.0);
+                    desktop.mark_dirty();
+                }
+            } else {
+                orbit.radius = (orbit.radius * (-scroll * 0.10).exp()).clamp(0.05, 1000.0);
+            }
         }
         let mut next = *transform;
         position_camera(&orbit, &desktop, &mut next);
@@ -971,7 +1113,11 @@ fn camera_controls(
 
 fn position_camera(orbit: &Orbit, settings: &DesktopSettings, transform: &mut Transform) {
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    let radius = orbit.radius / settings.avatar_zoom;
+    let radius = if orbit.desktop {
+        orbit.radius
+    } else {
+        orbit.radius / settings.avatar_zoom
+    };
     let focus = orbit.focus
         + Vec3::new(
             -settings.avatar_x * radius * 0.25,
@@ -1191,6 +1337,59 @@ fn frame_avatar(
 mod tests {
     use super::*;
 
+    #[test]
+    fn presentation_policy_prefers_vsync_mailbox_and_gates_diagnostic_overrides() {
+        use bevy::window::PresentMode;
+        for requested in [
+            None,
+            Some("fifo"),
+            Some("mailbox"),
+            Some("immediate"),
+            Some(""),
+        ] {
+            assert_eq!(
+                presentation_policy(false, requested, true),
+                PresentMode::Mailbox
+            );
+        }
+        assert_eq!(
+            presentation_policy(true, Some("mailbox"), false),
+            PresentMode::Mailbox
+        );
+        assert_eq!(
+            presentation_policy(true, Some("fifo"), true),
+            PresentMode::Fifo
+        );
+        assert_eq!(
+            presentation_policy(true, None, true),
+            PresentMode::AutoNoVsync
+        );
+        assert_eq!(
+            presentation_policy(true, Some("invalid"), false),
+            PresentMode::Mailbox
+        );
+    }
+    #[test]
+    fn frame_latency_override_requires_metrics_and_valid_bounded_nonzero_input() {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("4"),
+            Some("-1"),
+            Some("NaN"),
+            Some("2x"),
+        ] {
+            assert!(frame_latency_probe(true, value).is_none());
+        }
+        for value in ["1", "2", "3"] {
+            assert!(frame_latency_probe(false, Some(value)).is_none());
+            assert_eq!(
+                frame_latency_probe(true, Some(value)).unwrap().get(),
+                value.parse::<u32>().unwrap()
+            );
+        }
+    }
     #[test]
     fn compute_probe_requires_metrics_and_rejects_invalid_limits() {
         assert_eq!(compute_thread_probe(false, Some("4")), None);
@@ -1449,6 +1648,530 @@ mod tests {
             Some((replacement, 1))
         );
     }
+
+    struct CameraFixture {
+        app: App,
+        camera: Entity,
+        primary: Entity,
+        directory: PathBuf,
+    }
+
+    impl Drop for CameraFixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.directory).unwrap();
+        }
+    }
+
+    fn camera_fixture() -> CameraFixture {
+        let directory =
+            std::env::temp_dir().join(format!("studio-camera-{}", uuid::Uuid::new_v4()));
+        let (store, library) = waifu_studio::data::Store::open(directory.clone()).unwrap();
+        let mut studio = Studio::new(store, library);
+        studio.library.scene.room_view = false;
+        studio.library.scene.portrait = true;
+        let mut app = App::new();
+        app.insert_resource(studio)
+            .init_resource::<DesktopSettings>()
+            .init_resource::<crate::desktop_menu::DesktopMenu>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AvatarLoadState>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_message::<MouseWheel>()
+            .add_plugins(crate::avatar_preview::AvatarPreviewPlugin)
+            .add_systems(Update, camera_controls)
+            .add_systems(PostUpdate, frame_avatar);
+        let primary = app
+            .world_mut()
+            .spawn((
+                PrimaryWindow,
+                Window {
+                    focused: true,
+                    resolution: (1280, 900).into(),
+                    ..default()
+                },
+            ))
+            .id();
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            ChildOf(root),
+            Mesh3d::default(),
+            Aabb::from_min_max(Vec3::new(-0.4, 0.0, -0.2), Vec3::new(0.4, 1.8, 0.2)),
+            GlobalTransform::IDENTITY,
+        ));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let camera = app
+            .world_mut()
+            .spawn((
+                StudioCamera,
+                Orbit::default(),
+                Transform::default(),
+                Projection::Perspective(PerspectiveProjection {
+                    fov: 35_f32.to_radians(),
+                    aspect_ratio: 1280.0 / 900.0,
+                    ..default()
+                }),
+            ))
+            .id();
+        app.update();
+        // A user has zoomed, panned and orbited after the initial automatic fit.
+        {
+            let mut orbit = app.world_mut().get_mut::<Orbit>(camera).unwrap();
+            assert_eq!(orbit.framed, Some(root));
+            orbit.focus = Vec3::new(0.31, 1.37, -0.16);
+            orbit.radius = 1.23;
+            orbit.yaw = 0.48;
+            orbit.pitch = -0.19;
+        }
+        app.update();
+        CameraFixture {
+            app,
+            camera,
+            primary,
+            directory,
+        }
+    }
+
+    fn camera_pose(app: &App, camera: Entity) -> (Vec3, f32, f32, f32, Transform) {
+        let orbit = app.world().get::<Orbit>(camera).unwrap();
+        (
+            orbit.focus,
+            orbit.radius,
+            orbit.yaw,
+            orbit.pitch,
+            *app.world().get::<Transform>(camera).unwrap(),
+        )
+    }
+
+    #[test]
+    fn desktop_scroll_grows_render_surface_without_cropping_the_avatar() {
+        use bevy::camera::CameraProjection;
+        let mut fixture = camera_fixture();
+        fixture
+            .app
+            .init_resource::<DesktopState>()
+            .add_message::<WindowCloseRequested>()
+            .add_systems(Update, desktop_windows.before(camera_controls));
+        fixture
+            .app
+            .world_mut()
+            .entity_mut(fixture.primary)
+            .insert(CursorOptions::default());
+        fixture.app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        if let Projection::Perspective(projection) = fixture
+            .app
+            .world_mut()
+            .get_mut::<Projection>(fixture.camera)
+            .unwrap()
+            .as_mut()
+        {
+            projection.update(420.0, 640.0);
+        }
+        fixture.app.update();
+        fixture.app.update();
+        let camera = camera_pose(&fixture.app, fixture.camera);
+        let height = fixture
+            .app
+            .world()
+            .get::<Window>(fixture.primary)
+            .unwrap()
+            .height();
+        fixture.app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: 2.0_f32.ln() / 0.1,
+            phase: bevy::input::touch::TouchPhase::Moved,
+            window: fixture.primary,
+        });
+        fixture.app.update();
+        fixture.app.update();
+        assert_eq!(camera_pose(&fixture.app, fixture.camera), camera);
+        let window = fixture.app.world().get::<Window>(fixture.primary).unwrap();
+        assert_eq!(window.height(), height * 2.0);
+        assert_eq!(window.width(), 840.0);
+        let projection = fixture
+            .app
+            .world()
+            .get::<Projection>(fixture.camera)
+            .unwrap();
+        let clip = projection.get_clip_from_view() * camera.4.to_matrix().inverse();
+        let top = clip.project_point3(Vec3::new(0.0, 1.8, 0.08));
+        let bottom = clip.project_point3(Vec3::new(0.0, 1.58, 0.08));
+        assert!(top.y.abs() < 0.95, "head stays inside the growing surface");
+        let old_head_pixels = (top.y - bottom.y) * height * 0.5;
+        let new_head_pixels = (top.y - bottom.y) * window.height() * 0.5;
+        assert!((new_head_pixels / old_head_pixels - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn large_companion_fits_current_monitor_without_losing_aspect() {
+        for monitor in [Vec2::new(1920.0, 1080.0), Vec2::new(720.0, 1280.0)] {
+            let size = companion_window_size(4.0, Some(monitor));
+            assert!(size.cmple(monitor - Vec2::splat(16.0)).all());
+            assert!((size.x / size.y - 420.0 / 640.0).abs() < 0.002);
+        }
+    }
+
+    #[test]
+    fn sitting_transition_preserves_scale_and_headroom_in_companion_window() {
+        use bevy::camera::CameraProjection;
+
+        let mut fixture = camera_fixture();
+        fixture.app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        fixture
+            .app
+            .world_mut()
+            .get_mut::<Window>(fixture.primary)
+            .unwrap()
+            .resolution
+            .set(420.0, 640.0);
+        if let Projection::Perspective(projection) = fixture
+            .app
+            .world_mut()
+            .get_mut::<Projection>(fixture.camera)
+            .unwrap()
+            .as_mut()
+        {
+            projection.update(420.0, 640.0);
+        }
+        fixture.app.update();
+        fixture.app.update();
+        let standing = camera_pose(&fixture.app, fixture.camera);
+        let project = |app: &App, point: Vec3| {
+            let projection = app.world().get::<Projection>(fixture.camera).unwrap();
+            let transform = app.world().get::<Transform>(fixture.camera).unwrap();
+            (projection.get_clip_from_view() * transform.to_matrix().inverse())
+                .project_point3(point)
+        };
+        let head_top = Vec3::new(0.0, 1.8, 0.08);
+        let head_bottom = Vec3::new(0.0, 1.58, 0.08);
+        let head_size = project(&fixture.app, head_top).y - project(&fixture.app, head_bottom).y;
+        let mesh = fixture
+            .app
+            .world_mut()
+            .query_filtered::<Entity, With<Mesh3d>>()
+            .single(fixture.app.world())
+            .unwrap();
+        for sitting in [true, false, true, false] {
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<DesktopSettings>()
+                .sitting = sitting;
+            // A transient, shorter pose must not become a new camera fit while
+            // the head/torso continue to move through the animation crossfade.
+            *fixture.app.world_mut().get_mut::<Aabb>(mesh).unwrap() = if sitting {
+                Aabb::from_min_max(Vec3::new(-0.4, 0.7, -0.2), Vec3::new(0.4, 1.55, 0.4))
+            } else {
+                Aabb::from_min_max(Vec3::new(-0.4, 0.0, -0.2), Vec3::new(0.4, 1.8, 0.2))
+            };
+            for _ in 0..60 {
+                fixture.app.update();
+                assert_eq!(camera_pose(&fixture.app, fixture.camera), standing);
+                for bob in [-0.03, 0.0, 0.03] {
+                    let top = project(&fixture.app, head_top + Vec3::Y * bob);
+                    assert!(top.x.abs() < 0.95 && top.y.abs() < 0.95, "{top:?}");
+                    let bottom = project(&fixture.app, head_bottom + Vec3::Y * bob);
+                    assert!(((top.y - bottom.y) / head_size - 1.0).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sitting_and_standing_preserve_user_camera_adjustments() {
+        let mut fixture = camera_fixture();
+        fixture.app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        fixture.app.update();
+        fixture.app.update();
+        {
+            let mut orbit = fixture
+                .app
+                .world_mut()
+                .get_mut::<Orbit>(fixture.camera)
+                .unwrap();
+            orbit.focus = Vec3::new(0.2, 1.1, -0.1);
+            orbit.radius = 2.7;
+            orbit.yaw = 0.15;
+            orbit.pitch = -0.05;
+        }
+        {
+            let mut desktop = fixture.app.world_mut().resource_mut::<DesktopSettings>();
+            desktop.avatar_zoom = 1.15;
+            desktop.avatar_x = 0.1;
+            desktop.avatar_y = -0.1;
+        }
+        fixture.app.update();
+        let before = camera_pose(&fixture.app, fixture.camera);
+        for sitting in [true, false] {
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<DesktopSettings>()
+                .sitting = sitting;
+            fixture.app.update();
+            fixture.app.update();
+            assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+        }
+    }
+
+    #[test]
+    fn settings_tabs_preserve_main_orbit_and_drain_hidden_scene_input() {
+        use crate::studio::Tab;
+        let mut fixture = camera_fixture();
+        let before = camera_pose(&fixture.app, fixture.camera);
+        let auxiliary = fixture.app.world_mut().spawn(Window::default()).id();
+        for tab in [
+            Tab::Scene,
+            Tab::Characters,
+            Tab::Connections,
+            Tab::Voice,
+            Tab::Memory,
+            Tab::Tools,
+            Tab::Tasks,
+            Tab::SceneChat,
+        ] {
+            fixture.app.world_mut().resource_mut::<Studio>().tab = tab;
+            {
+                let mut buttons = fixture
+                    .app
+                    .world_mut()
+                    .resource_mut::<ButtonInput<MouseButton>>();
+                buttons.press(MouseButton::Left);
+                buttons.press(MouseButton::Right);
+            }
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<AccumulatedMouseMotion>()
+                .delta = Vec2::new(30.0, -20.0);
+            for (unit, y) in [
+                (MouseScrollUnit::Line, -8.0),
+                (MouseScrollUnit::Pixel, -150.0),
+            ] {
+                fixture.app.world_mut().write_message(MouseWheel {
+                    unit,
+                    x: 0.0,
+                    y,
+                    phase: bevy::input::touch::TouchPhase::Moved,
+                    window: fixture.primary,
+                });
+            }
+            // No egui capture is supplied: reproduce background-layer settings.
+            fixture.app.update();
+            assert_eq!(camera_pose(&fixture.app, fixture.camera), before, "{tab:?}");
+        }
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .reset_all();
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::ZERO;
+        fixture.app.world_mut().resource_mut::<Studio>().tab = Tab::Chat;
+        fixture.app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: -10.0,
+            phase: bevy::input::touch::TouchPhase::Moved,
+            window: auxiliary,
+        });
+        fixture.app.update();
+        assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+        fixture.app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: -1.0,
+            phase: bevy::input::touch::TouchPhase::Moved,
+            window: fixture.primary,
+        });
+        fixture.app.update();
+        let after = camera_pose(&fixture.app, fixture.camera);
+        assert!((after.1 - before.1 * 0.1_f32.exp()).abs() < 1e-6);
+        assert_eq!((after.0, after.2, after.3), (before.0, before.2, before.3));
+    }
+
+    #[test]
+    fn escape_in_companion_mode_does_not_open_the_studio() {
+        let mut fixture = camera_fixture();
+        fixture.app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        fixture.app.update();
+        assert_eq!(
+            fixture.app.world().resource::<Studio>().mode,
+            ViewMode::Desktop
+        );
+    }
+
+    #[test]
+    fn settings_focus_shortcut_does_not_reframe_main_camera() {
+        use crate::studio::Tab;
+        let mut fixture = camera_fixture();
+        let before = camera_pose(&fixture.app, fixture.camera);
+        for tab in [Tab::Scene, Tab::Characters, Tab::Connections, Tab::Voice] {
+            fixture.app.world_mut().resource_mut::<Studio>().tab = tab;
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyF);
+            fixture.app.update();
+            assert_eq!(camera_pose(&fixture.app, fixture.camera), before, "{tab:?}");
+            fixture
+                .app
+                .world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        }
+        fixture.app.world_mut().resource_mut::<Studio>().tab = Tab::Chat;
+        fixture.app.update();
+        assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyF);
+        fixture.app.update();
+        fixture.app.update();
+        let after = camera_pose(&fixture.app, fixture.camera);
+        assert_ne!(after, before);
+        assert_eq!((after.2, after.3), (0.0, 0.0));
+    }
+
+    #[test]
+    fn explicit_settings_recenter_and_framing_changes_still_apply() {
+        let mut fixture = camera_fixture();
+        let before = camera_pose(&fixture.app, fixture.camera);
+        {
+            let mut studio = fixture.app.world_mut().resource_mut::<Studio>();
+            studio.tab = crate::studio::Tab::Scene;
+            studio.frame_requested = true;
+        }
+        fixture.app.update();
+        fixture.app.update();
+        let portrait = camera_pose(&fixture.app, fixture.camera);
+        assert_ne!(portrait, before);
+        assert_eq!((portrait.2, portrait.3), (0.0, 0.0));
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<Studio>()
+            .library
+            .scene
+            .portrait = false;
+        fixture.app.update();
+        fixture.app.update();
+        let full_body = camera_pose(&fixture.app, fixture.camera);
+        assert_ne!(full_body, portrait);
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<Studio>()
+            .library
+            .scene
+            .room_view = true;
+        fixture.app.update();
+        let room = camera_pose(&fixture.app, fixture.camera);
+        assert_eq!((room.0, room.1), (Vec3::new(0.0, 1.45, -1.2), 6.9));
+        let Projection::Perspective(projection) = fixture
+            .app
+            .world()
+            .get::<Projection>(fixture.camera)
+            .unwrap()
+        else {
+            panic!("expected perspective camera");
+        };
+        assert_eq!(projection.fov, 45_f32.to_radians());
+    }
+
+    #[test]
+    fn windowless_capture_applies_camera_settings_without_accepting_desktop_input() {
+        let mut fixture = camera_fixture();
+        fixture.app.world_mut().despawn(fixture.primary);
+        {
+            let mut studio = fixture.app.world_mut().resource_mut::<Studio>();
+            studio.library.scene.portrait = false;
+            studio.frame_requested = true;
+        }
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyF);
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        fixture
+            .app
+            .world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::splat(50.0);
+        fixture.app.update();
+        fixture.app.update();
+        let orbit = fixture.app.world().get::<Orbit>(fixture.camera).unwrap();
+        assert!(
+            !orbit.portrait,
+            "offscreen output must honor the requested full-body framing"
+        );
+        assert_eq!((orbit.yaw, orbit.pitch), (0.0, 0.0));
+        assert!(!fixture.app.world().resource::<Studio>().frame_requested);
+        let before = camera_pose(&fixture.app, fixture.camera);
+        for tab in [
+            crate::studio::Tab::Scene,
+            crate::studio::Tab::Characters,
+            crate::studio::Tab::Chat,
+        ] {
+            fixture.app.world_mut().resource_mut::<Studio>().tab = tab;
+            fixture.app.update();
+            assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+        }
+    }
+
+    #[test]
+    fn resize_during_settings_preserves_orbit_with_updated_projection() {
+        use bevy::camera::CameraProjection;
+        let mut fixture = camera_fixture();
+        let before = camera_pose(&fixture.app, fixture.camera);
+        fixture.app.world_mut().resource_mut::<Studio>().tab = crate::studio::Tab::Scene;
+        for (width, height) in [(480.0, 960.0), (1920.0, 720.0), (1280.0, 900.0)] {
+            fixture
+                .app
+                .world_mut()
+                .get_mut::<Window>(fixture.primary)
+                .unwrap()
+                .resolution
+                .set(width, height);
+            // Exercise Bevy's real projection resize callback without a renderer.
+            if let Projection::Perspective(projection) = fixture
+                .app
+                .world_mut()
+                .get_mut::<Projection>(fixture.camera)
+                .unwrap()
+                .as_mut()
+            {
+                projection.update(width, height);
+                assert_eq!(projection.aspect_ratio, width / height);
+                assert_eq!(projection.fov, 35_f32.to_radians());
+            }
+            fixture.app.update();
+            assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+        }
+        fixture.app.world_mut().resource_mut::<Studio>().tab = crate::studio::Tab::Chat;
+        fixture.app.update();
+        assert_eq!(camera_pose(&fixture.app, fixture.camera), before);
+    }
+
     #[test]
     fn closing_controls_keeps_desktop_interactive_until_explicit_studio_return() {
         let directory =
@@ -1480,6 +2203,21 @@ mod tests {
         assert!(!window.decorations);
         assert!(!window.has_shadow);
         assert_eq!(window.resolution.size(), Vec2::new(420.0, 640.0));
+        assert!(
+            app.world().resource::<DesktopState>().controls.is_none(),
+            "Entering companion mode must not open settings or recovery controls"
+        );
+        assert!(app.world().get::<CursorOptions>(primary).unwrap().hit_test);
+        assert!(!app.world().resource::<Studio>().click_through);
+        app.update();
+        assert!(app.world().resource::<DesktopState>().controls.is_none());
+        // Only the explicit right-click 'Pass clicks' action requests its
+        // recovery surface. Ordinary startup never reaches this path.
+        app.world_mut()
+            .resource_mut::<DesktopSettings>()
+            .controls_requested = true;
+        app.world_mut().resource_mut::<Studio>().click_through = true;
+        app.update();
         let (controls, camera) = app.world().resource::<DesktopState>().controls.unwrap();
         app.world_mut().entity_mut(camera).remove::<EguiContext>();
         assert!(app.world().get::<CursorOptions>(primary).unwrap().hit_test);
@@ -1516,6 +2254,13 @@ mod tests {
         assert!(app.world().resource::<DesktopState>().controls.is_none());
         assert!(app.world().get_entity(controls).is_err());
         assert!(app.world().get_entity(camera).is_err());
+        app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        app.update();
+        assert!(
+            app.world().resource::<DesktopState>().controls.is_none(),
+            "Returning from explicit settings must not pop controls back open"
+        );
+        assert!(app.world().get::<CursorOptions>(primary).unwrap().hit_test);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

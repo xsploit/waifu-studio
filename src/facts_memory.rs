@@ -1445,10 +1445,8 @@ fn atomic_write(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
         f.write_all(data)
             .and_then(|()| f.sync_all())
             .map_err(|e| e.to_string())?;
-        fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())?;
-        fs::File::open(dir)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())
+        drop(f);
+        crate::durable_file::replace(&tmp, &dir.join(name)).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = fs::remove_file(tmp);
@@ -1498,9 +1496,7 @@ fn write_pending(root: &Path, id: Uuid, candidates: &[MemoryRecord]) -> Result<(
 }
 fn remove(dir: &Path, name: &str) -> Result<(), String> {
     match fs::remove_file(dir.join(name)) {
-        Ok(()) => fs::File::open(dir)
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string()),
+        Ok(()) => crate::durable_file::sync_directory(dir).map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
@@ -2146,6 +2142,20 @@ mod tests {
         assert!(s.candidates().is_empty() && s.retain_pending);
         s.observe_user_turn(b, Uuid::new_v4(), "I like bananas");
         drop(s);
+        // Drop hands work to a bounded background worker; reopening a second
+        // worker is not a barrier for that first worker's disk write.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while read_pending(&root, b)
+            .ok()
+            .flatten()
+            .is_none_or(|pending| pending.len() != 1)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "dropped worker did not persist pending candidates"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
         let a_disk = reopen(&root, a);
         assert_eq!(a_disk.candidates().len(), 2);
         assert_eq!(a_disk.records().len(), 1);
@@ -2184,7 +2194,6 @@ mod tests {
         let mode = if locked { 0o500 } else { 0o700 };
         fs::set_permissions(root.join(id.to_string()), fs::Permissions::from_mode(mode)).unwrap();
     }
-    #[cfg(unix)]
     fn texts(s: &FactsMemoryState) -> Vec<String> {
         let mut t: Vec<_> = s.candidates().iter().map(|c| c.text.clone()).collect();
         t.sort();

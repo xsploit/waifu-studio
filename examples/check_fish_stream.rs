@@ -12,14 +12,15 @@ use waifu_studio::{
 fn main() -> Result<(), String> {
     if !std::env::args().any(|arg| arg == "--run") {
         println!(
-            "Use --run for one short Fish synthesis request using the saved voice; no playback."
+            "Use --run for one short Fish synthesis request using the saved voice; no playback. Add --allow-direct only when no proxy is configured."
         );
         return Ok(());
     }
     // Provider checks must retain the user's configured proxy route.
-    if !["https_proxy", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
+    if !std::env::args().any(|arg| arg == "--allow-direct")
+        && !["https_proxy", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]
+            .iter()
+            .any(|key| std::env::var(key).is_ok_and(|value| !value.trim().is_empty()))
     {
         return Err("No proxy route configured; live check skipped".into());
     }

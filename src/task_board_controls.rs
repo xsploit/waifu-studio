@@ -6,11 +6,9 @@ use waifu_studio::{
 };
 
 pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
-    kit::section(ui, "Multi-agent task board");
-    kit::note(
-        ui,
-        "Independent installed CLI tasks. Add a card to copy the current coding-agent provider, directory, transport, access and command. Review each immutable card, then Run the reviewed batch. CLI authentication is inherited at execution. Hermes works through Custom executable and arguments.",
-    );
+    kit::section(ui, "Task board");
+    ui.small("Add tasks, review their commands, then run the batch.")
+        .on_hover_text("Each card copies the current coding-agent provider, directory, transport, access, and command. Cards are immutable. Installed CLI authentication is inherited at execution. Hermes works through Custom executable and arguments.");
     ui.label(format!(
         "{} / {MAX_OUTSTANDING} outstanding · {} running · last {MAX_RETAINED} results retained",
         board.outstanding_count(),
@@ -32,7 +30,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
     {
         board.error = Some(error);
     }
-    ui.collapsing("Add a task with current coding-agent settings", |ui| {
+    ui.collapsing("Add task", |ui| {
         let scope = TaskConfig::snapshot(current);
         ui.label(format!(
             "{} · {:?} · {} · {}",
@@ -45,13 +43,14 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
                 &scope.working_dir
             }
         ));
-        kit::row(ui, "Card title", "Up to 120 characters.", |ui| {
+        kit::row(ui, "Title", "Up to 120 characters.", |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut board.draft_title)
                     .char_limit(120)
                     .desired_width(240.0),
             );
         });
+        ui.label("Task instructions");
         ui.add(
             egui::TextEdit::multiline(&mut board.draft_prompt)
                 .hint_text("Independent task instructions")
@@ -61,7 +60,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
         if ui
             .add_enabled(
                 board.outstanding_count() < MAX_OUTSTANDING,
-                egui::Button::new("Add immutable task card"),
+                egui::Button::new("Add task card"),
             )
             .clicked()
         {
@@ -75,7 +74,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
         }
     });
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Review pending cards").clicked()
+        if ui.button("Review pending").clicked()
             && let Err(error) = board.review_pending()
         {
             board.error = Some(error);
@@ -83,7 +82,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
         if ui
             .add_enabled(
                 board.reviewed_count() > 0,
-                egui::Button::new(format!("Run reviewed batch ({})", board.reviewed_count())),
+                egui::Button::new(format!("Run reviewed ({})", board.reviewed_count())),
             )
             .clicked()
             && let Err(error) = board.run_reviewed()
@@ -93,21 +92,19 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
         if ui
             .add_enabled(
                 board.outstanding_count() > 0,
-                egui::Button::new("Cancel all board tasks"),
+                egui::Button::new("Cancel all"),
             )
             .clicked()
         {
             board.cancel_all();
         }
-        if ui.button("Clear finished results").clicked() {
+        if ui.button("Clear finished").clicked() {
             board.clear_finished();
         }
     });
     if board.reviewed_count() > 0 {
-        kit::note(
-            ui,
-            "Reviewed commands below apply only to these cards. New cards require a separate review. Parallel tasks sharing a directory may edit the same files; choose independent scopes before adding cards.",
-        );
+        ui.small("New cards need review. Use independent scopes for parallel tasks.")
+            .on_hover_text("The reviewed commands below apply only to those cards. Parallel tasks sharing a directory may edit the same files.");
     }
     if let Some(error) = &board.error {
         ui.colored_label(egui::Color32::RED, error);
@@ -116,7 +113,8 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
     let mut context = None;
     for card in board.cards() {
         ui.push_id(card.id(), |ui| {
-            ui.group(|ui| {
+            kit::card(ui, |card_ui| {
+                let ui = &mut *card_ui.ui;
                 ui.horizontal_wrapped(|ui| {
                     ui.strong(format!("#{} {}", card.id(), card.title()));
                     ui.label(card.status().label());
@@ -148,7 +146,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
                 {
                     ui.add(egui::Label::new(egui::RichText::new(command).monospace()).wrap());
                 }
-                ui.collapsing("Immutable task and configuration", |ui| {
+                ui.collapsing("Advanced · task details", |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(format!("{scope:#?}")).monospace())
                             .wrap(),
@@ -156,7 +154,7 @@ pub fn ui(ui: &mut egui::Ui, board: &mut TaskBoard, current: &AgentState) {
                     ui.label(card.prompt());
                 });
                 if !card.output().is_empty() {
-                    ui.collapsing("Output · untrusted task data", |ui| {
+                    ui.collapsing("Output · untrusted", |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("output")
                             .max_height(180.0)

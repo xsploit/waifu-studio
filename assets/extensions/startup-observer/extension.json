@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "id": "studio.example.startup-observer",
+  "version": "1.0.0",
+  "name": "Startup observer",
+  "description": "Local Python 3 hook that records local host readiness without requiring a loaded avatar or configured account.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "app.ready",
+      "handler": {
+        "program": "observer.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

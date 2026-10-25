@@ -7,6 +7,8 @@ use uuid::Uuid;
 
 const MAX_CHANNELS: usize = 8;
 const MAX_NAMES: usize = 256;
+pub const MAX_INTEGRATION_CONTRIBUTIONS: usize = 8;
+pub const MAX_INTEGRATION_DURATION_SECONDS: f32 = 60.0;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -106,8 +108,30 @@ pub enum BehaviorEvent {
 }
 #[derive(Default)]
 struct Channel {
+    // Lifecycle and emotion must be independently revocable, even on one name.
     value: f64,
+    emotion_value: f64,
     drive: f64,
+    emotion_owner: Option<(BehaviorToken, u64)>,
+}
+
+/// Identifies one named emotion decision, including its smoothing tail.
+#[derive(Clone, Debug)]
+pub struct EmotionContribution {
+    token: BehaviorToken,
+    serial: u64,
+    expression: String,
+}
+
+/// Opaque ownership of one temporary contribution, independent of chat epochs.
+/// Tokens are unique across controllers and are never reused after expiry/reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IntegrationExpressionToken(Uuid);
+
+struct IntegrationExpression {
+    expression: String,
+    strength: f32,
+    remaining_seconds: f64,
 }
 
 /// All state is bounded, local, and deterministic given configuration and events.
@@ -119,6 +143,8 @@ pub struct BehaviorController {
     config: BehaviorConfig,
     available: BTreeSet<String>,
     channels: BTreeMap<String, Channel>,
+    emotion_serial: u64,
+    integration_expressions: BTreeMap<IntegrationExpressionToken, IntegrationExpression>,
 }
 impl BehaviorController {
     pub fn phase(&self) -> BehaviorPhase {
@@ -169,8 +195,11 @@ impl BehaviorController {
         self.available = names;
         self.channels
             .retain(|name, _| self.available.contains(name));
+        self.integration_expressions
+            .retain(|_, contribution| self.available.contains(&contribution.expression));
         if !self.enabled() {
             self.channels.clear();
+            self.integration_expressions.clear();
             self.phase = BehaviorPhase::Idle;
         }
         if self.enabled() {
@@ -240,6 +269,14 @@ impl BehaviorController {
         name: &str,
         strength: f32,
     ) -> Result<(), String> {
+        self.emotion_tracked(token, name, strength).map(|_| ())
+    }
+    pub fn emotion_tracked(
+        &mut self,
+        token: BehaviorToken,
+        name: &str,
+        strength: f32,
+    ) -> Result<EmotionContribution, String> {
         self.check(token)?;
         if !strength.is_finite() {
             return Err("Emotion strength must be finite".into());
@@ -250,12 +287,103 @@ impl BehaviorController {
         if !self.channels.contains_key(name) && self.channels.len() >= MAX_CHANNELS {
             return Err("Behavior channel budget exhausted; let previous expressions decay".into());
         }
+        let serial = self
+            .emotion_serial
+            .checked_add(1)
+            .ok_or("Emotion serial exhausted")?;
+        self.emotion_serial = serial;
         for channel in self.channels.values_mut() {
             channel.drive = 0.0;
         }
-        self.channels.entry(name.into()).or_default().drive =
-            strength.clamp(0.0, 1.0) as f64 * self.config.emotion_max as f64;
-        Ok(())
+        let channel = self.channels.entry(name.into()).or_default();
+        channel.drive = strength.clamp(0.0, 1.0) as f64 * self.config.emotion_max as f64;
+        channel.emotion_owner = Some((token, serial));
+        Ok(EmotionContribution {
+            token,
+            serial,
+            expression: name.into(),
+        })
+    }
+    /// A newer explicit emotion (including a manual preview) supersedes replay.
+    pub fn is_current_emotion(&self, contribution: &EmotionContribution) -> bool {
+        self.token() == Some(contribution.token)
+            && self.emotion_serial == contribution.serial
+            && self
+                .channels
+                .get(&contribution.expression)
+                .is_some_and(|channel| {
+                    channel.emotion_owner == Some((contribution.token, contribution.serial))
+                })
+    }
+    /// Revoke exactly this emotion and its tail, preserving lifecycle smoothing
+    /// and later decisions. Old epochs may still have a tail, so cancellation
+    /// checks the channel's owner rather than requiring the current turn token.
+    pub fn cancel_emotion(&mut self, contribution: &EmotionContribution) -> bool {
+        if self.character != Some(contribution.token.character) {
+            return false;
+        }
+        let Some(channel) = self.channels.get_mut(&contribution.expression) else {
+            return false;
+        };
+        if channel.emotion_owner != Some((contribution.token, contribution.serial)) {
+            return false;
+        }
+        channel.emotion_value = 0.0;
+        channel.drive = 0.0;
+        channel.emotion_owner = None;
+        true
+    }
+    /// Add an immediate temporary overlay without modifying emotion drives or
+    /// lifecycle smoothing. Finite strength is clamped to [0, 1], then scaled by
+    /// emotion_max at composition time. Duration must be finite in (0, 60].
+    ///
+    /// At most eight contributions coexist; a full budget rejects new requests
+    /// without evicting another owner. On each name the strongest overlay wins,
+    /// and is added to the evolving host baseline with a final clamp to [0, 1].
+    /// Expiry uses tick's explicit elapsed time, with no residual smoothing tail.
+    pub fn add_integration_expression(
+        &mut self,
+        character: Uuid,
+        expression: &str,
+        strength: f32,
+        duration_seconds: f32,
+    ) -> Result<IntegrationExpressionToken, String> {
+        if !self.enabled() || self.character != Some(character) {
+            return Err("Behavior is disabled or the integration character does not match".into());
+        }
+        if !self.available.contains(expression) || reserved_expression(expression) {
+            return Err("Choose a supported non-mouth, non-blink, non-look expression".into());
+        }
+        if !strength.is_finite() {
+            return Err("Integration expression strength must be finite".into());
+        }
+        if !duration_seconds.is_finite()
+            || duration_seconds <= 0.0
+            || duration_seconds > MAX_INTEGRATION_DURATION_SECONDS
+        {
+            return Err("Integration expression duration must be finite in (0, 60] seconds".into());
+        }
+        if self.integration_expressions.len() >= MAX_INTEGRATION_CONTRIBUTIONS {
+            return Err("Integration expression budget exhausted; cancel or await expiry".into());
+        }
+        let token = IntegrationExpressionToken(Uuid::new_v4());
+        self.integration_expressions.insert(
+            token,
+            IntegrationExpression {
+                expression: expression.into(),
+                strength: strength.clamp(0.0, 1.0),
+                remaining_seconds: duration_seconds as f64,
+            },
+        );
+        Ok(token)
+    }
+    /// Cancel only this owner's temporary overlay, immediately revealing the
+    /// current host baseline. Expired, foreign and already-cancelled tokens fail.
+    pub fn cancel_integration_expression(&mut self, token: IntegrationExpressionToken) -> bool {
+        self.integration_expressions.remove(&token).is_some()
+    }
+    pub fn integration_expression_active(&self, token: IntegrationExpressionToken) -> bool {
+        self.integration_expressions.contains_key(&token)
     }
     /// Exact integration of a decaying drive through a first-order smoother.
     /// The result depends on elapsed seconds, not the number of rendered frames.
@@ -264,6 +392,10 @@ impl BehaviorController {
             return;
         }
         let dt = (seconds as f64).min(86_400.0);
+        self.integration_expressions.retain(|_, contribution| {
+            contribution.remaining_seconds -= dt;
+            contribution.remaining_seconds > 0.0
+        });
         let k = 1.0 / self.config.smoothing_seconds as f64;
         let lambda = 1.0 / self.config.decay_seconds as f64;
         let smooth = (-k * dt).exp();
@@ -291,12 +423,14 @@ impl BehaviorController {
             } else {
                 k * channel.drive * (decay - smooth) / (k - lambda)
             };
-            channel.value =
-                (channel.value * smooth + target * (1.0 - smooth) + driven).clamp(0.0, 1.0);
+            channel.value = (channel.value * smooth + target * (1.0 - smooth)).clamp(0.0, 1.0);
+            channel.emotion_value = (channel.emotion_value * smooth + driven).clamp(0.0, 1.0);
             channel.drive *= decay;
         }
         self.channels.retain(|name, channel| {
-            *name == lifecycle || channel.value > 1e-6 || channel.drive > 1e-6
+            *name == lifecycle
+                || channel.value + channel.emotion_value > 1e-6
+                || channel.drive > 1e-6
         });
     }
     /// Manual controls win globally. The host additionally excludes expression
@@ -318,19 +452,48 @@ impl BehaviorController {
         {
             return BTreeMap::new();
         }
-        self.channels
+        let mut weights: BTreeMap<String, f32> = self
+            .channels
             .iter()
             .filter(|(name, channel)| {
-                channel.value > 1e-6 && !reserved_expression(name) && available.contains(name)
+                channel.value + channel.emotion_value > 1e-6
+                    && !reserved_expression(name)
+                    && available.contains(name)
             })
-            .map(|(name, channel)| (name.clone(), channel.value as f32))
-            .collect()
+            .map(|(name, channel)| {
+                (
+                    name.clone(),
+                    (channel.value + channel.emotion_value).clamp(0.0, 1.0) as f32,
+                )
+            })
+            .collect();
+        // Max is commutative: ownership-token order and request order cannot
+        // amplify or change the result for overlapping integration expressions.
+        let mut temporary = BTreeMap::<&str, f32>::new();
+        for contribution in self.integration_expressions.values() {
+            let name = &contribution.expression;
+            let weight = contribution.strength * self.config.emotion_max;
+            if weight > 1e-6 && !reserved_expression(name) && available.contains(name) {
+                temporary
+                    .entry(name.as_str())
+                    .and_modify(|current| *current = current.max(weight))
+                    .or_insert(weight);
+            }
+        }
+        for (name, weight) in temporary {
+            weights
+                .entry(name.into())
+                .and_modify(|baseline| *baseline = (*baseline + weight).clamp(0.0, 1.0))
+                .or_insert(weight);
+        }
+        weights
     }
     /// Clear state immediately (disable, character removal, host teardown).
     pub fn reset(&mut self) {
         self.advance_epoch();
         self.phase = BehaviorPhase::Idle;
         self.channels.clear();
+        self.integration_expressions.clear();
     }
     fn advance_epoch(&mut self) {
         self.epoch = self.epoch.saturating_add(1);
@@ -498,6 +661,371 @@ mod tests {
         c.select(None, &BehaviorConfig::default(), &[]).unwrap();
         assert!(c.token().is_none());
     }
+    #[test]
+    fn cancelling_emotion_preserves_shared_lifecycle_and_unrelated_channels() {
+        let (mut controller, id, names) = fixture();
+        let config = BehaviorConfig {
+            thinking_expression: "happy".into(),
+            ..Default::default()
+        };
+        controller.select(Some(id), &config, &names).unwrap();
+        let token = controller.begin_turn(id).unwrap();
+        let mut lifecycle = BehaviorController::default();
+        lifecycle.select(Some(id), &config, &names).unwrap();
+        lifecycle.begin_turn(id).unwrap();
+        let mapped = controller.emotion_tracked(token, "happy", 1.0).unwrap();
+        controller.tick(0.2);
+        lifecycle.tick(0.2);
+        controller.emotion(token, "sad", 0.7).unwrap();
+        controller.tick(0.2);
+        lifecycle.tick(0.2);
+        let before = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert!(controller.cancel_emotion(&mapped));
+        let after = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert_eq!(
+            after["happy"],
+            lifecycle.weights_for(Some(id), &names, &BTreeMap::new(), "")["happy"]
+        );
+        assert_eq!(after["sad"], before["sad"]);
+        assert_eq!(controller.token(), Some(token));
+        assert_eq!(controller.phase(), BehaviorPhase::Thinking);
+        assert!(!controller.cancel_emotion(&mapped));
+    }
+
+    #[test]
+    fn cancellation_cannot_remove_later_manual_preview_on_same_expression() {
+        let (mut controller, id, names) = fixture();
+        let token = controller.begin_turn(id).unwrap();
+        let mapped = controller.emotion_tracked(token, "happy", 0.8).unwrap();
+        controller.tick(0.2);
+        controller.emotion(token, "happy", 0.4).unwrap();
+        controller.tick(0.2);
+        let before = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert!(!controller.is_current_emotion(&mapped));
+        assert!(!controller.cancel_emotion(&mapped));
+        assert_eq!(
+            controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+            before
+        );
+    }
+
+    #[test]
+    fn completed_epoch_tail_can_be_revoked_without_resetting_new_epoch() {
+        let (mut controller, id, names) = fixture();
+        let token = controller.begin_turn(id).unwrap();
+        let mapped = controller.emotion_tracked(token, "happy", 0.8).unwrap();
+        controller
+            .event(token, BehaviorEvent::SpeechStarted)
+            .unwrap();
+        controller.tick(0.2);
+        controller
+            .event(token, BehaviorEvent::SpeechFinished)
+            .unwrap();
+        let current = controller.token();
+        assert_ne!(current, Some(token));
+        assert!(!controller.is_current_emotion(&mapped));
+        assert!(controller.cancel_emotion(&mapped));
+        assert!(
+            controller
+                .weights_for(Some(id), &names, &BTreeMap::new(), "")
+                .is_empty()
+        );
+        assert_eq!(controller.token(), current);
+    }
+
+    #[test]
+    fn integration_cancel_and_expiry_restore_evolving_host_baseline() {
+        for expire in [false, true] {
+            let (mut controller, id, names) = fixture();
+            let config = BehaviorConfig {
+                thinking_expression: "happy".into(),
+                ..Default::default()
+            };
+            let mut baseline = BehaviorController::default();
+            controller.select(Some(id), &config, &names).unwrap();
+            baseline.select(Some(id), &config, &names).unwrap();
+            let token = controller.begin_turn(id).unwrap();
+            let baseline_token = baseline.begin_turn(id).unwrap();
+            let host = controller.emotion_tracked(token, "happy", 0.5).unwrap();
+            baseline.emotion(baseline_token, "happy", 0.5).unwrap();
+            let shared = controller
+                .add_integration_expression(id, "happy", 0.6, 0.5)
+                .unwrap();
+            let extra = controller
+                .add_integration_expression(id, "sad", 0.5, 0.5)
+                .unwrap();
+            assert!(controller.is_current_emotion(&host));
+            controller.tick(0.25);
+            baseline.tick(0.25);
+            let with_overlay = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+            let without_overlay = baseline.weights_for(Some(id), &names, &BTreeMap::new(), "");
+            assert!(with_overlay["happy"] > without_overlay["happy"]);
+            assert!(with_overlay["sad"] > 0.0);
+            // A fresh host decision must evolve underneath the temporary layer.
+            controller.emotion(token, "relaxed", 0.4).unwrap();
+            baseline.emotion(baseline_token, "relaxed", 0.4).unwrap();
+            controller.tick(0.125);
+            baseline.tick(0.125);
+            if expire {
+                controller.tick(0.125);
+                baseline.tick(0.125);
+                assert!(!controller.cancel_integration_expression(shared));
+                assert!(!controller.cancel_integration_expression(extra));
+            } else {
+                assert!(controller.cancel_integration_expression(shared));
+                assert!(controller.cancel_integration_expression(extra));
+            }
+            assert_eq!(
+                controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+                baseline.weights_for(Some(id), &names, &BTreeMap::new(), "")
+            );
+            assert_eq!(controller.token(), Some(token));
+            assert_eq!(controller.phase(), BehaviorPhase::Thinking);
+            controller.tick(0.25);
+            baseline.tick(0.25);
+            assert_eq!(
+                controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+                baseline.weights_for(Some(id), &names, &BTreeMap::new(), "")
+            );
+        }
+    }
+
+    #[test]
+    fn integration_ownership_rejects_stale_and_foreign_cancellation() {
+        let (mut controller, id, names) = fixture();
+        let mut foreign = BehaviorController::default();
+        foreign
+            .select(Some(id), &Default::default(), &names)
+            .unwrap();
+        let expired = controller
+            .add_integration_expression(id, "happy", 0.8, 0.25)
+            .unwrap();
+        let live = controller
+            .add_integration_expression(id, "happy", 0.4, 0.5)
+            .unwrap();
+        let foreign_live = foreign
+            .add_integration_expression(id, "happy", 0.9, 1.0)
+            .unwrap();
+        assert!(!foreign.cancel_integration_expression(live));
+        assert!(!controller.cancel_integration_expression(foreign_live));
+        controller.tick(0.25);
+        let before = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert!(!controller.cancel_integration_expression(expired));
+        assert_eq!(
+            controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+            before
+        );
+        assert!(controller.cancel_integration_expression(live));
+        assert!(!controller.cancel_integration_expression(live));
+        let after = controller
+            .add_integration_expression(id, "happy", 0.7, 0.5)
+            .unwrap();
+        assert_ne!(after, live);
+        assert!(!controller.cancel_integration_expression(live));
+        assert!(controller.cancel_integration_expression(after));
+        assert!(foreign.cancel_integration_expression(foreign_live));
+    }
+
+    #[test]
+    fn integration_overlaps_use_strongest_weight_independent_of_request_order() {
+        let mut observations = Vec::new();
+        for strengths in [[0.2, 0.8, 0.5], [0.5, 0.8, 0.2]] {
+            let (mut controller, id, names) = fixture();
+            let mut strongest = None;
+            for strength in strengths {
+                let token = controller
+                    .add_integration_expression(id, "happy", strength, 1.0)
+                    .unwrap();
+                if strength == 0.8 {
+                    strongest = Some(token);
+                }
+            }
+            let weights = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+            assert_eq!(weights["happy"], 0.8 * controller.config.emotion_max);
+            observations.push(weights);
+            assert!(controller.cancel_integration_expression(strongest.unwrap()));
+            assert_eq!(
+                controller.weights_for(Some(id), &names, &BTreeMap::new(), "")["happy"],
+                0.5 * controller.config.emotion_max
+            );
+        }
+        assert_eq!(observations[0], observations[1]);
+    }
+
+    #[test]
+    fn integration_budget_and_repeated_replacement_cannot_accumulate() {
+        let (mut controller, id, names) = fixture();
+        let mut tokens = Vec::new();
+        for _ in 0..MAX_INTEGRATION_CONTRIBUTIONS {
+            tokens.push(
+                controller
+                    .add_integration_expression(id, "happy", 1.0, 1.0)
+                    .unwrap(),
+            );
+        }
+        let before = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert!(
+            controller
+                .add_integration_expression(id, "sad", 1.0, 1.0)
+                .is_err()
+        );
+        assert_eq!(before["happy"], controller.config.emotion_max);
+        assert_eq!(
+            controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+            before
+        );
+        assert!(
+            controller.channels.is_empty(),
+            "Integrations cannot consume host channel slots"
+        );
+        for token in tokens {
+            assert!(controller.cancel_integration_expression(token));
+        }
+        for _ in 0..100 {
+            let token = controller
+                .add_integration_expression(id, "happy", 1.0, 1.0)
+                .unwrap();
+            assert!(controller.cancel_integration_expression(token));
+            assert!(controller.integration_expressions.is_empty());
+            assert!(
+                controller
+                    .weights_for(Some(id), &names, &BTreeMap::new(), "")
+                    .is_empty()
+            );
+        }
+        controller
+            .add_integration_expression(id, "sad", 1.0, 1.0)
+            .unwrap();
+        controller.tick(1.0);
+        assert!(controller.integration_expressions.is_empty());
+    }
+
+    #[test]
+    fn integration_validation_manual_and_reserved_channel_precedence() {
+        let (mut controller, id, names) = fixture();
+        for expression in ["missing", "aa", "blink", "lookLeft", "mouthCustom"] {
+            assert!(
+                controller
+                    .add_integration_expression(id, expression, 1.0, 1.0)
+                    .is_err()
+            );
+        }
+        for strength in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(
+                controller
+                    .add_integration_expression(id, "happy", strength, 1.0)
+                    .is_err()
+            );
+        }
+        for duration in [
+            f32::NAN,
+            f32::INFINITY,
+            -1.0,
+            0.0,
+            MAX_INTEGRATION_DURATION_SECONDS + 1.0,
+        ] {
+            assert!(
+                controller
+                    .add_integration_expression(id, "happy", 1.0, duration)
+                    .is_err()
+            );
+        }
+        assert!(
+            controller
+                .add_integration_expression(Uuid::new_v4(), "happy", 1.0, 1.0)
+                .is_err()
+        );
+        assert!(controller.integration_expressions.is_empty());
+        let zero = controller
+            .add_integration_expression(id, "sad", -2.0, 1.0)
+            .unwrap();
+        let high = controller
+            .add_integration_expression(id, "happy", 99.0, 1.0)
+            .unwrap();
+        let before = controller.weights_for(Some(id), &names, &BTreeMap::new(), "");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before["happy"], controller.config.emotion_max);
+        for manual in ["happy", "sad", "aa", "blink", "lookLeft"] {
+            assert!(
+                controller
+                    .weights_for(
+                        Some(id),
+                        &names,
+                        &BTreeMap::from([(manual.into(), 0.3)]),
+                        ""
+                    )
+                    .is_empty()
+            );
+        }
+        assert!(
+            controller
+                .weights_for(Some(id), &names, &BTreeMap::new(), "relaxed")
+                .is_empty()
+        );
+        assert!(
+            controller
+                .weights_for(Some(Uuid::new_v4()), &names, &BTreeMap::new(), "")
+                .is_empty()
+        );
+        assert!(
+            controller
+                .weights_for(Some(id), &[], &BTreeMap::new(), "")
+                .is_empty()
+        );
+        for seconds in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            controller.tick(seconds);
+            assert_eq!(
+                controller.weights_for(Some(id), &names, &BTreeMap::new(), ""),
+                before
+            );
+        }
+        assert!(controller.cancel_integration_expression(zero));
+        assert!(controller.cancel_integration_expression(high));
+    }
+
+    #[test]
+    fn integration_survives_chat_epochs_but_clears_on_host_teardown_or_catalog_removal() {
+        for transition in ["reset", "disable", "character", "catalog"] {
+            let (mut controller, id, names) = fixture();
+            let overlay = controller
+                .add_integration_expression(id, "happy", 0.5, 2.0)
+                .unwrap();
+            let turn = controller.begin_turn(id).unwrap();
+            controller.event(turn, BehaviorEvent::Interrupted).unwrap();
+            assert!(controller.weights_for(Some(id), &names, &BTreeMap::new(), "")["happy"] > 0.0);
+            match transition {
+                "reset" => controller.reset(),
+                "disable" => controller
+                    .select(
+                        Some(id),
+                        &BehaviorConfig {
+                            enabled: false,
+                            ..Default::default()
+                        },
+                        &names,
+                    )
+                    .unwrap(),
+                "character" => controller
+                    .select(Some(Uuid::new_v4()), &Default::default(), &names)
+                    .unwrap(),
+                "catalog" => controller
+                    .select(Some(id), &Default::default(), &["sad".into()])
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(!controller.cancel_integration_expression(overlay));
+            assert!(controller.integration_expressions.is_empty());
+            controller
+                .select(Some(id), &Default::default(), &names)
+                .unwrap();
+            assert!(
+                controller
+                    .weights_for(Some(id), &names, &BTreeMap::new(), "")
+                    .is_empty()
+            );
+        }
+    }
+
     #[test]
     fn config_limits_equal_time_constants_and_channels_are_bounded() {
         let (mut c, id, mut names) = fixture();

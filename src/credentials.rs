@@ -2,7 +2,14 @@
 use std::{collections::BTreeMap, fmt, fs::File, io::Read, path::Path};
 
 const MAX_BYTES: u64 = 16 * 1024;
-const ALLOWED: [&str; 3] = ["AI_GATEWAY_API_KEY", "FISH_API_KEY", "FISH_REFERENCE_ID"];
+const ALLOWED: [&str; 6] = [
+    "AI_GATEWAY_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "XAI_API_KEY",
+    "FISH_API_KEY",
+    "FISH_REFERENCE_ID",
+];
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct CredentialLoad {
@@ -30,7 +37,7 @@ impl fmt::Display for CredentialError {
 }
 impl std::error::Error for CredentialError {}
 
-/// Import only gateway/Fish credentials; existing environment entries win,
+/// Import supported provider credentials; existing environment entries win,
 /// including existing empty entries. Missing file is a successful no-op.
 ///
 /// # Safety
@@ -308,5 +315,15 @@ mod tests {
             Some(CredentialError::TooLarge)
         );
         assert!(parse_credentials("FISH_API_KEY=\n").unwrap()["FISH_API_KEY"].is_empty());
+    }
+
+    #[test]
+    fn all_supported_chat_provider_keys_load_from_the_private_profile() {
+        let parsed = parse_credentials("AI_GATEWAY_API_KEY=gateway\nOPENROUTER_API_KEY=router\nOPENAI_API_KEY=openai\nXAI_API_KEY=xai\nFISH_API_KEY=fish\nFISH_REFERENCE_ID=voice\nUNRELATED_TOKEN=ignored\n").unwrap();
+        assert_eq!(parsed.len(), ALLOWED.len());
+        for key in ALLOWED {
+            assert!(parsed.contains_key(key));
+        }
+        assert!(!parsed.contains_key("UNRELATED_TOKEN"));
     }
 }

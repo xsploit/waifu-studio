@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "id": "studio.example.motion-end-observer",
+  "version": "1.0.0",
+  "name": "Motion end observer",
+  "description": "Local Python 3 observation-only hook for general motion playback outcomes, separate from requester receipts. No avatar actions, replies or network.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "motion.playback.ended",
+      "handler": {
+        "program": "observer.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

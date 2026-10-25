@@ -118,10 +118,9 @@ fn sync_environment(
                         | EnvironmentKind::VioletStudio
                         | EnvironmentKind::CyanLounge
                 ) {
-                server.as_ref().and_then(|server| {
-                    let manifest = crate::bundled::manifest_path();
-                    let path = manifest.parent()?.parent()?.join("rooms/wave-art.png");
-                    Some(server.load(bevy::asset::AssetPath::from_path_buf(path)))
+                server.as_ref().map(|server| {
+                    let path = crate::bundled::assets_path().join("rooms/wave-art.png");
+                    server.load(bevy::asset::AssetPath::from_path_buf(path))
                 })
             } else {
                 None

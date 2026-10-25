@@ -1,0 +1,15 @@
+{
+  "api_version": 1,
+  "id": "studio.integration.discord",
+  "version": "0.1.0",
+  "name": "Discord messages (experimental)",
+  "description": "Receive ordinary messages from one configured Discord server channel through a bot. Uses chunked external-message intake. No outgoing Discord messages or voice support. Live service compatibility remains unverified.",
+  "provenance": {"author": "Waifu Studio contributors", "license": "MIT"},
+  "process": {"program": "run.py"},
+  "capabilities": ["lifecycle.observe", "message.deliver"],
+  "credentials": [{"id": "bot_token", "label": "Discord bot token"}],
+  "settings": [
+    {"id": "guild_id", "label": "Server ID", "description": "Numeric ID of the Discord server. Enable Discord Developer Mode to copy it.", "type": "text", "default": "", "max_length": 20},
+    {"id": "channel_id", "label": "Channel ID", "description": "Numeric ID of the one text channel to receive. Threads and direct messages are excluded.", "type": "text", "default": "", "max_length": 20}
+  ]
+}

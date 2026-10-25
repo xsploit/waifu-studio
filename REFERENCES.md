@@ -1,5 +1,9 @@
 # References and provenance
 
+## Windows portability follow-up — 2026-10-24
+
+Rechecked Homunculus `30d11a5ad72f97f405117086839acd0ea87e1c49`, specifically `homunculus_windows/src/lib.rs`, `homunculus_screen/src/global_windows/windows.rs`, and its installation guide. It supports Windows, selects premultiplied alpha, and keeps transparent windows one physical pixel smaller than a monitor. Waifu Studio applies the size-limit precaution to its existing compact companion. Its new Win32 adapter independently enumerates visible, non-minimized/non-cloaked windows, detects actual taskbars, and converts all geometry using the companion's DPI scale. It does not collect external window titles. Homunculus's NVIDIA Vulkan present-method advice is linked in `docs/CROSS-PLATFORM.md`; no driver setting is changed automatically. Mate remains a behavioral reference; no Mate source or assets were copied.
+
 ## Included dependencies
 
 - [unavi-xyz/bevy_vrm](https://github.com/unavi-xyz/bevy_vrm), revision `3c46eab833f8a63d934835606dc63141d11aa24c`, vendored in `vendor/`. Includes `bevy_vrm`, `bevy_shader_mtoon`, and `serde_vrm`; their licenses are retained. Backport: Bevy workspace version set to 0.19 and the newer `MeshCompressionArgs`/`default_mesh_compression` plugin initialization removed. The Bevy 0.20 MToon/outline shaders are ported to native Bevy 0.19 WGSL imports and vertex/morph interfaces in mtoon.wgsl and outline.wgsl; original WESL files are retained for provenance.
@@ -60,4 +64,11 @@ The vendored Bevy 0.19 MToon material and WGSL uniform now carry a shared affine
 
 ## Homunculus and Mate integration audit — 2026-10-18
 
+Follow-up on 2026-10-23: inspected the original Linux port at `791a8bdfedc3883d2231b065a9a4f2f9844275bd` and Mate Engine Plus at `211ba1d73565a1c64b2512e7f06aeeecd83304ae`. The latter's current desktop integration targets ShojiWM and is a source overlay, not a packaged replacement for our KWin/Hyprland application. Our depth-only desktop-window pass is independently implemented using Bevy's public render interfaces; no Mate implementation or asset data is included. The original Mate checkout contains 26 sitting/lying `.anim` clip files in [PET_SITTING](https://github.com/shinyflvre/Mate-Engine/tree/2c5ea6b8f4cf5e1773a0816b46d9267cda5174d4/Assets/MATE%20ENGINE%20-%20Animations/PET_SITTING). They use Unity humanoid muscle curves rather than our importable VRMA/BVH/FBX transforms and remain subject to Mate's separate asset terms; they were not converted or bundled. The existing attributed CC BY seated VRMA remains the bundled seated motion.
+
 Both exact requested upstream HEADs were verified against GitHub: Homunculus `30d11a5ad72f97f405117086839acd0ea87e1c49`, shinyflvre/Mate-Engine `2c5ea6b8f4cf5e1773a0816b46d9267cda5174d4`. The [source-by-source integration inventory](reviews/companion-upstream-integration.md) records implemented behavior, remaining features and priorities. Desktop standing now shares our local idle/talking playlists, with drag/sit priority; fresh global cursor tracking can restore automatic margin click-through without the controls window. No Mate source or assets were copied. Its Pro v2.1 and separate asset restrictions remain relevant; Unity/Win32 implementations are behavior references, not portable Rust dependencies.
+
+
+## Local renderer presentation policy — 2026-10-22
+
+Vendored `bevy_render` 0.19.1 from the already installed crates.io source (MIT OR Apache-2.0), retaining its license files. Mailbox now falls back directly to FIFO when unsupported by the existing surface; it no longer falls back through Immediate. Explicit no-VSync/auto policies remain upstream's behavior. Surface configuration logs the requested and resolved mode. See `vendor/crates/bevy_render/WAIFU-PATCH.md` for scope, tests and upgrade instructions. This patch creates no extra native surfaces and changes no drawing, quality or frame caps. Physical display acceptance remains separate from application-update timing.

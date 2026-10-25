@@ -62,6 +62,7 @@ fn check_vercel() -> bool {
     let job = provider::spawn_chat(
         config,
         vec![Turn {
+            external: None,
             role: "user".into(),
             content: "Reply with exactly OK".into(),
         }],

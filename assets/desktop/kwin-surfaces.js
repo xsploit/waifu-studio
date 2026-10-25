@@ -11,6 +11,8 @@
     var stopped = false;
     var outputIds = {};
     var nextOutputId = 1;
+    var managedWindow = null;
+    var originalKeepAbove = false;
 
     function rect(r) {
         return { x: r.x, y: r.y, width: r.width, height: r.height };
@@ -41,10 +43,26 @@
         if (stopped) return;
         stopped = true;
         timer.stop();
+        if (managedWindow) {
+            try { managedWindow.keepAbove = originalKeepAbove; } catch (_) {}
+            managedWindow = null;
+        }
         // Unload only this randomly named, temporary script, including on a
         // dead service / app crash. Nothing is installed in KWin settings.
         callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting",
             "unloadScript", bridgeConfig.plugin);
+    }
+
+    function applyStacking(enabled, own) {
+        if (typeof enabled !== "boolean" || !own || !isOwn(own)) return;
+        if (managedWindow !== own) {
+            if (managedWindow) {
+                try { managedWindow.keepAbove = originalKeepAbove; } catch (_) {}
+            }
+            managedWindow = own;
+            originalKeepAbove = Boolean(own.keepAbove);
+        }
+        if (own.keepAbove !== enabled) own.keepAbove = enabled;
     }
 
     function applyMove(command, own, areas) {
@@ -108,7 +126,8 @@
             // Visible bottom panels may float or auto-hide without reserving
             // a work-area strut. Their actual top edge is still a seat line.
             if (w.dock) {
-                docks.push({ id: String(w.internalId), rect: rect(w.frameGeometry) });
+                docks.push({ id: String(w.internalId), rect: rect(w.frameGeometry),
+                    stackIndex: i, output: w.output });
                 continue;
             }
             if (showingDesktop || w.desktopWindow || !w.normalWindow) continue;
@@ -124,10 +143,15 @@
             if (!outputIds[key]) outputIds[key] = "output-" + nextOutputId++;
             var desktop = typeof workspace.currentDesktopForScreen === "function"
                 ? workspace.currentDesktopForScreen(screens[j]) : workspace.currentDesktop;
-            areas.push({ id: outputIds[key], rect: rect(workspace.clientArea(
-                KWin.MaximizeArea, screens[j], desktop)) });
+            var usable = rect(workspace.clientArea(KWin.MaximizeArea, screens[j], desktop));
+            areas.push({ id: outputIds[key], rect: usable, seat: false });
             var screen = screens[j].geometry;
             if (!screen) continue;
+            // Only a real reserved bottom edge or visible bottom dock is a
+            // taskbar seat. The bare monitor bottom is just a placement bound.
+            if (usable.y + usable.height < screen.y + screen.height - 0.5) {
+                areas.push({ id: "floor-" + outputIds[key], rect: usable, seat: true });
+            }
             for (var k = 0; k < docks.length; k++) {
                 var panel = docks[k].rect;
                 var gap = screen.y + screen.height - panel.y - panel.height;
@@ -141,7 +165,7 @@
                     || gap < -1 || gap > Math.max(80, panel.height * 2)) continue;
                 // WorkArea seats use their rectangle's bottom edge. Project
                 // from output top to dock top, only over this dock's width.
-                areas.push({ id: "dock-" + docks[k].id + "-" + outputIds[key], rect: {
+                areas.push({ id: "dock-" + docks[k].id + "-" + outputIds[key], seat: true, rect: {
                     x: left, y: screen.y, width: right - left,
                     height: panel.y - screen.y
                 } });
@@ -154,6 +178,9 @@
             own_id: own ? String(own.internalId) : null,
             own_rect: own ? rect(own.clientGeometry) : null,
             own_interactive_move: own ? Boolean(own.move) : false,
+            own_above_panels: own ? docks.every(function (dock) {
+                return dock.output !== own.output || windows.indexOf(own) > dock.stackIndex;
+            }) : null,
             cursor: [cursor.x, cursor.y]
         });
         waiting = true;
@@ -166,6 +193,7 @@
                 try {
                     var response = JSON.parse(reply);
                     if (response.stop) { finish(); return; }
+                    applyStacking(response.keep_above, own);
                     applyMove(response.move, own, areas);
                 } catch (_) { finish(); }
             });

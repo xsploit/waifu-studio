@@ -305,8 +305,8 @@ impl AgentState {
         self.review.as_ref().map(|r| r.display.as_str())
     }
     pub fn run(&mut self) -> Result<(), String> {
-        if !cfg!(unix) {
-            return Err("Coding-agent execution currently requires Unix process-group support; Windows runner is not implemented yet.".into());
+        if !cfg!(any(unix, windows)) {
+            return Err("Coding-agent execution is unavailable on this platform.".into());
         }
         if self.is_busy() {
             return Err("One agent task can run at a time".into());
@@ -521,6 +521,8 @@ fn launch_spec(task: &Task) -> (String, Vec<String>) {
 struct ProcessGroup {
     child: Child,
     cleaned: bool,
+    #[cfg(windows)]
+    job: crate::windows_process::Job,
 }
 impl ProcessGroup {
     fn kill(&mut self) {
@@ -528,6 +530,8 @@ impl ProcessGroup {
             return;
         }
         self.cleaned = true;
+        #[cfg(windows)]
+        self.job.kill();
         #[cfg(unix)]
         // SAFETY: process_group(0) creates a fresh group whose ID is this child PID.
         unsafe {
@@ -591,17 +595,30 @@ fn execute(task: Task, cancel: Arc<AtomicBool>, output: Arc<Mutex<Vec<u8>>>) -> 
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    #[cfg(not(windows))]
     let child = match command.spawn() {
         Ok(child) => child,
         Err(e) => return (format!("Cannot start selected CLI: {e}"), false),
     };
+    #[cfg(windows)]
+    let (child, job) = match crate::windows_process::Job::spawn(&mut command) {
+        Ok(result) => result,
+        Err(error) => return (format!("Cannot start selected CLI: {error}"), false),
+    };
     let mut process = ProcessGroup {
         child,
         cleaned: false,
+        #[cfg(windows)]
+        job,
     };
     let overflow = Arc::new(AtomicBool::new(false));
     let stdout = process.child.stdout.take().unwrap();
     let stderr = process.child.stderr.take().unwrap();
+    #[cfg(windows)]
+    let (stdout, stderr) = (
+        crate::windows_process::Reader(stdout),
+        crate::windows_process::Reader(stderr),
+    );
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;

@@ -1,0 +1,1 @@
+The script and synthetic event fixtures are original Waifu Studio examples, MIT licensed. The head/chest nod is the unchanged original procedural talking-nod.bvh from the Waifumations library, MIT licensed. No Twitch account data, downloaded animation, or provider output is bundled. This is an offline replay, not a live Twitch connection.

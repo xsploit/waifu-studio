@@ -3,6 +3,7 @@
 *.md text eol=lf
 *.toml text eol=lf
 *.sh text eol=lf
+*.py text eol=lf
 *.js text eol=lf
 *.cjs text eol=lf
 *.vrm binary

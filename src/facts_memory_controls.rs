@@ -6,10 +6,8 @@ use waifu_studio::facts_memory::{
 use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
-    kit::note(
-        ui,
-        "Evidence ledger: facts, preferences, questions and reflections are local to this character. Candidate extraction uses only user turns and always requires acceptance.",
-    );
+    ui.small("Evidence belongs to this character. Review suggestions before use.")
+        .on_hover_text("The ledger holds facts, preferences, questions, and reflections. Candidate extraction uses only user turns and always requires acceptance.");
     if !state.has_character() {
         ui.label("Select a character to manage the ledger.");
         return;
@@ -37,15 +35,17 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         }
         pending_retention(ui, state);
         reflection_drafts(ui, state);
+        ui.label("New record");
         ui.add(
             egui::TextEdit::multiline(&mut state.draft)
                 .hint_text("Record text (up to 1000 characters)"),
         );
+        ui.label("Quoted evidence");
         ui.add(
             egui::TextEdit::multiline(&mut state.evidence_draft)
                 .hint_text("Quoted evidence / source excerpt (required)"),
         );
-        ui.horizontal(|ui| {
+        ui.menu_button("Add record", |ui| {
             for kind in [
                 RecordKind::Fact,
                 RecordKind::Preference,
@@ -64,11 +64,14 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                         }
                         Err(e) => state.error = Some(e),
                     }
+                    ui.close();
                 }
             }
         });
         for candidate in state.candidates().to_vec() {
-            ui.group(|ui| {
+            ui.push_id(candidate.id, |ui| {
+            kit::card(ui, |card| {
+                let ui = &mut *card.ui;
                 ui.label(format!(
                     "Candidate {:?}: {}",
                     candidate.kind, candidate.text
@@ -86,11 +89,11 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                         replaced.map_or("(record no longer exists)", |r| r.text.as_str())
                     ));
                 }
-                ui.weak(format!(
-                    "Turn: {:?} · pending expiry: {:?} · not used in chat until accepted",
+                ui.weak("Pending · excluded from chat until accepted").on_hover_text(format!(
+                    "Turn: {:?} · expires: {:?}",
                     candidate.turn_id, candidate.expires_at
                 ));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!state.busy, egui::Button::new("Accept candidate"))
                         .clicked()
@@ -103,15 +106,21 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                     }
                 });
             });
+            });
         }
         let character_scope = ui.id().with("evidence-records");
         for record in state.records().to_vec() {
             ui.push_id((character_scope, record.id), |ui| {
-                ui.group(|ui| {
-                    ui.label(format!("{:?} · {}", record.kind, record.id));
+                kit::card(ui, |card| {
+                    let ui = &mut *card.ui;
+                    ui.label(format!("{:?}", record.kind)).on_hover_text(record.id.to_string());
                     if !state.reflection_is_current(&record) {
                         kit::note(ui, "Excluded from recall: cited evidence changed, expired or was removed, or this older reflection has unverifiable citations. Review the current evidence and create a new draft.");
                     }
+                    egui::CollapsingHeader::new("Advanced · record details")
+                        .id_salt("record_details")
+                        .default_open(false)
+                        .show(ui, |ui| {
                     ui.label(format!(
                         "Source: {} · turn: {:?}",
                         record.source, record.turn_id
@@ -120,6 +129,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                         "Created: {} · expires: {:?} · supersedes: {:?}",
                         record.created_at, record.expires_at, record.supersedes
                     ));
+                    });
                     let text_id = ui.id().with("text");
                     let evidence_id = ui.id().with("evidence");
                     let mut text = ui
@@ -128,6 +138,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                     let mut evidence = ui
                         .data_mut(|d| d.get_temp::<String>(evidence_id))
                         .unwrap_or(record.evidence.clone());
+                    ui.label("Record text");
                     ui.add(egui::TextEdit::multiline(&mut text));
                     ui.label("Quoted evidence");
                     ui.add(egui::TextEdit::multiline(&mut evidence));
@@ -135,7 +146,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                         d.insert_temp(text_id, text.clone());
                         d.insert_temp(evidence_id, evidence.clone());
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui
                             .add_enabled(
                                 !state.busy && (text != record.text || evidence != record.evidence),
@@ -175,13 +186,17 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                 });
             });
         }
+        egui::CollapsingHeader::new("Advanced · delete ledger")
+            .id_salt("ledger_delete_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
         let confirm_id = ui
             .id()
             .with(("confirm-ledger-delete", state.selected_character()));
         let mut confirm = ui
             .data_mut(|d| d.get_temp::<bool>(confirm_id))
             .unwrap_or(false);
-        kit::toggle_row(ui, "Confirm deletion of this character’s entire evidence ledger", "", &mut confirm);
+        kit::toggle_row(ui, "Confirm ledger deletion", "Delete this character’s entire ledger.", &mut confirm);
         ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
         if ui
             .add_enabled(confirm && !state.busy, egui::Button::new("Delete ledger"))
@@ -194,25 +209,30 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                 Err(e) => state.error = Some(e),
             }
         }
+        });
     });
     recall_inspector(ui, state);
 }
 
 /// Separate opt-in for keeping pending candidates in candidates.jsonl across restarts.
 fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
-    let mut retain = state.retain_pending;
-    if kit::toggle_row(
-        ui,
-        "Keep pending candidates across restarts",
-        "Opt in to local candidate storage.",
-        &mut retain,
-    )
-    .changed()
-        && let Err(e) = state.set_retain_pending(retain)
-    {
-        state.error = Some(e);
-    }
-    ui.weak(format!(
+    egui::CollapsingHeader::new("Advanced · pending storage")
+        .id_salt("pending_storage_advanced")
+        .default_open(false)
+        .show(ui, |ui| {
+            let mut retain = state.retain_pending;
+            if kit::toggle_row(
+                ui,
+                "Keep pending suggestions",
+                "Opt in to local candidate storage.",
+                &mut retain,
+            )
+            .changed()
+                && let Err(e) = state.set_retain_pending(retain)
+            {
+                state.error = Some(e);
+            }
+            ui.weak("Retains suggestions across restarts.").on_hover_text(format!(
         "Stores only each pending candidate's quoted user turn (up to 1000 characters), turn ID \
          and expiry ({} days) in candidates.jsonl beside this character's ledger — never full \
          transcripts. At most {} candidates. Pending candidates never reach chat until accepted. \
@@ -220,6 +240,7 @@ fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         CANDIDATE_TTL_SECS / 86_400,
         MAX_CANDIDATES
     ));
+        });
     if state.pending_saving() {
         ui.weak("Saving pending candidates…");
     }
@@ -240,7 +261,7 @@ fn pending_retention(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
                 ui,
                 "The suggestions shown were not saved. Retry once, or stop retaining them.",
             );
-            if ui.button("Retry saving pending candidates").clicked()
+            if ui.button("Retry saving suggestions").clicked()
                 && let Err(e) = state.retry_pending()
             {
                 state.error = Some(e);
@@ -299,13 +320,13 @@ fn recall_inspector(ui: &mut egui::Ui, state: &FactsMemoryState) {
 /// Manual reflection drafts: shows exactly which accepted records would be sent, needs a
 /// per-character confirmation, and only ever produces a pending candidate.
 fn reflection_drafts(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
-    egui::CollapsingHeader::new("Reflection draft (manual, opt in)")
+    egui::CollapsingHeader::new("Reflection draft")
         .id_salt("facts-reflection")
         .default_open(false)
         .show(ui, |ui| {
             let sources = state.reflection_sources();
             let config = &mut state.reflection.config;
-            ui.weak(format!(
+            ui.weak("Send accepted records to draft a pending reflection.").on_hover_text(format!(
                 "Sends up to {} current accepted facts, preferences and questions (first {MAX_SOURCE_CHARS} \
                  characters each, never transcripts, pending suggestions or earlier reflections) to the \
                  endpoint below. The reply must cite at most {MAX_CITED} offered records; anything else is \
@@ -331,10 +352,10 @@ fn reflection_drafts(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
             let mut confirm = ui
                 .data_mut(|d| d.get_temp::<bool>(confirm_id))
                 .unwrap_or(false);
-            kit::toggle_row(ui, "I confirm sending these records to this endpoint for one draft", "", &mut confirm);
+            kit::toggle_row(ui, "Allow one draft request", "Send the listed records to this endpoint.", &mut confirm);
             ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
             let running = state.reflection.running();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(
                         confirm && !running && !state.reflection.shutting_down() && !sources.is_empty(),

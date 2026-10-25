@@ -93,28 +93,25 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             config.set_route(route);
         }
         if let Some(route) = route {
-            ui.small(format!(
-                "WebWaifu defaults: fixed gateway URL; routed model IDs. Effective model: {}",
-                config.effective_model()
-            ));
-            kit::note(
-                ui,
-                "Explicit vendor/model IDs are sent unchanged, including premium models and routing suffixes. Empty or unrouted IDs use the gateway default.",
-            );
-            kit::group(ui, "Upstream provider routing", |ui| {
+            ui.small(format!("Model: {}", config.effective_model()))
+                .on_hover_text("Gateway routes use a fixed URL. Explicit vendor/model IDs, including premium models and routing suffixes, are sent unchanged. Empty or unrouted IDs use the gateway default.");
+            egui::CollapsingHeader::new("Advanced · provider routing")
+                .id_salt("provider_routing_advanced")
+                .default_open(false)
+                .show(ui, |ui| {
                 kit::note(
                     ui,
                     "Use exact provider slugs from this gateway's model page. Availability depends on the selected model.",
                 );
                 slug_list(
                     ui,
-                    "Try providers in this order",
+                    "Preferred order",
                     "provider-order",
                     &mut config.routing.order,
                 );
                 slug_list(
                     ui,
-                    "Allow only these providers",
+                    "Allowed providers",
                     "provider-only",
                     &mut config.routing.only,
                 );
@@ -169,7 +166,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             if route == GatewayRoute::VercelGateway {
                 kit::text_row(
                     ui,
-                    "OpenAI BYOK environment variable",
+                    "OpenAI key variable",
                     "Optional key for your own OpenAI account.",
                     &mut config.byok_openai_key_env,
                     "",
@@ -183,7 +180,10 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             &mut config.name,
             "",
         );
-        kit::group(ui, "Generation budget & sampling", |ui| {
+        egui::CollapsingHeader::new("Advanced · generation")
+            .id_salt("provider_generation_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
             ui.small(
                 "Optional parameters depend on the model. Leave disabled to use server defaults.",
             );
@@ -233,8 +233,8 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             let mut budget = config.max_tokens.is_some();
             if kit::toggle_row(
                 ui,
-                "Set output token budget (max_tokens)",
-                "Limit generated output tokens.",
+                "Limit output tokens",
+                "Optional max_tokens override.",
                 &mut budget,
             )
             .changed()
@@ -252,8 +252,8 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             let mut nucleus = config.top_p.is_some();
             if kit::toggle_row(
                 ui,
-                "Set nucleus sampling (top_p)",
-                "Override the server default.",
+                "Override Top P",
+                "Optional nucleus sampling override.",
                 &mut nucleus,
             )
             .changed()
@@ -281,14 +281,17 @@ fn slug_list(ui: &mut egui::Ui, label: &str, id: &str, slugs: &mut Vec<String>) 
                 &format!("Provider {}", index + 1),
                 "Exact provider slug.",
                 |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(slug)
-                            .char_limit(128)
-                            .hint_text("Exact provider slug"),
-                    );
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(index);
-                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(slug)
+                                .desired_width(150.0)
+                                .char_limit(128)
+                                .hint_text("Exact provider slug"),
+                        );
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(index);
+                        }
+                    });
                 },
             );
         }

@@ -1,0 +1,58 @@
+{
+  "api_version": 1,
+  "id": "org.waifu-studio.companion-starter",
+  "version": "1.0.0",
+  "name": "Companion Starter",
+  "description": "Original head and chest companion motions, an existing Cozy Room reference, and an optional idle-motion preset. No external assets or executable code.",
+  "provenance": {
+    "author": "Waifu Studio / VRM Loader contributors",
+    "license": "MIT",
+    "source": "Waifu Studio assets/animations/companion; original procedural BVHs packaged unchanged. See ATTRIBUTION.md and LICENSE."
+  },
+  "content": {
+    "characters": [],
+    "motions": [
+      {
+        "id": "idle-look-down",
+        "name": "Idle: Gentle Downward Glance",
+        "asset": "motions/idle-look-down.bvh",
+        "role": "idle",
+        "loopable": true
+      },
+      {
+        "id": "talking-nod",
+        "name": "Talking: Gentle Nod",
+        "asset": "motions/talking-nod.bvh",
+        "role": "talking",
+        "loopable": true
+      },
+      {
+        "id": "talking-tilt",
+        "name": "Talking: Gentle Tilt",
+        "asset": "motions/talking-tilt.bvh",
+        "role": "talking",
+        "loopable": true
+      }
+    ],
+    "expressions": [],
+    "backgrounds": [
+      {
+        "id": "cozy-room",
+        "name": "Cozy Room (Built-in)",
+        "source": {
+          "type": "room",
+          "room": "cozy_room"
+        }
+      }
+    ],
+    "presets": [
+      {
+        "id": "enable-idle-motion",
+        "name": "Enable Idle Motion",
+        "settings": {
+          "idle_motion": true
+        }
+      }
+    ]
+  }
+}

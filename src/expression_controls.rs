@@ -36,18 +36,24 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FacialState) -> bool {
             egui::Slider::new(&mut state.config.expression_weight, 0.0..=1.0),
         );
         kit::toggle_row(ui, "Automatic blinking", "", &mut state.config.auto_blink);
-        kit::slider_row(
-            ui,
-            "Blink strength",
-            "",
-            egui::Slider::new(&mut state.config.blink_strength, 0.0..=1.0),
-        );
-        kit::slider_row(
-            ui,
-            "Blink interval (seconds)",
-            "",
-            egui::Slider::new(&mut state.config.blink_interval_secs, 1.5..=10.0),
-        );
+        egui::CollapsingHeader::new("Advanced · blinking")
+            .id_salt("blink_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
+                kit::slider_row(
+                    ui,
+                    "Blink strength",
+                    "",
+                    egui::Slider::new(&mut state.config.blink_strength, 0.0..=1.0),
+                );
+                kit::slider_row(
+                    ui,
+                    "Blink interval",
+                    "",
+                    egui::Slider::new(&mut state.config.blink_interval_secs, 1.5..=10.0)
+                        .suffix(" s"),
+                );
+            });
         kit::toggle_row(ui, "Audio lip sync", "", &mut state.config.lip_sync);
         kit::slider_row(
             ui,
@@ -81,7 +87,10 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FacialState) -> bool {
                 "The selected mouth expression is unavailable on this avatar. Choose one from the dropdown for audio-envelope lip sync.",
             );
         }
-        kit::group(ui, "Live mouth diagnostics", |ui| {
+        egui::CollapsingHeader::new("Advanced · mouth diagnostics")
+            .id_salt("mouth_diagnostics")
+            .default_open(false)
+            .show(ui, |ui| {
             ui.add(
                 egui::ProgressBar::new(state.speech_level)
                     .text(format!("Speech signal: {:.0}%", state.speech_level * 100.)),
@@ -101,23 +110,26 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FacialState) -> bool {
             state.config.mouth_gain = defaults.mouth_gain;
             state.config.mouth_expression = defaults.mouth_expression;
         }
-        kit::group(ui, "Manual expression weights", |ui| {
-            for name in &state.available {
-                let mut weight = state.config.weights.get(name).copied().unwrap_or_default();
-                if kit::slider_row(ui, name, "", egui::Slider::new(&mut weight, 0.0..=1.0))
-                    .changed()
-                {
-                    if weight > 0.0 {
-                        state.config.weights.insert(name.clone(), weight);
-                    } else {
-                        state.config.weights.remove(name);
+        egui::CollapsingHeader::new("Advanced · manual expressions")
+            .id_salt("manual_expression_weights")
+            .default_open(false)
+            .show(ui, |ui| {
+                for name in &state.available {
+                    let mut weight = state.config.weights.get(name).copied().unwrap_or_default();
+                    if kit::slider_row(ui, name, "", egui::Slider::new(&mut weight, 0.0..=1.0))
+                        .changed()
+                    {
+                        if weight > 0.0 {
+                            state.config.weights.insert(name.clone(), weight);
+                        } else {
+                            state.config.weights.remove(name);
+                        }
                     }
                 }
-            }
-            if ui.button("Reset manual weights").clicked() {
-                state.config.weights.clear();
-            }
-        });
+                if ui.button("Reset manual weights").clicked() {
+                    state.config.weights.clear();
+                }
+            });
     });
     state.config != before
 }

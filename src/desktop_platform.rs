@@ -1,4 +1,4 @@
-//! Explicitly enabled, runtime-only KWin 6 desktop geometry bridge.
+//! Explicitly enabled, runtime-only Windows, KWin and Hyprland geometry bridges.
 //!
 //! Calling `start` is the only operation that connects to D-Bus or loads a
 //! compositor script. There is no persistent KWin configuration, autostart,
@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 
 mod hyprland;
 pub use hyprland::{HyprlandDesktopBridge, hyprland_session};
+#[cfg(windows)]
+mod windows;
 
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
@@ -33,8 +35,12 @@ pub struct DesktopSnapshot {
     pub own_window_ids: Vec<u64>,
     /// The logical client rectangle, including on Wayland where winit cannot query it.
     pub own_window_rect: Option<ScreenRect>,
-    /// KWin owns an interactive native drag and may consume pointer release.
-    pub own_interactive_move: bool,
+    /// Some: the compositor reports native drag state and may consume release.
+    /// None: this backend cannot observe native drag completion.
+    pub own_interactive_move: Option<bool>,
+    /// KWin's actual stacking order relative to visible panels on this output.
+    /// None means this backend cannot confirm above-panel stacking.
+    pub own_above_panels: Option<bool>,
     pub cursor: Vec2,
 }
 
@@ -62,6 +68,8 @@ impl WireRect {
 struct WireSurface {
     id: String,
     rect: WireRect,
+    #[serde(default)]
+    seat: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -71,7 +79,9 @@ struct WireSnapshot {
     own_id: Option<String>,
     own_rect: Option<WireRect>,
     #[serde(default)]
-    own_interactive_move: bool,
+    own_interactive_move: Option<bool>,
+    #[serde(default)]
+    own_above_panels: Option<bool>,
     cursor: [f32; 2],
 }
 
@@ -119,7 +129,11 @@ fn parse_snapshot(json: &str) -> Result<DesktopSnapshot, String> {
         }
         if let Some(rect) = record.rect.checked() {
             surfaces.push(DesktopSurface {
-                id: SurfaceId::WorkArea(surface_id(&record.id)),
+                id: if record.seat == Some(false) {
+                    SurfaceId::Monitor(surface_id(&record.id))
+                } else {
+                    SurfaceId::WorkArea(surface_id(&record.id))
+                },
                 rect,
                 z_order: i32::MAX,
             });
@@ -133,6 +147,7 @@ fn parse_snapshot(json: &str) -> Result<DesktopSnapshot, String> {
         own_window_ids,
         own_window_rect,
         own_interactive_move: wire.own_interactive_move,
+        own_above_panels: wire.own_above_panels,
         cursor,
     })
 }
@@ -182,6 +197,9 @@ mod linux {
         kwin_owner: Option<String>,
         snapshot: Option<(DesktopSnapshot, Instant)>,
         pending_move: Option<Vec2>,
+        keep_above: Option<bool>,
+        stopping: bool,
+        stop_sent: bool,
         error: Option<String>,
     }
 
@@ -214,6 +232,10 @@ mod linux {
                     "Only this session's KWin may send geometry".into(),
                 ));
             }
+            if state.stopping {
+                state.stop_sent = true;
+                return Ok(json!({ "stop": true }).to_string());
+            }
             let parsed = parse_snapshot(payload);
             match parsed {
                 Ok(snapshot) => {
@@ -228,7 +250,7 @@ mod linux {
                 }
             }
             let movement = state.pending_move.take().map(|point| point.to_array());
-            Ok(json!({ "move": movement }).to_string())
+            Ok(json!({ "move": movement, "keep_above": state.keep_above }).to_string())
         }
     }
 
@@ -379,11 +401,35 @@ mod linux {
             state.pending_move = Some(client_origin);
             Ok(())
         }
+
+        pub fn request_keep_above(&self, enabled: bool) -> Result<(), String> {
+            self.shared
+                .lock()
+                .map_err(|_| "Desktop bridge unavailable")?
+                .keep_above = Some(enabled);
+            Ok(())
+        }
     }
 
     impl Drop for KwinDesktopBridge {
         fn drop(&mut self) {
-            if let Ok(manager) = self.manager() {
+            // Let the script restore this window's original stacking flag before
+            // unloading. Destruction runs off the render thread during mode changes.
+            let active = self.shared.lock().is_ok_and(|mut state| {
+                state.stopping = true;
+                state.snapshot.is_some()
+            });
+            let deadline = Instant::now() + Duration::from_millis(300);
+            let mut stop_sent = false;
+            while active && Instant::now() < deadline {
+                stop_sent = self.shared.lock().is_ok_and(|state| state.stop_sent);
+                if stop_sent {
+                    std::thread::sleep(Duration::from_millis(50));
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if !stop_sent && let Ok(manager) = self.manager() {
                 let _: zbus::Result<bool> = manager.call("unloadScript", &(self.plugin.as_str(),));
             }
             let _ = fs::remove_file(self.script_dir.join("main.js"));
@@ -409,6 +455,9 @@ impl KwinDesktopBridge {
     pub fn request_move(&self, _: Vec2) -> Result<(), String> {
         Err("KWin desktop bridge is unavailable on this platform".into())
     }
+    pub fn request_keep_above(&self, _: bool) -> Result<(), String> {
+        Err("KWin desktop bridge is unavailable on this platform".into())
+    }
 }
 
 /// Compositor-neutral bridge behind the same explicit window-surfaces opt-in.
@@ -416,6 +465,8 @@ impl KwinDesktopBridge {
 /// whose socket authenticates; otherwise the KWin bridge applies its own
 /// checks. No backend is probed on a compositor it does not belong to.
 pub enum DesktopBridge {
+    #[cfg(windows)]
+    Windows(windows::WindowsDesktopBridge),
     Kwin(KwinDesktopBridge),
     Hyprland(HyprlandDesktopBridge),
 }
@@ -424,6 +475,12 @@ impl DesktopBridge {
     /// Blocking: may wait on D-Bus or the compositor socket. Call off the
     /// render thread, like `KwinDesktopBridge::start`.
     pub fn start(own_window_title: &str) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let _ = own_window_title;
+            return Err("Windows desktop tracking needs the primary native window handle".into());
+        }
+        #[cfg(not(windows))]
         if hyprland_session() {
             HyprlandDesktopBridge::start(own_window_title).map(Self::Hyprland)
         } else {
@@ -431,8 +488,17 @@ impl DesktopBridge {
         }
     }
 
+    /// Use winit's actual primary window, never synchronous title queries from
+    /// an ECS worker (those can deadlock against the event-loop thread).
+    #[cfg(windows)]
+    pub fn start_windows(native_window: usize) -> Result<Self, String> {
+        windows::WindowsDesktopBridge::start(native_window).map(Self::Windows)
+    }
+
     pub fn snapshot(&self) -> Result<DesktopSnapshot, String> {
         match self {
+            #[cfg(windows)]
+            Self::Windows(bridge) => bridge.snapshot(),
             Self::Kwin(bridge) => bridge.snapshot(),
             Self::Hyprland(bridge) => bridge.snapshot(),
         }
@@ -440,20 +506,53 @@ impl DesktopBridge {
 
     pub fn request_move(&self, client_origin: Vec2) -> Result<(), String> {
         match self {
+            #[cfg(windows)]
+            Self::Windows(bridge) => bridge.request_move(client_origin),
             Self::Kwin(bridge) => bridge.request_move(client_origin),
             Self::Hyprland(bridge) => bridge.request_move(client_origin),
+        }
+    }
+
+    /// xdg-toplevel has no always-on-top request. KWin exposes a per-window
+    /// flag through our authenticated bridge; Hyprland panels need a different
+    /// surface role, so do not report that an ordinary client can cover them.
+    pub fn request_keep_above(&self, enabled: bool) -> Result<(), String> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(bridge) => bridge.request_keep_above(enabled),
+            Self::Kwin(bridge) => bridge.request_keep_above(enabled),
+            Self::Hyprland(_) if enabled => {
+                Err("Above-panel stacking is unavailable in this Hyprland backend.".into())
+            }
+            Self::Hyprland(_) => Ok(()),
         }
     }
 }
 
 /// Whether environment hints permit probing any supported geometry backend.
 pub fn window_surfaces_session() -> bool {
-    hyprland_session() || kwin_wayland_session()
+    cfg!(windows) || hyprland_session() || kwin_wayland_session()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_bounds_are_distinct_from_verified_taskbar_seats() {
+        let snapshot = parse_snapshot(
+            r#"{
+            "windows":[], "work_areas":[
+                {"id":"monitor", "seat":false, "rect":{"x":0,"y":0,"width":1920,"height":1080}},
+                {"id":"panel", "seat":true, "rect":{"x":0,"y":0,"width":1920,"height":1040}}
+            ], "cursor":[0,0], "own_above_panels":true
+        }"#,
+        )
+        .unwrap();
+        assert!(matches!(snapshot.surfaces[0].id, SurfaceId::Monitor(_)));
+        assert!(matches!(snapshot.surfaces[1].id, SurfaceId::WorkArea(_)));
+        assert_eq!(snapshot.own_above_panels, Some(true));
+    }
 
     #[test]
     fn missing_session_hints_allow_discovery_but_explicit_x11_does_not() {
@@ -497,6 +596,20 @@ mod tests {
             Vec2::new(50., 80.)
         );
         assert_eq!(snapshot.cursor, Vec2::new(-300., 100.));
+        assert_eq!(snapshot.own_interactive_move, None);
+    }
+
+    #[test]
+    fn native_drag_capability_is_distinct_from_reported_idle() {
+        for moving in [false, true] {
+            let json = format!(
+                r#"{{"windows":[],"work_areas":[],"cursor":[0,0],"own_interactive_move":{moving}}}"#
+            );
+            assert_eq!(
+                parse_snapshot(&json).unwrap().own_interactive_move,
+                Some(moving)
+            );
+        }
     }
 
     #[test]

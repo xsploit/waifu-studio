@@ -909,6 +909,86 @@ fn connect(
         .map_err(|_| "Could not configure Fish WebSocket polling")?;
     Ok(ws)
 }
+
+/// Receive-only integration transport using the same explicit proxy routing as
+/// native speech. No Fish headers, credentials, or initialization are sent.
+/// A selected proxy failure never falls back to a direct connection.
+pub(crate) fn observation_socket(
+    url: &reqwest::Url,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    observation_socket_with_env(url, |name| std::env::var(name).ok())
+}
+
+fn observation_socket_with_env(
+    url: &reqwest::Url,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    observation_socket_configured(url, lookup, None)
+}
+
+fn observation_socket_configured(
+    url: &reqwest::Url,
+    lookup: impl Fn(&str) -> Option<String>,
+    connector: Option<tungstenite::Connector>,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    let route = proxy_route(url, lookup).map_err(|_| "Invalid integration proxy configuration")?;
+    let host = url
+        .host_str()
+        .ok_or("Missing integration socket host")?
+        .trim_matches(['[', ']']);
+    let port = url.port_or_known_default().ok_or("Missing socket port")?;
+    let active = AtomicU64::new(1);
+    let budget = StreamBudget::default();
+    let mut socket = match &route {
+        Route::Direct => connect_tcp(host, port, &active, 1, &budget),
+        Route::HttpConnect { host, port, .. } => connect_tcp(host, *port, &active, 1, &budget),
+    }
+    .map_err(|_| "Integration socket connection failed")?;
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .and_then(|()| socket.set_write_timeout(Some(Duration::from_secs(5))))
+        .map_err(|_| "Cannot configure integration socket")?;
+    if let Route::HttpConnect { authorization, .. } = &route {
+        tunnel(
+            &mut socket,
+            &authority(host, port),
+            authorization.as_deref(),
+            &active,
+            1,
+            &budget,
+        )
+        .map_err(|_| "Integration proxy tunnel failed")?;
+    }
+    let config = WebSocketConfig::default()
+        .write_buffer_size(0)
+        .max_write_buffer_size(128 * 1024)
+        .max_message_size(Some(64 * 1024))
+        .max_frame_size(Some(64 * 1024));
+    let (mut ws, _) =
+        tungstenite::client_tls_with_config(url.as_str(), socket, Some(config), connector)
+            .map_err(|_| "Integration WebSocket handshake failed")?;
+    let socket = match ws.get_mut() {
+        MaybeTlsStream::Plain(socket) => socket,
+        MaybeTlsStream::Rustls(socket) => &mut socket.sock,
+        _ => return Err("Unsupported integration TLS transport".into()),
+    };
+    socket
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .map_err(|_| "Cannot configure integration socket polling")?;
+    Ok(ws)
+}
+/// Test-only fixture trust is scoped to one local connector. Production callers
+/// keep the normal platform/webpki roots through observation_socket_with_env.
+#[cfg(test)]
+pub(crate) fn observation_socket_fixture_tls(
+    url: &reqwest::Url,
+    connector: Option<tungstenite::Connector>,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    assert_eq!(url.scheme(), "wss");
+    assert_eq!(url.host_str(), Some("127.0.0.1"));
+    observation_socket_configured(url, |_| None, connector)
+}
+
 struct WsReader {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
     /// Session key, used only to mask provider error text.
@@ -2557,5 +2637,86 @@ mod tests {
             );
             assert!(state.poll().is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod observation_socket_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    #[allow(clippy::result_large_err)] // tungstenite fixes the callback error type.
+    fn observation_proxy_upgrade_sends_no_provider_headers_or_initialization() {
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = proxy.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = proxy.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            assert!(header.starts_with(b"CONNECT fixture.invalid:80 HTTP/1.1\r\n"));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .unwrap();
+            let mut ws = tungstenite::accept_hdr(
+                socket,
+                |request: &tungstenite::handshake::server::Request, response| {
+                    assert!(!request.headers().contains_key("authorization"));
+                    assert!(!request.headers().contains_key("model"));
+                    Ok(response)
+                },
+            )
+            .unwrap();
+            ws.send(Message::Text("event-fixture".into())).unwrap();
+            assert!(matches!(ws.read(), Err(tungstenite::Error::Io(_))));
+        });
+        let url = reqwest::Url::parse("ws://fixture.invalid/ws").unwrap();
+        let mut ws = observation_socket_with_env(&url, |name| {
+            (name == "http_proxy").then(|| format!("http://{address}"))
+        })
+        .unwrap();
+        assert_eq!(ws.read().unwrap().into_text().unwrap(), "event-fixture");
+        // No startup traffic is sent. Drop closes the stream after server timeout.
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn observation_proxy_rejection_never_falls_back_to_direct_target() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = proxy.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = proxy.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = [0; 2048];
+            let _ = socket.read(&mut bytes).unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let url =
+            reqwest::Url::parse(&format!("ws://{}/ws", target.local_addr().unwrap())).unwrap();
+        let error = observation_socket_with_env(&url, |name| {
+            (name == "http_proxy").then(|| format!("http://{proxy_address}"))
+        })
+        .unwrap_err();
+        assert_eq!(error, "Integration proxy tunnel failed");
+        assert_eq!(
+            target.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        server.join().unwrap();
     }
 }

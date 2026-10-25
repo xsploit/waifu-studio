@@ -5,7 +5,11 @@
 //! https://github.com/not-elm/bevy_vrm1/tree/v0.7.1/src/vrma/animation
 //! Application placement is excluded from all rest-space calculations.
 use crate::loading::AvatarLoadState;
-use bevy::{math::Affine3A, prelude::*};
+use bevy::{
+    math::Affine3A,
+    mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes},
+    prelude::*,
+};
 use serde_vrm::vrm1::vrmc_vrm::humanoid::HumanBoneName;
 use std::{
     collections::{HashMap, HashSet},
@@ -13,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc,
     },
 };
@@ -21,10 +25,45 @@ use std::{
 #[path = "animation_import.rs"]
 mod animation_import;
 pub use animation_import::{parse_fbx, parse_vrma};
+#[path = "animation_body.rs"]
+mod animation_body;
+#[path = "animation_clearance.rs"]
+mod animation_clearance;
+
+#[path = "animation_lifecycle.rs"]
+mod animation_lifecycle;
+use animation_lifecycle::MotionReceipt;
+pub use animation_lifecycle::{MAX_MOTION_RECEIPTS, MotionObservations, MotionSourceSnapshot};
 
 const MAX_FILE: u64 = 32 * 1024 * 1024;
 const MAX_SAMPLES: usize = 4_000_000;
 static IMPORT_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Admission errors distinguish temporary global-loader contention from invalid
+/// paths or unavailable workers. Existing UI APIs preserve their string errors.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MotionLoadError {
+    Busy,
+    Failed(String),
+}
+impl std::fmt::Display for MotionLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => f.write_str("An animation import is already running"),
+            Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+impl From<String> for MotionLoadError {
+    fn from(value: String) -> Self {
+        Self::Failed(value)
+    }
+}
+impl From<&str> for MotionLoadError {
+    fn from(value: &str) -> Self {
+        Self::Failed(value.into())
+    }
+}
 
 /// Original imported local transform, before runtime idle/procedural poses.
 /// Procedural writers must wait until this snapshot exists before changing bones.
@@ -84,11 +123,46 @@ impl BvhClip {
         self.exact_duration
             .unwrap_or(self.frame_count as f32 * self.frame_time)
     }
+    /// Final pose time used when nonlooping playback reaches the clip end.
+    /// BVH includes a frame interval after its last sample in `duration()`.
+    pub fn last_sample_time(&self) -> f32 {
+        self.exact_duration
+            .unwrap_or((self.frame_count - 1) as f32 * self.frame_time)
+    }
     pub fn format(&self) -> &'static str {
         self.source_format
     }
     pub fn mapped_bones(&self) -> usize {
         self.joints.iter().filter(|j| j.bone.is_some()).count()
+    }
+    /// Source-model geometry for diagnostics, including unmapped helper joints.
+    pub fn sampled_skeleton(&self, seconds: f32, looping: bool) -> Vec<(Vec3, Quat)> {
+        let mut local = Vec::new();
+        self.sample_local(seconds, looping, &mut local);
+        let mut globals: Vec<Affine3A> = Vec::with_capacity(local.len());
+        let mut result = Vec::with_capacity(local.len());
+        for (index, joint) in self.joints.iter().enumerate() {
+            let transform = Transform {
+                translation: self.sample_translation(index, seconds, looping),
+                rotation: local[index],
+                scale: joint.rest_scale,
+            }
+            .compute_affine();
+            let global = joint
+                .parent
+                .map_or(transform, |parent| globals[parent] * transform);
+            let (_, rotation, position) = global.to_scale_rotation_translation();
+            globals.push(global);
+            result.push((position, rotation));
+        }
+        result
+    }
+    pub fn rest_skeleton(&self) -> Vec<(Vec3, Quat)> {
+        self.rest_positions
+            .iter()
+            .copied()
+            .zip(self.rest_world.iter().copied())
+            .collect()
     }
     /// Whether the source skeleton faces -Z at rest, judged by which side its left
     /// limbs are on. `None` when offsets are unavailable (VRMA) or ambiguous; callers
@@ -571,24 +645,89 @@ pub fn map_bone(name: &str) -> Option<HumanBoneName> {
 }
 
 type ImportResult = Result<(PathBuf, BvhClip), String>;
+
+/// Opaque identity for one host-authorized playback request, independent of its
+/// asset path. Tokens are unique across AnimationState replacements as well.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlaybackToken(u64);
+
+impl PlaybackToken {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(
+            NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("playback token identities exhausted"),
+        )
+    }
+}
+
+/// Independently retained terminal observation for one owned playback request.
+/// Terminal status never changes; retaining this clone does not retain a clip.
+#[derive(Clone, Debug)]
+pub struct PlaybackReceipt(Arc<AtomicU8>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PlaybackOutcome {
+    Pending = 0,
+    Completed = 1,
+    Cancelled = 2,
+    Failed = 3,
+}
+
+impl PlaybackReceipt {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(PlaybackOutcome::Pending as u8)))
+    }
+    pub fn outcome(&self) -> PlaybackOutcome {
+        match self.0.load(Ordering::Acquire) {
+            0 => PlaybackOutcome::Pending,
+            1 => PlaybackOutcome::Completed,
+            2 => PlaybackOutcome::Cancelled,
+            _ => PlaybackOutcome::Failed,
+        }
+    }
+    fn finish(&self, outcome: PlaybackOutcome) {
+        debug_assert_ne!(outcome, PlaybackOutcome::Pending);
+        let _ = self.0.compare_exchange(
+            PlaybackOutcome::Pending as u8,
+            outcome as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
 #[derive(Clone)]
 struct ClipPlayback {
     clip: Arc<BvhClip>,
+    path: Option<PathBuf>,
     position: f32,
     looping: bool,
     speed: f32,
     weight: f32,
     playing: bool,
 }
+#[derive(Default)]
+struct ParkedPaths {
+    watched: HashSet<PathBuf>,
+    revoked: HashSet<PathBuf>,
+}
 #[derive(Resource)]
 pub struct AnimationState {
+    motion_observations: MotionObservations,
+    motion_playback: Option<MotionReceipt>,
+    motion_import: Option<MotionReceipt>,
     pub clip: Option<Arc<BvhClip>>,
     pub path: Option<PathBuf>,
+    importing_path: Option<PathBuf>,
     pub playing: bool,
     pub looping: bool,
     pub speed: f32,
     /// Animation influence; zero restores the captured rest pose.
     pub weight: f32,
+    /// Experimental mesh-derived arm correction; off pending movement-path review.
+    pub arm_clearance: bool,
     pub position: f32,
     pub loading: bool,
     pub error: Option<String>,
@@ -598,20 +737,32 @@ pub struct AnimationState {
     autoplay_import: bool,
     transition_seconds: f32,
     transition_from: Option<ClipPlayback>,
+    revoked_paths: HashSet<PathBuf>,
+    parked_paths: Option<Arc<Mutex<ParkedPaths>>>,
     import_one_shot: bool,
     import_blend: bool,
     one_shot: bool,
     one_shot_finished: bool,
+    manual_hold: bool,
+    playback_owner: Option<PlaybackToken>,
+    import_owner: Option<PlaybackToken>,
+    playback_receipt: Option<PlaybackReceipt>,
+    import_receipt: Option<PlaybackReceipt>,
 }
 impl Default for AnimationState {
     fn default() -> Self {
         Self {
+            motion_observations: MotionObservations::default(),
+            motion_playback: None,
+            motion_import: None,
             clip: None,
             path: None,
+            importing_path: None,
             playing: false,
             looping: true,
             speed: 1.0,
             weight: 1.0,
+            arm_clearance: false,
             position: 0.0,
             loading: false,
             error: None,
@@ -621,15 +772,135 @@ impl Default for AnimationState {
             autoplay_import: false,
             transition_seconds: 0.,
             transition_from: None,
+            revoked_paths: HashSet::new(),
+            parked_paths: None,
             import_one_shot: false,
             import_blend: false,
             one_shot: false,
             one_shot_finished: false,
+            manual_hold: false,
+            playback_owner: None,
+            import_owner: None,
+            playback_receipt: None,
+            import_receipt: None,
         }
     }
 }
 impl AnimationState {
+    pub fn motion_observations(&self) -> MotionObservations {
+        self.motion_observations.clone()
+    }
+    /// Preserve the visible pose without synthetic play/pause admissions.
+    pub fn show_scrub_pose(&mut self) {
+        self.stopped = false;
+        self.playing = false;
+    }
+    /// Park logical requests as cancelled while preserving the legacy clip/time,
+    /// import delivery and manual playback flags in the parked resource.
+    pub fn park_for_desktop(&mut self) -> Self {
+        self.cancel_owned_requests();
+        if let Some(receipt) = self.motion_playback.take() {
+            receipt.finish(PlaybackOutcome::Cancelled);
+        }
+        if let Some(receipt) = self.motion_import.take() {
+            receipt.finish(PlaybackOutcome::Cancelled);
+        }
+        let mut fresh = Self::default();
+        fresh.motion_observations = self.motion_observations.clone();
+        fresh.revoked_paths = std::mem::take(&mut self.revoked_paths);
+        let paths = Arc::new(Mutex::new(ParkedPaths {
+            watched: self
+                .path
+                .iter()
+                .chain(self.importing_path.iter())
+                .chain(
+                    self.transition_from
+                        .iter()
+                        .filter_map(|from| from.path.as_ref()),
+                )
+                .cloned()
+                .collect(),
+            revoked: HashSet::new(),
+        }));
+        self.parked_paths = Some(paths.clone());
+        fresh.parked_paths = Some(paths);
+        std::mem::replace(self, fresh)
+    }
+    pub fn restore_parked(&mut self, mut previous: Self) {
+        self.motion_observations.attach(&mut previous);
+        previous
+            .revoked_paths
+            .extend(std::mem::take(&mut self.revoked_paths));
+        if let Some(paths) = previous.parked_paths.take() {
+            let revoked: Vec<_> = paths
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .revoked
+                .iter()
+                .cloned()
+                .collect();
+            previous.revoke_paths(&revoked);
+        }
+        if previous.loading {
+            previous.motion_import = Some(
+                previous
+                    .motion_observations
+                    .admit(MotionSourceSnapshot::default()),
+            );
+        }
+        if previous.playing {
+            previous.motion_playback = Some(
+                previous
+                    .motion_observations
+                    .admit(MotionSourceSnapshot::default()),
+            );
+            if let Some(receipt) = &previous.motion_playback {
+                receipt.start();
+            }
+        }
+        *self = previous;
+    }
+
+    /// Obtain a clone while the request occupies the current/import slot. Keep
+    /// it to observe terminal status after selection, idle handoff or state drop;
+    /// the state maintains no unbounded history indexed by old tokens.
+    pub fn owned_playback_receipt(&self, token: PlaybackToken) -> Option<PlaybackReceipt> {
+        if self.import_owner == Some(token) {
+            self.import_receipt.clone()
+        } else if self.playback_owner == Some(token) {
+            self.playback_receipt.clone()
+        } else {
+            None
+        }
+    }
+    fn finish_playback(&mut self, outcome: PlaybackOutcome) {
+        if let Some(receipt) = self.motion_playback.take() {
+            receipt.finish(outcome);
+        }
+        if let Some(receipt) = self.playback_receipt.take() {
+            receipt.finish(outcome);
+        }
+        self.playback_owner = None;
+    }
+    fn finish_import(&mut self, outcome: PlaybackOutcome) {
+        if let Some(receipt) = self.motion_import.take() {
+            receipt.finish(outcome);
+        }
+        if let Some(receipt) = self.import_receipt.take() {
+            receipt.finish(outcome);
+        }
+        self.import_owner = None;
+    }
     pub fn load_path(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
+        self.load_attributed_path(path, MotionSourceSnapshot::default())
+            .map_err(|error| error.to_string())
+    }
+    fn load_attributed_path(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: MotionSourceSnapshot,
+    ) -> Result<(), MotionLoadError> {
+        source.validate()?;
         let path = path.as_ref().to_owned();
         if !path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
             ["bvh", "vrma", "fbx"]
@@ -643,9 +914,10 @@ impl AnimationState {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
-            return Err("An animation import is already running".into());
+            return Err(MotionLoadError::Busy);
         }
         let (tx, rx) = mpsc::sync_channel(1);
+        let importing_path = path.clone();
         let spawned = std::thread::Builder::new()
             .name("studio-animation".into())
             .spawn(move || {
@@ -691,45 +963,276 @@ impl AnimationState {
             });
         if let Err(error) = spawned {
             IMPORT_BUSY.store(false, Ordering::Release);
-            return Err(format!("Cannot start animation import: {error}"));
+            return Err(MotionLoadError::Failed(format!(
+                "Cannot start animation import: {error}"
+            )));
         }
-        self.pending = Some(Mutex::new(rx));
+        self.begin_import(importing_path, rx);
+        self.motion_import = Some(self.motion_observations.admit(source));
+        Ok(())
+    }
+    fn begin_import(&mut self, path: PathBuf, receiver: mpsc::Receiver<ImportResult>) {
+        // Acceptance of a newer import supersedes the prior request even when
+        // its clip remains visible until the new import finishes.
+        self.finish_playback(PlaybackOutcome::Cancelled);
+        self.finish_import(PlaybackOutcome::Cancelled);
+        self.pending = Some(Mutex::new(receiver));
+        self.importing_path = Some(path);
         self.loading = true;
         self.autoplay_import = true;
         self.import_one_shot = false;
         self.import_blend = false;
         self.error = None;
-        Ok(())
+        self.manual_hold = true;
     }
     /// Playlist transitions use the same rest-space crossfade as preloaded clips.
     pub fn load_playlist(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
         self.load_path(path)?;
         self.import_blend = true;
+        self.manual_hold = false;
         Ok(())
     }
     /// Reply and emotion gestures play once, then crossfade to the bundled idle.
     pub fn load_one_shot(&mut self, path: impl AsRef<Path>) -> Result<(), String> {
-        self.load_path(path)?;
+        self.try_load_one_shot(path)
+            .map_err(|error| error.to_string())
+    }
+    pub fn try_load_one_shot(&mut self, path: impl AsRef<Path>) -> Result<(), MotionLoadError> {
+        self.load_attributed_path(path, MotionSourceSnapshot::default())?;
         self.import_one_shot = true;
+        self.manual_hold = false;
         Ok(())
     }
-    fn select_one_shot(&mut self, clip: Arc<BvhClip>, path: Option<PathBuf>) {
-        self.select_clip(clip, path);
+    /// Import a host-authorized one-shot. A failed admission leaves the current
+    /// request intact. Cancellation drops delivery, not the bounded I/O worker;
+    /// its global import permit stays occupied until that worker exits.
+    pub fn load_owned_one_shot(&mut self, path: impl AsRef<Path>) -> Result<PlaybackToken, String> {
+        self.load_owned_one_shot_attributed(path, MotionSourceSnapshot::default())
+    }
+    pub fn load_owned_one_shot_attributed(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: MotionSourceSnapshot,
+    ) -> Result<PlaybackToken, String> {
+        self.try_load_owned_one_shot_attributed(path, source)
+            .map_err(|error| error.to_string())
+    }
+    /// Typed admission for integrations; Busy creates no new playback receipt.
+    pub fn try_load_owned_one_shot_attributed(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: MotionSourceSnapshot,
+    ) -> Result<PlaybackToken, MotionLoadError> {
+        self.load_attributed_path(path, source)?;
+        self.import_one_shot = true;
+        self.manual_hold = false;
+        let token = PlaybackToken::new();
+        self.import_owner = Some(token);
+        self.import_receipt = Some(PlaybackReceipt::new());
+        Ok(token)
+    }
+    /// Select a preloaded host-authorized one-shot with a fresh request identity.
+    /// Callers enforce manual/desktop ownership before invoking this method.
+    pub fn select_owned_one_shot(
+        &mut self,
+        clip: Arc<BvhClip>,
+        path: Option<PathBuf>,
+    ) -> PlaybackToken {
+        self.select_one_shot(clip, path);
+        self.manual_hold = false;
+        let token = PlaybackToken::new();
+        self.playback_owner = Some(token);
+        self.playback_receipt = Some(PlaybackReceipt::new());
+        token
+    }
+    /// Cancel only this request. A stale token cannot stop a newer selection,
+    /// manual takeover, or replay of the same file. Cancelling a pending import
+    /// preserves the unrelated visible clip and any explicit manual hold.
+    pub fn cancel_owned_playback(&mut self, token: PlaybackToken) -> bool {
+        let pending = self.import_owner == Some(token);
+        let playing = self.playback_owner == Some(token);
+        if pending {
+            self.pending = None;
+            self.importing_path = None;
+            self.finish_import(PlaybackOutcome::Cancelled);
+            self.loading = false;
+            self.import_one_shot = false;
+            self.import_blend = false;
+        }
+        if playing {
+            self.stop();
+        }
+        pending || playing
+    }
+    pub fn owned_playback_active(&self, token: PlaybackToken) -> bool {
+        (self.loading && self.import_owner == Some(token))
+            || (self.playback_owner == Some(token) && self.gesture_active())
+    }
+    /// Ownership transfer (such as parking desktop playback) must invalidate
+    /// plugin requests before moving this state out of the live host resource.
+    pub fn cancel_owned_requests(&mut self) {
+        if let Some(token) = self.import_owner {
+            self.cancel_owned_playback(token);
+        }
+        if let Some(token) = self.playback_owner {
+            self.cancel_owned_playback(token);
+        }
+    }
+    /// Explicit controls supersede automatic imports and reaction handoffs.
+    /// The visible pose/playback is retained; the caller applies pause/scrub/etc.
+    pub fn take_manual_control(&mut self) {
+        self.finish_playback(PlaybackOutcome::Cancelled);
+        if self.loading && (self.import_one_shot || self.import_blend) {
+            self.pending = None;
+            self.importing_path = None;
+            self.finish_import(PlaybackOutcome::Cancelled);
+            self.loading = false;
+            self.import_one_shot = false;
+            self.import_blend = false;
+        }
+        self.one_shot = false;
+        self.one_shot_finished = false;
+        self.manual_hold = true;
+    }
+    pub fn manual_controlled(&self) -> bool {
+        self.manual_hold
+    }
+    pub fn resume_automatic_control(&mut self) {
+        self.manual_hold = false;
+    }
+    /// Discard work for a departed character/avatar without releasing explicit
+    /// user ownership. Dropping the receiver rejects late worker completion.
+    pub fn cancel_automatic_motion(&mut self) {
+        if self.manual_hold {
+            return;
+        }
+        self.pending = None;
+        self.importing_path = None;
+        self.finish_import(PlaybackOutcome::Cancelled);
+        self.loading = false;
+        self.import_one_shot = false;
+        self.import_blend = false;
+        self.stop();
+    }
+    /// Revoked pack assets cannot finish a late import or retain a pose. Manual
+    /// ownership survives so disabling a pack never resumes automatic playback.
+    pub fn revoke_paths(&mut self, paths: &[PathBuf]) -> bool {
+        if let Some(parked) = &self.parked_paths {
+            let mut parked = parked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for path in paths {
+                if parked.watched.contains(path) {
+                    parked.revoked.insert(path.clone());
+                }
+            }
+        }
+        let current = self.path.as_ref().is_some_and(|p| paths.contains(p));
+        let incoming = self.loading
+            && self
+                .importing_path
+                .as_ref()
+                .is_some_and(|p| paths.contains(p));
+        // An outgoing crossfade may still reference a revoked pack. Its pose
+        // contribution ends immediately without cancelling a different import.
+        self.revoked_paths.extend(paths.iter().cloned());
+        if self
+            .transition_from
+            .as_ref()
+            .is_some_and(|from| from.path.as_ref().is_some_and(|path| paths.contains(path)))
+        {
+            self.transition_from = None;
+            self.transition_seconds = 0.;
+        }
+        if !current && !incoming {
+            return false;
+        }
+        let preserve_import = self.loading && !incoming;
+        let autoplay = self.autoplay_import;
+        if incoming {
+            self.pending = None;
+            self.importing_path = None;
+            self.finish_import(PlaybackOutcome::Cancelled);
+            self.loading = false;
+            self.import_one_shot = false;
+            self.import_blend = false;
+        }
+        if !current {
+            return incoming;
+        }
+        let preserved_owner = if preserve_import {
+            self.import_owner.take()
+        } else {
+            None
+        };
+        let preserved_motion = if preserve_import {
+            self.motion_import.take()
+        } else {
+            None
+        };
+        let preserved_receipt = if preserve_import {
+            self.import_receipt.take()
+        } else {
+            None
+        };
+        self.stop();
+        self.clip = None;
+        self.path = None;
+        self.revision = self.revision.wrapping_add(1);
+        if preserve_import {
+            self.import_owner = preserved_owner;
+            self.import_receipt = preserved_receipt;
+            self.motion_import = preserved_motion;
+            self.autoplay_import = autoplay;
+        }
+
+        true
+    }
+    /// Play a preloaded reaction once using the normal crossfade and idle handoff.
+    pub fn select_one_shot(&mut self, clip: Arc<BvhClip>, path: Option<PathBuf>) {
+        self.activate_one_shot(clip, path, None);
+    }
+    fn activate_one_shot(
+        &mut self,
+        clip: Arc<BvhClip>,
+        path: Option<PathBuf>,
+        receipt: Option<MotionReceipt>,
+    ) {
+        self.activate_clip(clip, path, receipt);
         self.looping = false;
         self.one_shot = true;
     }
     pub fn play(&mut self) {
         if self.clip.is_some() {
+            self.finish_playback(PlaybackOutcome::Cancelled);
             self.playing = true;
             self.stopped = false;
+            self.motion_playback = Some(
+                self.motion_observations
+                    .admit(MotionSourceSnapshot::default()),
+            );
+            if let Some(receipt) = &self.motion_playback {
+                receipt.start();
+            }
         }
     }
     /// Switch a preloaded motion without file I/O or an asynchronous import.
     /// Starts at time zero with a 0.5-second crossfade from the live prior clip.
     pub fn select_clip(&mut self, clip: Arc<BvhClip>, path: Option<PathBuf>) {
+        self.activate_clip(clip, path, None);
+    }
+    fn activate_clip(
+        &mut self,
+        clip: Arc<BvhClip>,
+        path: Option<PathBuf>,
+        receipt: Option<MotionReceipt>,
+    ) {
+        self.finish_playback(PlaybackOutcome::Cancelled);
+        self.finish_import(PlaybackOutcome::Cancelled);
         self.transition_from = if self.is_posing() {
             self.clip.clone().map(|clip| ClipPlayback {
                 clip,
+                path: self.path.clone(),
                 position: self.position,
                 looping: self.looping,
                 speed: self.speed,
@@ -742,6 +1245,7 @@ impl AnimationState {
         self.transition_seconds = 0.5;
         self.pending = None;
         self.clip = Some(clip);
+        self.importing_path = None;
         self.path = path;
         self.position = 0.0;
         self.loading = false;
@@ -753,12 +1257,30 @@ impl AnimationState {
         self.looping = true;
         self.one_shot = false;
         self.one_shot_finished = false;
-        self.play();
+        self.playing = true;
+        self.stopped = false;
+        self.motion_playback = Some(receipt.unwrap_or_else(|| {
+            self.motion_observations
+                .admit(MotionSourceSnapshot::default())
+        }));
+        if let Some(receipt) = &self.motion_playback {
+            receipt.start();
+        }
     }
     pub fn pause(&mut self) {
+        self.finish_playback(PlaybackOutcome::Cancelled);
         self.playing = false;
     }
     pub fn stop(&mut self) {
+        // Keep legacy pending-delivery/token cancellation behavior, but a stop
+        // already terminalizes the owned request before any worker completes.
+        if let Some(receipt) = &self.motion_import {
+            receipt.finish(PlaybackOutcome::Cancelled);
+        }
+        if let Some(receipt) = &self.import_receipt {
+            receipt.finish(PlaybackOutcome::Cancelled);
+        }
+        self.finish_playback(PlaybackOutcome::Cancelled);
         self.playing = false;
         self.stopped = true;
         self.autoplay_import = false;
@@ -770,22 +1292,39 @@ impl AnimationState {
     }
     /// Automatic playlists must let a requested emotion gesture finish first.
     pub fn gesture_active(&self) -> bool {
-        (self.loading && self.import_one_shot) || self.one_shot
+        (self.loading && self.import_one_shot) || (self.one_shot && !self.one_shot_finished)
     }
     pub fn is_posing(&self) -> bool {
         self.clip.is_some() && (self.playing || !self.stopped)
     }
 }
 
+impl Drop for AnimationState {
+    fn drop(&mut self) {
+        self.finish_import(PlaybackOutcome::Cancelled);
+        self.finish_playback(PlaybackOutcome::Cancelled);
+    }
+}
+
 pub struct BvhAnimationPlugin;
 impl Plugin for BvhAnimationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AnimationState>()
-            .init_resource::<PoseCache>()
-            .add_systems(
-                Update,
-                (capture_humanoid_rest, poll_import, animate_humanoid).chain(),
-            );
+        app.init_resource::<AnimationState>();
+        let observations = app
+            .world()
+            .get_resource::<MotionObservations>()
+            .cloned()
+            .unwrap_or_else(|| {
+                app.world()
+                    .resource::<AnimationState>()
+                    .motion_observations()
+            });
+        observations.attach(&mut app.world_mut().resource_mut::<AnimationState>());
+        app.insert_resource(observations);
+        app.init_resource::<PoseCache>().add_systems(
+            Update,
+            (capture_humanoid_rest, poll_import, animate_humanoid).chain(),
+        );
     }
 }
 fn poll_import(mut state: ResMut<AnimationState>) {
@@ -796,15 +1335,25 @@ fn poll_import(mut state: ResMut<AnimationState>) {
         .map(|rx| rx.try_recv());
     match result {
         Some(Ok(Ok((path, clip)))) => {
+            let owner = state.import_owner.take();
+            let receipt = state.import_receipt.take();
+            let generic = state.motion_import.take();
             if state.import_one_shot && state.autoplay_import {
-                state.select_one_shot(Arc::new(clip), Some(path));
+                state.activate_one_shot(Arc::new(clip), Some(path), generic);
+                state.playback_owner = owner;
+                state.playback_receipt = receipt;
                 return;
             }
+            if let Some(receipt) = receipt {
+                receipt.finish(PlaybackOutcome::Cancelled);
+            }
             if state.import_blend && state.autoplay_import {
-                state.select_clip(Arc::new(clip), Some(path));
+                state.activate_clip(Arc::new(clip), Some(path), generic);
                 return;
             }
             // Manual file imports preserve their immediate switch semantics.
+            // The visible clip may have been replayed while this import waited.
+            state.finish_playback(PlaybackOutcome::Cancelled);
             state.transition_seconds = 0.;
             state.transition_from = None;
             state.path = Some(path);
@@ -812,25 +1361,35 @@ fn poll_import(mut state: ResMut<AnimationState>) {
             state.position = 0.0;
             state.loading = false;
             state.pending = None;
+            state.importing_path = None;
             state.error = None;
             state.revision = state.revision.wrapping_add(1);
             state.one_shot = false;
             state.one_shot_finished = false;
+            state.motion_playback = generic;
             if state.autoplay_import {
-                state.play();
+                state.playing = true;
+                state.stopped = false;
+                if let Some(receipt) = &state.motion_playback {
+                    receipt.start();
+                }
             } else {
                 state.stop();
             }
         }
         Some(Ok(Err(error))) => {
+            state.finish_import(PlaybackOutcome::Failed);
             state.error = Some(error);
             state.loading = false;
             state.pending = None;
+            state.importing_path = None;
         }
         Some(Err(mpsc::TryRecvError::Disconnected)) => {
+            state.finish_import(PlaybackOutcome::Failed);
             state.error = Some("Animation import worker exited unexpectedly".into());
             state.loading = false;
             state.pending = None;
+            state.importing_path = None;
         }
         _ => {}
     }
@@ -853,12 +1412,15 @@ struct PoseCache {
     /// Revisions are local to AnimationState; replacing the whole resource may
     /// reuse a revision for a different clip (desktop mode saves/restores it).
     clip: Option<Arc<BvhClip>>,
+    path: Option<PathBuf>,
     bones: Vec<PoseBone>,
     revision: u64,
     applied: bool,
     sampled: Vec<Quat>,
     last_position: f32,
     last_weight: f32,
+    last_arm_clearance: bool,
+    body: animation_body::MeshBodyCache,
     /// The active avatar's rest facing; `Some(true)` = -Z, as VRM 0.x models are.
     target_faces_negative_z: Option<bool>,
     /// Source and avatar face opposite ways, so rotations are turned around Y.
@@ -870,6 +1432,8 @@ struct PoseTransition {
     outgoing: Option<ClipPlayback>,
     elapsed: f32,
     duration: f32,
+    /// Includes every source captured by an interrupted mixed-pose snapshot.
+    paths: HashSet<PathBuf>,
 }
 
 /// Local rest-space conversion from VRMC_vrm_animation pose compatibility:
@@ -1024,8 +1588,14 @@ fn animate_humanoid(
     parents: Query<&ChildOf>,
     mut transforms: Query<&mut Transform>,
     rests: Query<&HumanoidRestTransform>,
+    meshes: Option<Res<Assets<Mesh>>>,
+    bindposes: Option<Res<Assets<SkinnedMeshInverseBindposes>>>,
+    mesh_entities: Query<(Entity, &Mesh3d, &SkinnedMesh)>,
 ) {
     if cache.root != avatar.active {
+        if cache.root.is_some() {
+            state.cancel_automatic_motion();
+        }
         for bone in &cache.bones {
             if let Ok(mut transform) = transforms.get_mut(bone.entity) {
                 *transform = bone.idle;
@@ -1035,11 +1605,45 @@ fn animate_humanoid(
         cache.sampled.clear();
         cache.root = avatar.active;
         cache.clip = None;
+        cache.path = None;
         cache.applied = false;
         cache.transition = None;
+        cache.body = default();
         state.position = 0.0;
     }
+    // Revocation also invalidates an outgoing clip already moved into the cache.
+    let revoked = std::mem::take(&mut state.revoked_paths);
     let Some(root) = avatar.active else { return };
+    let revoked_transition = cache
+        .transition
+        .as_ref()
+        .is_some_and(|transition| transition.paths.iter().any(|path| revoked.contains(path)));
+    let revoked_cached_pose = cache
+        .path
+        .as_ref()
+        .is_some_and(|path| revoked.contains(path));
+    if revoked_cached_pose {
+        cache.clip = None;
+        cache.path = None;
+    }
+    if revoked_transition || revoked_cached_pose {
+        cache.transition = None;
+        // A same-frame selection may have a clean logical outgoing clip even
+        // while the last rendered mixed pose contains a revoked ancestor.
+        // Rebase its fade on that clean clip instead of cancelling the request.
+        let clean_outgoing = state.transition_from.as_ref().is_some_and(|from| {
+            from.path
+                .as_ref()
+                .is_some_and(|path| !revoked.contains(path))
+        });
+        if !clean_outgoing {
+            state.transition_from = None;
+            state.transition_seconds = 0.;
+        }
+        if state.is_posing() {
+            cache.applied = false;
+        }
+    }
     if state.one_shot_finished && !state.loading {
         static IDLE: LazyLock<Result<Arc<BvhClip>, String>> = LazyLock::new(|| {
             parse_vrma(include_bytes!(
@@ -1092,6 +1696,8 @@ fn animate_humanoid(
     }
     if !state.is_posing() {
         cache.transition = None;
+        cache.clip = None;
+        cache.path = None;
         if cache.applied {
             for bone in &cache.bones {
                 if let Ok(mut transform) = transforms.get_mut(bone.entity) {
@@ -1122,19 +1728,30 @@ fn animate_humanoid(
             .collect();
         // A rapid second selection starts at the last visible mixed pose, so it
         // cannot jump back to the outgoing clip's unmixed frame.
-        let outgoing = if cache.transition.is_some() {
+        let previous = cache.transition.take();
+        let outgoing = if previous.is_some() {
             state.transition_from = None;
             None
         } else {
             state.transition_from.take()
         };
-        cache.transition = if state.transition_seconds > 0. && state.transition_seconds.is_finite()
+        let mut paths = previous.map_or_else(HashSet::new, |transition| transition.paths);
+        paths.extend(cache.path.iter().cloned());
+        if let Some(outgoing) = &outgoing {
+            paths.extend(outgoing.path.iter().cloned());
+        }
+        // Repeatedly interrupted blends keep bounded source attribution. At the
+        // bound, finish the blend rather than retaining an unbounded ancestry.
+        cache.transition = if paths.len() <= 64
+            && state.transition_seconds > 0.
+            && state.transition_seconds.is_finite()
         {
             Some(PoseTransition {
                 from,
                 outgoing,
                 elapsed: 0.,
                 duration: state.transition_seconds.clamp(0.001, 5.),
+                paths,
             })
         } else {
             None
@@ -1160,6 +1777,7 @@ fn animate_humanoid(
             != cache.target_faces_negative_z.unwrap_or(false);
         cache.revision = state.revision;
         cache.clip = Some(clip.clone());
+        cache.path = state.path.clone();
     }
     if state.playing {
         state.stopped = false;
@@ -1173,9 +1791,8 @@ fn animate_humanoid(
             if state.looping && !state.one_shot {
                 state.position %= clip.duration();
             } else {
-                state.position = clip
-                    .exact_duration
-                    .unwrap_or((clip.frame_count - 1) as f32 * clip.frame_time);
+                state.position = clip.last_sample_time();
+                state.finish_playback(PlaybackOutcome::Completed);
                 state.pause();
                 state.one_shot_finished = state.one_shot;
             }
@@ -1194,6 +1811,7 @@ fn animate_humanoid(
         && cache.transition.is_none()
         && cache.last_position == state.position
         && cache.last_weight == weight
+        && cache.last_arm_clearance == state.arm_clearance
     {
         return;
     }
@@ -1277,13 +1895,381 @@ fn animate_humanoid(
     }
     cache.last_position = state.position;
     cache.last_weight = weight;
+    cache.last_arm_clearance = state.arm_clearance;
+    if state.arm_clearance && (weight > 0. || alpha < 1.) {
+        let PoseCache { body, bones, .. } = &mut *cache;
+        if let (Some(meshes), Some(bindposes)) = (meshes.as_deref(), bindposes.as_deref())
+            && body.capture(
+                root,
+                bones,
+                meshes,
+                bindposes,
+                &mesh_entities,
+                &parents,
+                &transforms,
+            )
+            && let Some(points) = body.posed_points(root, &parents, &transforms)
+            && let Some(hull) = animation_clearance::Hull::from_points(&points)
+        {
+            animation_clearance::correct_arms(
+                root,
+                bones,
+                &parents,
+                &mut transforms,
+                &hull,
+                body.arm_radii(),
+            );
+        }
+    }
     cache.applied = true;
 }
+
+#[cfg(test)]
+#[path = "animation_lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     const SAMPLE: &str = "HIERARCHY ROOT hips { OFFSET 0 0 0 CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation JOINT leftUpperArm { OFFSET 1 1 0 CHANNELS 3 Zrotation Xrotation Yrotation End Site { OFFSET 1 0 0 } } } MOTION Frames: 2 Frame Time: 0.1 0 0 0 0 0 0 0 0 0 100 200 300 90 0 0 0 0 0";
+
+    // Control worker completion deterministically while exercising the real
+    // import admission state, delivery system and public cancellation API.
+    fn deferred_owned_import(
+        state: &mut AnimationState,
+        path: &Path,
+    ) -> (PlaybackToken, mpsc::SyncSender<ImportResult>) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        state.begin_import(path.to_owned(), rx);
+        state.import_one_shot = true;
+        state.manual_hold = false;
+        let token = PlaybackToken::new();
+        state.import_owner = Some(token);
+        state.import_receipt = Some(PlaybackReceipt::new());
+        (token, tx)
+    }
+
+    #[test]
+    fn typed_motion_admission_distinguishes_busy_from_invalid_without_new_request() {
+        let mut state = AnimationState::default();
+        state.loading = true;
+        assert_eq!(
+            state
+                .try_load_owned_one_shot_attributed("fixture.bvh", MotionSourceSnapshot::default()),
+            Err(MotionLoadError::Busy)
+        );
+        assert!(state.import_owner.is_none());
+        assert!(state.import_receipt.is_none());
+        assert!(matches!(
+            state
+                .try_load_owned_one_shot_attributed("fixture.txt", MotionSourceSnapshot::default()),
+            Err(MotionLoadError::Failed(_))
+        ));
+        assert!(state.loading);
+    }
+
+    #[test]
+    fn retained_receipts_cancel_on_replacement_stop_parking_and_state_drop() {
+        fn token_is_copy<T: Copy>() {}
+        token_is_copy::<PlaybackToken>();
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let mut state = AnimationState::default();
+        let old = state.select_owned_one_shot(clip.clone(), None);
+        let old_receipt = state.owned_playback_receipt(old).unwrap();
+        let retained = old_receipt.clone();
+        assert_eq!(retained.outcome(), PlaybackOutcome::Pending);
+        let new = state.select_owned_one_shot(clip.clone(), None);
+        let new_receipt = state.owned_playback_receipt(new).unwrap();
+        assert_eq!(old_receipt.outcome(), PlaybackOutcome::Cancelled);
+        assert_eq!(
+            Arc::strong_count(&old_receipt.0),
+            2,
+            "only independently retained clones remain"
+        );
+        assert!(!state.cancel_owned_playback(old));
+        assert_eq!(new_receipt.outcome(), PlaybackOutcome::Pending);
+        state.select_clip(clip.clone(), Some("manual.bvh".into()));
+        assert_eq!(new_receipt.outcome(), PlaybackOutcome::Cancelled);
+        state.stop();
+        assert_eq!(retained.outcome(), PlaybackOutcome::Cancelled);
+        assert!(state.owned_playback_receipt(old).is_none());
+        for control in 0..4 {
+            let token = state.select_owned_one_shot(clip.clone(), None);
+            let receipt = state.owned_playback_receipt(token).unwrap();
+            match control {
+                0 => state.take_manual_control(),
+                1 => state.pause(),
+                2 => state.stop(),
+                _ => state.cancel_owned_requests(),
+            }
+            assert_eq!(receipt.outcome(), PlaybackOutcome::Cancelled);
+        }
+        let token = state.select_owned_one_shot(clip, None);
+        let receipt = state.owned_playback_receipt(token).unwrap();
+        drop(state);
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Cancelled);
+    }
+
+    #[test]
+    fn revoking_old_visible_path_preserves_unrelated_owned_import_receipt() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        let (token, tx, receipt) = {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.select_clip(Arc::new(parse_bvh(SAMPLE).unwrap()), Some("old.bvh".into()));
+            let (token, tx) = deferred_owned_import(&mut state, Path::new("new.bvh"));
+            let receipt = state.owned_playback_receipt(token).unwrap();
+            assert!(state.revoke_paths(&["old.bvh".into()]));
+            assert_eq!(receipt.outcome(), PlaybackOutcome::Pending);
+            (token, tx, receipt)
+        };
+        tx.send(Ok(("new.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        app.update();
+        let mut state = app.world_mut().resource_mut::<AnimationState>();
+        assert!(state.owned_playback_active(token));
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Pending);
+        state.cancel_owned_requests();
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Cancelled);
+    }
+
+    #[test]
+    fn parse_failure_and_worker_disconnect_publish_failed_receipts() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        for disconnected in [false, true] {
+            let (token, tx) = deferred_owned_import(
+                &mut app.world_mut().resource_mut::<AnimationState>(),
+                Path::new("broken.bvh"),
+            );
+            let receipt = app
+                .world()
+                .resource::<AnimationState>()
+                .owned_playback_receipt(token)
+                .unwrap();
+            if disconnected {
+                drop(tx);
+            } else {
+                let error = parse_bvh("HIERARCHY ROOT truncated").err().unwrap();
+                tx.send(Err(error)).unwrap();
+            }
+            app.update();
+            assert_eq!(receipt.outcome(), PlaybackOutcome::Failed);
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            assert!(state.error.is_some());
+            assert!(!state.cancel_owned_playback(token));
+            state.select_clip(Arc::new(parse_bvh(SAMPLE).unwrap()), None);
+            state.stop();
+            assert_eq!(receipt.outcome(), PlaybackOutcome::Failed);
+        }
+    }
+
+    #[test]
+    fn cancelled_pending_import_receipt_rejects_late_delivery_and_cannot_cancel_newer() {
+        let mut state = AnimationState::default();
+        let (token, tx) = deferred_owned_import(&mut state, Path::new("late.bvh"));
+        let receipt = state.owned_playback_receipt(token).unwrap();
+        state.cancel_owned_requests();
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Cancelled);
+        assert!(
+            tx.send(Ok(("late.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+                .is_err()
+        );
+        let (new, _tx) = deferred_owned_import(&mut state, Path::new("new.bvh"));
+        let new_receipt = state.owned_playback_receipt(new).unwrap();
+        assert!(!state.cancel_owned_playback(token));
+        assert_eq!(new_receipt.outcome(), PlaybackOutcome::Pending);
+        state.stop();
+        assert_eq!(new_receipt.outcome(), PlaybackOutcome::Cancelled);
+        // The existing stop behavior still permits explicit late-delivery discard.
+        assert!(state.cancel_owned_playback(new));
+    }
+
+    #[test]
+    fn owned_import_cancellation_rejects_late_delivery_and_preserves_visible_playback() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        let visible = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let path = Path::new("pack/reaction.bvh");
+        let (token, tx) = {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.select_clip(visible.clone(), Some(path.to_owned()));
+            state.position = 0.1;
+            deferred_owned_import(&mut state, path)
+        };
+        app.update(); // Nothing delivered yet; the old clip remains visible.
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            assert!(state.loading && state.playing);
+            state.play(); // Replay the visible file while the older import waits.
+            assert!(state.cancel_owned_playback(token));
+            assert!(!state.cancel_owned_playback(token));
+            assert!(!state.loading && state.pending.is_none() && !state.gesture_active());
+            assert!(state.playing && state.is_posing());
+            assert!(Arc::ptr_eq(state.clip.as_ref().unwrap(), &visible));
+            assert_eq!(state.path.as_deref(), Some(path));
+            assert_eq!(state.position, 0.1);
+        }
+        assert!(
+            tx.send(Ok((path.to_owned(), parse_bvh(SAMPLE).unwrap())))
+                .is_err()
+        );
+        app.update();
+        assert!(app.world().resource::<AnimationState>().playing);
+        assert_eq!(
+            app.world().resource::<AnimationState>().path.as_deref(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn owned_import_transfers_token_to_playback_and_cancellation_stops_it() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        let path = Path::new("pack/reaction.bvh");
+        let (token, tx) =
+            deferred_owned_import(&mut app.world_mut().resource_mut::<AnimationState>(), path);
+        // Failed busy admission must leave this request's ownership intact.
+        assert!(
+            app.world_mut()
+                .resource_mut::<AnimationState>()
+                .load_owned_one_shot("another.bvh")
+                .is_err()
+        );
+        tx.send(Ok((path.to_owned(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        app.update();
+        let mut state = app.world_mut().resource_mut::<AnimationState>();
+        assert!(!state.loading && state.playing && state.gesture_active());
+        assert_eq!(state.path.as_deref(), Some(path));
+        assert!(state.cancel_owned_playback(token));
+        assert!(!state.is_posing() && !state.gesture_active());
+        assert!(state.pending.is_none() && state.transition_from.is_none());
+        assert!(!state.cancel_owned_playback(token));
+    }
+
+    #[test]
+    fn stale_tokens_cannot_stop_newer_owned_manual_or_automatic_playback_of_same_file() {
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let path = Some(PathBuf::from("shared.bvh"));
+        let mut state = AnimationState::default();
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        let new = state.select_owned_one_shot(clip.clone(), path.clone());
+        assert_ne!(old, new);
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.playing && state.gesture_active());
+        assert!(state.cancel_owned_playback(new));
+
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        state.select_clip(clip.clone(), path.clone());
+        state.take_manual_control();
+        state.pause();
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.manual_controlled() && state.is_posing() && !state.playing);
+
+        state.resume_automatic_control();
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        state.select_one_shot(clip.clone(), path.clone());
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.playing && state.gesture_active());
+
+        // Taking over the existing clip needs no path/clip change at all.
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        state.take_manual_control();
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.manual_controlled() && state.playing && !state.gesture_active());
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        state.play();
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.playing && Arc::ptr_eq(state.clip.as_ref().unwrap(), &clip));
+        assert_eq!(state.path, path);
+
+        let old = state.select_owned_one_shot(clip.clone(), path.clone());
+        state = AnimationState::default();
+        let new = state.select_owned_one_shot(clip, path);
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.playing && state.cancel_owned_playback(new));
+    }
+
+    #[test]
+    fn same_file_selection_supersedes_deferred_request_and_preserves_newer_import() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        let path = Path::new("shared.bvh");
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let (old, tx) = {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            deferred_owned_import(&mut state, path)
+        };
+        // The worker has finished but its result has not been polled.
+        tx.send(Ok((path.to_owned(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.select_clip(clip.clone(), Some(path.to_owned()));
+            state.take_manual_control();
+            state.position = 0.1;
+            state.pause();
+            assert!(!state.cancel_owned_playback(old));
+        }
+        app.update();
+        {
+            let state = app.world().resource::<AnimationState>();
+            assert!(state.manual_controlled() && state.is_posing() && !state.playing);
+            assert!(!state.loading && state.pending.is_none());
+            assert!(Arc::ptr_eq(state.clip.as_ref().unwrap(), &clip));
+            assert_eq!(state.position, 0.1);
+        }
+
+        let (new, tx) = {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.resume_automatic_control();
+            let active = state.select_owned_one_shot(clip.clone(), Some(path.to_owned()));
+            let request = deferred_owned_import(&mut state, path);
+            assert!(!state.cancel_owned_playback(old));
+            assert!(!state.cancel_owned_playback(active));
+            assert!(state.loading && state.pending.is_some());
+            request
+        };
+        tx.send(Ok((path.to_owned(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        app.update();
+        let mut state = app.world_mut().resource_mut::<AnimationState>();
+        assert!(!state.cancel_owned_playback(old));
+        assert!(state.playing && state.gesture_active());
+        assert!(state.cancel_owned_playback(new));
+    }
+
+    #[test]
+    fn rejected_load_and_failed_worker_do_not_let_tokens_cancel_other_playback() {
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            let owner = state.select_owned_one_shot(clip.clone(), Some("motion.bvh".into()));
+            assert!(state.load_owned_one_shot("unsupported.txt").is_err());
+            assert!(state.cancel_owned_playback(owner));
+            state.select_clip(clip.clone(), Some("idle.bvh".into()));
+        }
+        let (token, tx) = deferred_owned_import(
+            &mut app.world_mut().resource_mut::<AnimationState>(),
+            Path::new("bad.bvh"),
+        );
+        tx.send(Err("Malformed animation".into())).unwrap();
+        app.update();
+        let mut state = app.world_mut().resource_mut::<AnimationState>();
+        assert_eq!(state.error.as_deref(), Some("Malformed animation"));
+        assert!(!state.loading && !state.cancel_owned_playback(token));
+        assert!(state.playing && Arc::ptr_eq(state.clip.as_ref().unwrap(), &clip));
+    }
+
     #[test]
     fn bundled_companion_clips_are_bounded_stationary_upper_body_motions() {
         for text in [
@@ -1320,30 +2306,45 @@ mod tests {
         ));
         app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
         let clip = parse_bvh(&SAMPLE.replace("Frame Time: 0.1", "Frame Time: 0.5")).unwrap();
-        let (tx, rx) = mpsc::sync_channel(1);
-        tx.send(Ok(("emotion.bvh".into(), clip))).unwrap();
-        {
+        let (owner, tx) = {
             let mut state = app.world_mut().resource_mut::<AnimationState>();
-            state.pending = Some(Mutex::new(rx));
-            state.loading = true;
-            state.autoplay_import = true;
-            state.import_one_shot = true;
-        }
+            deferred_owned_import(&mut state, Path::new("emotion.bvh"))
+        };
+        let receipt = app
+            .world()
+            .resource::<AnimationState>()
+            .owned_playback_receipt(owner)
+            .unwrap();
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Pending);
+        tx.send(Ok(("emotion.bvh".into(), clip))).unwrap();
         app.update();
         {
             let mut state = app.world_mut().resource_mut::<AnimationState>();
             assert!(state.one_shot && state.playing && !state.looping && !state.loading);
+            assert_eq!(receipt.outcome(), PlaybackOutcome::Pending);
+            assert!(Arc::ptr_eq(
+                &receipt.0,
+                &state.owned_playback_receipt(owner).unwrap().0
+            ));
             assert_eq!(state.transition_seconds, 0.);
             // Even an old/manual loop preference cannot make an emotion repeat.
             state.looping = true;
         }
         for _ in 0..20 {
             app.update();
+            if app.world().resource::<AnimationState>().one_shot_finished {
+                assert_eq!(receipt.outcome(), PlaybackOutcome::Completed);
+                assert!(
+                    !app.world().resource::<AnimationState>().gesture_active(),
+                    "a finished reaction must release talking/idle priority before fallback"
+                );
+            }
             if !app.world().resource::<AnimationState>().one_shot {
                 break;
             }
         }
         let state = app.world().resource::<AnimationState>();
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Completed);
         assert!(state.playing && state.looping && !state.one_shot);
         assert_eq!(
             state.path.as_deref(),
@@ -1361,6 +2362,12 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<PoseCache>().transition.is_none());
+        assert!(app.world().resource::<AnimationState>().playing);
+        assert!(
+            !app.world_mut()
+                .resource_mut::<AnimationState>()
+                .cancel_owned_playback(owner)
+        );
         assert!(app.world().resource::<AnimationState>().playing);
 
         // Completing a gesture must not discard a newer import still in flight.
@@ -1382,6 +2389,7 @@ mod tests {
         let state = app.world().resource::<AnimationState>();
         assert_eq!(state.path.as_deref(), Some(Path::new("manual.bvh")));
         assert!(!state.one_shot && !state.one_shot_finished);
+        assert_eq!(receipt.outcome(), PlaybackOutcome::Completed);
     }
 
     #[test]
@@ -1396,6 +2404,118 @@ mod tests {
         state.select_one_shot(clip.clone(), None);
         state.select_clip(clip, None);
         assert!(state.looping && state.playing && !state.one_shot);
+    }
+    #[test]
+    fn pack_revocation_rejects_late_imports_and_keeps_explicit_manual_ownership() {
+        let revoked = PathBuf::from("pack/motion.bvh");
+        let mut state = AnimationState::default();
+        let (tx, rx) = mpsc::sync_channel(1);
+        state.pending = Some(Mutex::new(rx));
+        state.importing_path = Some(revoked.clone());
+        state.loading = true;
+        state.manual_hold = true;
+        assert!(!state.revoke_paths(&["other.bvh".into()]));
+        assert!(state.loading);
+        assert!(state.revoke_paths(std::slice::from_ref(&revoked)));
+        assert!(!state.loading && state.pending.is_none() && !state.is_posing());
+        assert!(state.manual_controlled());
+        assert!(tx.send(Ok((revoked, parse_bvh(SAMPLE).unwrap()))).is_err());
+    }
+    #[test]
+    fn revoked_current_clip_cannot_be_replayed_or_scrubbed() {
+        let mut state = AnimationState::default();
+        state.select_clip(
+            Arc::new(parse_bvh(SAMPLE).unwrap()),
+            Some("pack/old.bvh".into()),
+        );
+        state.take_manual_control();
+        assert!(state.revoke_paths(&["pack/old.bvh".into()]));
+        assert!(state.clip.is_none() && state.path.is_none());
+        state.play();
+        state.show_scrub_pose();
+        assert!(!state.is_posing() && !state.playing);
+        assert!(state.manual_controlled());
+    }
+
+    #[test]
+    fn revoked_incoming_clip_preserves_unrelated_visible_playback_and_receipt() {
+        let mut state = AnimationState::default();
+        state.select_clip(
+            Arc::new(parse_bvh(SAMPLE).unwrap()),
+            Some("local.bvh".into()),
+        );
+        let active = state.motion_playback.as_ref().unwrap().clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        state.pending = Some(Mutex::new(rx));
+        state.importing_path = Some("pack/new.bvh".into());
+        state.loading = true;
+        state.manual_hold = true;
+        assert!(state.revoke_paths(&["pack/new.bvh".into()]));
+        assert!(state.playing && state.is_posing() && state.manual_controlled());
+        assert_eq!(state.path.as_deref(), Some(Path::new("local.bvh")));
+        assert_eq!(
+            active.id_for_test(),
+            state.motion_playback.as_ref().unwrap().id_for_test()
+        );
+        assert!(!state.loading && state.pending.is_none());
+        assert!(
+            tx.send(Ok(("pack/new.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+                .is_err()
+        );
+    }
+    #[test]
+    fn revoking_previous_pack_does_not_discard_an_unrelated_manual_import() {
+        let mut app = App::new();
+        app.init_resource::<AnimationState>()
+            .add_systems(Update, poll_import);
+        let (tx, rx) = mpsc::sync_channel(1);
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.select_clip(
+                Arc::new(parse_bvh(SAMPLE).unwrap()),
+                Some("pack/old.bvh".into()),
+            );
+            state.manual_hold = true;
+            state.pending = Some(Mutex::new(rx));
+            state.importing_path = Some("local/new.bvh".into());
+            state.loading = true;
+            assert!(state.revoke_paths(&["pack/old.bvh".into()]));
+            assert!(state.loading && !state.is_posing());
+        }
+        tx.send(Ok(("local/new.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+            .unwrap();
+        app.update();
+        let state = app.world().resource::<AnimationState>();
+        assert_eq!(state.path.as_deref(), Some(Path::new("local/new.bvh")));
+        assert!(state.playing && state.manual_controlled());
+    }
+    #[test]
+    fn manual_pause_cancels_late_automatic_import_and_can_resume_playlists() {
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let mut state = AnimationState::default();
+        state.select_one_shot(clip, Some("reaction.bvh".into()));
+        state.pause();
+        let (tx, rx) = mpsc::sync_channel(1);
+        state.pending = Some(Mutex::new(rx));
+        state.loading = true;
+        state.import_one_shot = true;
+        state.take_manual_control();
+        assert!(state.manual_controlled());
+        assert!(!state.loading && state.pending.is_none() && !state.gesture_active());
+        assert!(!state.playing && state.is_posing());
+        assert_eq!(state.path.as_deref(), Some(Path::new("reaction.bvh")));
+        assert!(
+            tx.send(Ok(("stale.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+                .is_err()
+        );
+        state.resume_automatic_control();
+        assert!(!state.manual_controlled() && !state.gesture_active());
+        // No paused one-shot gate is left to block the next playlist selection.
+        state.select_clip(
+            Arc::new(parse_bvh(SAMPLE).unwrap()),
+            Some("talking.bvh".into()),
+        );
+        assert!(state.playing && state.looping);
     }
     #[test]
     fn samples_declared_rotation_channels_separately_from_hips_translation() {
@@ -2100,6 +3220,7 @@ mod tests {
         {
             let mut state = app.world_mut().resource_mut::<AnimationState>();
             state.clip = Some(outgoing);
+            state.path = Some("local-a.bvh".into());
             state.play();
         }
         app.update();
@@ -2107,7 +3228,7 @@ mod tests {
         let previous = app.world().get::<Transform>(hips).unwrap().rotation;
         app.world_mut()
             .resource_mut::<AnimationState>()
-            .select_clip(incoming, None);
+            .select_clip(incoming, Some("local-b.bvh".into()));
         app.update();
         let actual = app.world().get::<Transform>(hips).unwrap().rotation;
         // Outgoing advances from 9 to 18 degrees; incoming is -9 degrees.
@@ -2116,6 +3237,15 @@ mod tests {
             actual.angle_between(Quat::from_rotation_z(12.6_f32.to_radians())) < 0.002,
             "{previous:?} -> {actual:?}"
         );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["pack/other.bvh".into()])
+        );
+        app.update();
+        assert!(app.world().resource::<PoseCache>().transition.is_some());
+        let mixed = app.world().get::<Transform>(hips).unwrap().rotation;
+        assert!(mixed.angle_between(Quat::from_rotation_z(-18_f32.to_radians())) > 0.002);
         for _ in 0..4 {
             app.update();
         }
@@ -2125,11 +3255,325 @@ mod tests {
                 .get::<Transform>(hips)
                 .unwrap()
                 .rotation
-                .angle_between(Quat::from_rotation_z(-45_f32.to_radians()))
+                .angle_between(Quat::from_rotation_z(-54_f32.to_radians()))
                 < 0.002
         );
         app.world_mut().resource_mut::<AnimationState>().stop();
         app.update();
         assert_eq!(*app.world().get::<Transform>(hips).unwrap(), rest);
+    }
+    #[test]
+    fn revocation_clears_an_outgoing_clip_already_owned_by_pose_cache() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let hips = app
+            .world_mut()
+            .spawn((HumanBoneName::Hips, Transform::default(), ChildOf(root)))
+            .id();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let slow = SAMPLE
+            .replace("Frame Time: 0.1", "Frame Time: 1.0")
+            .replace("100 200 300 90", "0 0 0 90");
+        let outgoing = Arc::new(parse_bvh(&slow).unwrap());
+        let incoming = Arc::new(parse_bvh(&slow.replace("0 0 0 90", "0 0 0 -90")).unwrap());
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(outgoing, Some("pack/old.bvh".into()));
+        app.update();
+        app.update();
+        for _ in 0..5 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(incoming.clone(), Some("local.bvh".into()));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<PoseCache>()
+                .transition
+                .as_ref()
+                .unwrap()
+                .outgoing
+                .is_some()
+        );
+        // Interrupting a fade captures a mixed pose; retain its full provenance.
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(incoming, Some("local.bvh".into()));
+        app.update();
+        assert!(
+            app.world()
+                .resource::<PoseCache>()
+                .transition
+                .as_ref()
+                .unwrap()
+                .outgoing
+                .is_none()
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["pack/old.bvh".into()])
+        );
+        app.update();
+        assert!(app.world().resource::<PoseCache>().transition.is_none());
+        assert!(app.world().resource::<AnimationState>().playing);
+        let pose = app.world().get::<Transform>(hips).unwrap();
+        assert!(
+            pose.rotation
+                .angle_between(Quat::from_rotation_z(-18_f32.to_radians()))
+                < 0.002
+        );
+        assert!(
+            app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["local.bvh".into()])
+        );
+        app.update();
+        assert_eq!(
+            *app.world().get::<Transform>(hips).unwrap(),
+            Transform::default()
+        );
+    }
+
+    #[test]
+    fn parked_motion_and_pending_import_cannot_escape_pack_revocation() {
+        for revoked_import in [false, true] {
+            let mut state = AnimationState::default();
+            state.select_clip(
+                Arc::new(parse_bvh(SAMPLE).unwrap()),
+                Some("pack/old.bvh".into()),
+            );
+            state.take_manual_control();
+            let (tx, rx) = mpsc::sync_channel(1);
+            if revoked_import {
+                state.pending = Some(Mutex::new(rx));
+                state.importing_path = Some("pack/new.bvh".into());
+                state.loading = true;
+            }
+            let parked = state.park_for_desktop();
+            state.select_clip(
+                Arc::new(parse_bvh(SAMPLE).unwrap()),
+                Some("desktop.bvh".into()),
+            );
+            assert!(!state.revoke_paths(&["pack/old.bvh".into(), "pack/new.bvh".into()]));
+            state.restore_parked(parked);
+            assert!(state.manual_controlled());
+            assert!(state.clip.is_none() && state.path.is_none() && !state.loading);
+            state.play();
+            assert!(!state.is_posing());
+            if revoked_import {
+                assert!(
+                    tx.send(Ok(("pack/new.bvh".into(), parse_bvh(SAMPLE).unwrap())))
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parking_and_restoring_preserve_pending_revocations_for_the_pose_cache() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        app.world_mut()
+            .spawn((HumanBoneName::Hips, Transform::default(), ChildOf(root)));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("pack/old.bvh".into()));
+        app.update();
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("local.bvh".into()));
+        app.update();
+        assert!(app.world().resource::<PoseCache>().transition.is_some());
+        let previous = {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            assert!(!state.revoke_paths(&["pack/old.bvh".into()]));
+            let previous = state.park_for_desktop();
+            state.select_clip(clip, Some("desktop.bvh".into()));
+            previous
+        };
+        app.update();
+        assert!(
+            app.world().resource::<PoseCache>().transition.is_none(),
+            "queued invalidation must follow the live pose cache across parking"
+        );
+        let mut state = app.world_mut().resource_mut::<AnimationState>();
+        state.revoke_paths(&["pack/during-restore.bvh".into()]);
+        state.restore_parked(previous);
+        assert!(
+            state
+                .revoked_paths
+                .contains(Path::new("pack/during-restore.bvh")),
+            "restore must merge the live frame's pending invalidations"
+        );
+    }
+
+    #[test]
+    fn revoking_old_ancestry_preserves_a_clean_same_frame_pending_crossfade() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        app.world_mut()
+            .spawn((HumanBoneName::Hips, Transform::default(), ChildOf(root)));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("pack/old.bvh".into()));
+        app.update();
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("local-a.bvh".into()));
+        app.update();
+        {
+            let mut state = app.world_mut().resource_mut::<AnimationState>();
+            state.revoke_paths(&["pack/old.bvh".into()]);
+            state.select_clip(clip, Some("local-b.bvh".into()));
+        }
+        app.update();
+        let transition = app
+            .world()
+            .resource::<PoseCache>()
+            .transition
+            .as_ref()
+            .expect("unrelated new transition must survive");
+        assert_eq!(
+            transition.outgoing.as_ref().unwrap().path.as_deref(),
+            Some(Path::new("local-a.bvh"))
+        );
+        assert!(!transition.paths.contains(Path::new("pack/old.bvh")));
+        assert!(app.world().resource::<AnimationState>().playing);
+    }
+
+    #[test]
+    fn revoked_current_pose_does_not_pollute_later_local_transitions() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let hips = app
+            .world_mut()
+            .spawn((HumanBoneName::Hips, Transform::default(), ChildOf(root)))
+            .id();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("pack/old.bvh".into()));
+        for _ in 0..7 {
+            app.update();
+        }
+        assert!(
+            app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["pack/old.bvh".into()])
+        );
+        app.update();
+        assert_eq!(
+            *app.world().get::<Transform>(hips).unwrap(),
+            Transform::default()
+        );
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip, Some("local.bvh".into()));
+        app.update();
+        let transition = app
+            .world()
+            .resource::<PoseCache>()
+            .transition
+            .as_ref()
+            .expect("new local clip must fade in from idle");
+        assert!(
+            !transition.paths.contains(Path::new("pack/old.bvh")),
+            "a restored idle pose must not inherit a revoked clip's attribution"
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["pack/old.bvh".into()])
+        );
+        app.update();
+        assert!(
+            app.world().resource::<PoseCache>().transition.is_some(),
+            "re-revoking the pack must preserve the unrelated local fade"
+        );
+    }
+    #[test]
+    fn stopped_pose_does_not_pollute_later_local_transitions() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                100,
+            )))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let hips = app
+            .world_mut()
+            .spawn((HumanBoneName::Hips, Transform::default(), ChildOf(root)))
+            .id();
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip.clone(), Some("pack/old.bvh".into()));
+        for _ in 0..7 {
+            app.update();
+        }
+        app.world_mut().resource_mut::<AnimationState>().stop();
+        app.update();
+        assert_eq!(
+            *app.world().get::<Transform>(hips).unwrap(),
+            Transform::default()
+        );
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(clip, Some("local.bvh".into()));
+        app.update();
+        let transition = app
+            .world()
+            .resource::<PoseCache>()
+            .transition
+            .as_ref()
+            .expect("new local clip must fade in from idle");
+        assert!(
+            !transition.paths.contains(Path::new("pack/old.bvh")),
+            "a stopped pose must not leave stale ancestry in a new local fade"
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<AnimationState>()
+                .revoke_paths(&["pack/old.bvh".into()])
+        );
+        app.update();
+        assert!(
+            app.world().resource::<PoseCache>().transition.is_some(),
+            "re-revoking the pack must preserve the unrelated local fade"
+        );
     }
 }

@@ -1,0 +1,10 @@
+{
+  "api_version": 1,
+  "id": "studio.example.discord-replay",
+  "version": "1.0.0",
+  "name": "Discord replay (offline)",
+  "description": "Replay one synthetic Discord chat through chunked host intake, once per start. No Discord connection or credentials. Host incoming-reply settings can still trigger configured chat and voice models.",
+  "provenance": {"author": "Waifu Studio contributors", "license": "MIT"},
+  "process": {"program": "run.py"},
+  "capabilities": ["lifecycle.observe", "message.deliver"]
+}

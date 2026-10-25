@@ -31,18 +31,21 @@ impl Avatar {
             .find(|(bone, _)| *bone == HumanBoneName::Head)
             .map(|(_, node)| *node);
 
-        let annotated = vrm.first_person.as_ref().map_or_default(|fp| {
-            fp.mesh_annotations
-                .iter()
-                .map(|a| (a.node as usize, a.kind))
-                .collect::<HashMap<_, _>>()
-        });
+        let annotated = vrm
+            .first_person
+            .as_ref()
+            .map_or_else(Default::default, |fp| {
+                fp.mesh_annotations
+                    .iter()
+                    .map(|a| (a.node as usize, a.kind))
+                    .collect::<HashMap<_, _>>()
+            });
 
         Self {
             facing: Facing::PositiveZ,
             human_bones,
             first_person: resolve_first_person(gltf, head, &annotated),
-            springs: springs.map_or_default(springs_from_vrm1),
+            springs: springs.map_or_else(Default::default, springs_from_vrm1),
         }
     }
 }

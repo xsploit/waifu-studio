@@ -377,6 +377,7 @@ impl OrchestrationState {
             let worker = self.worker.take().unwrap();
             let feedback = feedback(&agents.output, &agents.status, success, self.core.steps());
             studio.turns.push(Turn {
+                external: None,
                 role: "user".into(),
                 content: feedback,
             });

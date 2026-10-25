@@ -11,6 +11,13 @@ enum Role {
     Idle,
     Talking,
 }
+/// Playback for the selected character, including the utterance lifetime.
+pub struct SpeechActivity {
+    pub generation: u64,
+    pub playing: bool,
+    pub pending: bool,
+}
+const MAX_SPEECH_GAP: Duration = Duration::from_millis(750);
 #[derive(Default)]
 pub struct CompanionAnimator {
     owner: Option<(uuid::Uuid, u64)>,
@@ -19,7 +26,8 @@ pub struct CompanionAnimator {
     talking_index: usize,
     next: Option<Instant>,
     pub paused: bool,
-    pub speech_started: bool,
+    speech_generation: Option<u64>,
+    last_audio: Option<Instant>,
     pub loading_path: Option<PathBuf>,
     pub cache:
         std::collections::VecDeque<(PathBuf, std::sync::Arc<waifu_studio::animation::BvhClip>)>,
@@ -27,7 +35,12 @@ pub struct CompanionAnimator {
     failed: Vec<PathBuf>,
 }
 fn eligible(entry: &MotionEntry) -> bool {
-    if !entry.auto_playable() {
+    if !entry.auto_playable()
+        || entry.metadata.as_ref().is_some_and(|m| {
+            m.loopable == Some(false)
+                || m.role == waifu_studio::extension_manifest::MotionRole::Gesture
+        })
+    {
         return false;
     }
     let name = entry.label.to_lowercase();
@@ -55,12 +68,53 @@ pub fn playlist(entries: &[MotionEntry], configured: &[PathBuf], talking: bool) 
         .collect()
 }
 impl CompanionAnimator {
+    /// Reset ownership before reading either the manual hold or speech state.
+    /// The root identity also changes when the same character's VRM is reloaded.
+    pub fn select_owner(&mut self, owner: Option<(uuid::Uuid, u64)>) -> bool {
+        if self.owner != owner {
+            *self = Self {
+                owner,
+                ..Self::default()
+            };
+            return true;
+        }
+        false
+    }
+    /// Start talking only after this owner's audio actually begins. Brief gaps
+    /// while more speech is pending retain that state; a new owner cannot inherit it.
+    pub fn speech_frame(
+        &mut self,
+        now: Instant,
+        owner: Option<(uuid::Uuid, u64)>,
+        speech: Option<SpeechActivity>,
+    ) -> bool {
+        self.select_owner(owner);
+        let speech = speech.filter(|_| owner.is_some());
+        let generation = speech.as_ref().map(|speech| speech.generation);
+        if self.speech_generation != generation {
+            self.last_audio = None;
+            self.speech_generation = generation;
+        }
+        let Some(speech) = speech else { return false };
+        if speech.playing {
+            self.last_audio = Some(now);
+            return true;
+        }
+        let bridging = speech.pending
+            && self
+                .last_audio
+                .is_some_and(|last| now.saturating_duration_since(last) <= MAX_SPEECH_GAP);
+        if !bridging {
+            self.last_audio = None;
+        }
+        bridging
+    }
     /// Dragging and seating own the body until released; retain the user's
     /// pause choice and cached clips, but choose the current role on return.
     pub fn suspend(&mut self) {
         self.current = None;
         self.next = None;
-        self.speech_started = false;
+        self.last_audio = None;
     }
     pub fn manual_override(&mut self) {
         self.paused = true;
@@ -81,6 +135,12 @@ impl CompanionAnimator {
         self.note =
             Some("Skipped a motion that could not be loaded; rescan or Resume to retry".into());
     }
+    /// A busy worker or failure to spawn one is not evidence of a broken clip.
+    pub fn retry_import(&mut self, now: Instant, error: String) {
+        self.current = None;
+        self.next = Some(now + Duration::from_millis(200));
+        self.note = Some(format!("Motion not started: {error}. Retrying."));
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn frame(
         &mut self,
@@ -93,12 +153,7 @@ impl CompanionAnimator {
         current_path: Option<&Path>,
         entries: &[MotionEntry],
     ) -> Option<PathBuf> {
-        if self.owner != owner {
-            *self = Self {
-                owner,
-                ..Self::default()
-            };
-        }
+        self.select_owner(owner);
         if !config.enabled || owner.is_none() || self.paused || loading {
             return None;
         }
@@ -164,6 +219,88 @@ impl CompanionAnimator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn busy_import_retries_without_blacklisting_a_valid_playlist_motion() {
+        let now = Instant::now();
+        let owner = Some((uuid::Uuid::new_v4(), 1));
+        let path = PathBuf::from("idle-one.bvh");
+        let config = CompanionMotionConfig {
+            idle_paths: vec![path.clone()],
+            ..Default::default()
+        };
+        let mut animator = CompanionAnimator::default();
+        let entries = entries();
+        assert_eq!(
+            animator.frame(now, &config, owner, false, false, false, None, &entries),
+            Some(path.clone())
+        );
+        animator.retry_import(now, "An animation import is already running".into());
+        assert!(
+            animator
+                .frame(
+                    now + Duration::from_millis(199),
+                    &config,
+                    owner,
+                    false,
+                    false,
+                    false,
+                    None,
+                    &entries
+                )
+                .is_none()
+        );
+        assert_eq!(
+            animator.frame(
+                now + Duration::from_millis(200),
+                &config,
+                owner,
+                false,
+                false,
+                false,
+                None,
+                &entries
+            ),
+            Some(path)
+        );
+    }
+    #[test]
+    fn speech_gaps_belong_to_one_character_and_avatar_and_wait_for_actual_audio() {
+        let character = uuid::Uuid::new_v4();
+        let first = Some((character, 1));
+        let second = Some((uuid::Uuid::new_v4(), 2));
+        let mut animator = CompanionAnimator::default();
+        let now = Instant::now();
+        let speech = |generation, playing, pending| {
+            Some(SpeechActivity {
+                generation,
+                playing,
+                pending,
+            })
+        };
+        assert!(!animator.speech_frame(now, first, speech(1, false, true)));
+        assert!(animator.speech_frame(now, first, speech(1, true, true)));
+        assert!(animator.speech_frame(
+            now + Duration::from_millis(700),
+            first,
+            speech(1, false, true)
+        ));
+        assert!(!animator.speech_frame(
+            now + Duration::from_millis(751),
+            first,
+            speech(1, false, true)
+        ));
+        assert!(animator.speech_frame(now, first, speech(1, true, true)));
+        assert!(!animator.speech_frame(now, first, speech(2, false, true)));
+        assert!(animator.speech_frame(now, first, speech(2, true, true)));
+        // Queued speech for a new owner cannot inherit the old owner's latch.
+        assert!(!animator.speech_frame(now, second, speech(2, false, true)));
+        assert!(animator.speech_frame(now, second, speech(2, true, true)));
+        assert!(!animator.speech_frame(now, second, speech(2, false, false)));
+        assert!(animator.speech_frame(now, first, speech(2, true, true)));
+        assert!(!animator.speech_frame(now, Some((character, 3)), speech(2, false, true)));
+        assert!(!animator.speech_frame(now, None, speech(2, true, true)));
+        assert!(!animator.speech_frame(now, first, None));
+    }
     fn entries() -> Vec<MotionEntry> {
         [
             "idle-one.bvh",
@@ -175,6 +312,7 @@ mod tests {
         ]
         .into_iter()
         .map(|name| MotionEntry {
+            metadata: None,
             path: name.into(),
             label: name.into(),
             group: "test".into(),

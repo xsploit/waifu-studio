@@ -126,7 +126,17 @@ pub fn local_clock() -> Option<(u8, u16)> {
     let minute = u16::try_from(out.tm_hour * 60 + out.tm_min).ok()?;
     (day < 7 && minute < 1440).then_some((day, minute))
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn local_clock() -> Option<(u8, u16)> {
+    let mut local = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+    unsafe {
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut local);
+    }
+    let day = ((local.wDayOfWeek + 6) % 7) as u8;
+    let minute = local.wHour * 60 + local.wMinute;
+    (day < 7 && minute < 1440).then_some((day, minute))
+}
+#[cfg(not(any(unix, windows)))]
 pub fn local_clock() -> Option<(u8, u16)> {
     None
 }

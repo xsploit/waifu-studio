@@ -476,6 +476,12 @@ pub fn matching_motions(emotion: AffectEmotion, entries: &[MotionEntry]) -> Vec<
         .iter()
         .filter(|entry| entry.auto_playable())
         .filter(|entry| {
+            if let Some(metadata) = &entry.metadata {
+                return metadata.role == waifu_studio::extension_manifest::MotionRole::Gesture
+                    && metadata.emotion.is_some_and(|e| {
+                        serde_json::to_value(e).ok() == serde_json::to_value(emotion).ok()
+                    });
+            }
             let stem = entry
                 .path
                 .file_stem()
@@ -539,6 +545,14 @@ struct AutoTicket {
     epoch: u64,
 }
 
+struct PendingPlayback {
+    ticket: AutoTicket,
+    path: PathBuf,
+    emotion: Option<AffectEmotion>,
+    mode: waifu_studio::data::ReplyMotionMode,
+    queued_at: std::time::Instant,
+}
+
 /// Off-by-default automatic reply motion. Each completed reply is considered
 /// once; at most one request is in flight and requests are rate-limited by a
 /// cooldown. A busy worker, cooldown or empty catalog skips the reply instead
@@ -552,6 +566,7 @@ pub struct ReplyMotion {
     last_request: Option<std::time::Instant>,
     epoch: u64,
     pending: Option<AutoTicket>,
+    playback: Option<PendingPlayback>,
     /// An automatic suggestion is waiting for review in Suggest mode.
     offered: bool,
     /// Short status for the panel; never contains reply text or paths.
@@ -562,6 +577,7 @@ impl ReplyMotion {
     /// Manual motion action: cancels and forgets any automatic request.
     pub fn manual_override(&mut self, suggester: &mut MotionSuggester) {
         self.epoch += 1;
+        self.playback = None;
         if std::mem::take(&mut self.offered) {
             suggester.dismiss();
         }
@@ -569,6 +585,66 @@ impl ReplyMotion {
             suggester.cancel();
             self.note = Some("Manual motion took over; automatic pick cancelled".into());
         }
+    }
+
+    pub fn playback_waiting(&self) -> bool {
+        self.playback.is_some()
+    }
+
+    pub fn supersede_playback(&mut self, reply: Uuid) {
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|pending| pending.ticket.reply != reply)
+        {
+            self.playback = None;
+        }
+    }
+
+    /// Commit emotion playlist position/cooldown only after importer admission.
+    pub fn playback_admitted(&mut self, now: std::time::Instant) {
+        if let Some(pending) = self.playback.take()
+            && let Some(emotion) = pending.emotion
+        {
+            if let Some((_, path)) = self
+                .last_mapped
+                .iter_mut()
+                .find(|(kind, _)| *kind == emotion)
+            {
+                *path = pending.path;
+            } else {
+                self.last_mapped.push((emotion, pending.path));
+            }
+            self.last_request = Some(now);
+        }
+    }
+
+    pub fn playback_failed(&mut self, error: String) {
+        self.playback = None;
+        self.note = Some(error);
+    }
+
+    fn queue_playback(
+        &mut self,
+        now: std::time::Instant,
+        mode: waifu_studio::data::ReplyMotionMode,
+        path: PathBuf,
+        emotion: Option<AffectEmotion>,
+    ) -> AutoAction {
+        let (selected, avatar) = self.playlist_owner.expect("owner selected before playback");
+        self.playback = Some(PendingPlayback {
+            ticket: AutoTicket {
+                reply: self.seen.expect("reply selected before playback"),
+                character: selected.expect("character selected before playback"),
+                avatar,
+                epoch: self.epoch,
+            },
+            path: path.clone(),
+            emotion,
+            mode,
+            queued_at: now,
+        });
+        AutoAction::Play(path)
     }
 
     /// Non-blocking; call every frame after [`MotionSuggester::poll`].
@@ -591,6 +667,7 @@ impl ReplyMotion {
         if self.playlist_owner != Some(owner) {
             self.playlist_owner = Some(owner);
             self.last_mapped.clear();
+            self.playback = None;
         }
         // Cancel a running pick, or drop one that finished before this frame.
         if matches!(config.mode, Mode::Off | Mode::EmotionMapped) && self.pending.take().is_some() {
@@ -600,6 +677,7 @@ impl ReplyMotion {
         // Every reply is marked seen, even while Off, so enabling later never
         // replays an old reply.
         if let Some(reply) = reply.filter(|reply| self.seen != Some(reply.id)) {
+            self.playback = None;
             self.seen = Some(reply.id);
             if config.mode == Mode::EmotionMapped {
                 if selected == Some(reply.character) && avatar == reply.avatar {
@@ -608,6 +686,27 @@ impl ReplyMotion {
             } else if config.mode != Mode::Off && selected == Some(reply.character) {
                 self.trigger(now, config, reply, entries, suggester, catalog, start);
             }
+        }
+        if let Some(playback) = &self.playback {
+            let current = playback.ticket.epoch == self.epoch
+                && self.seen == Some(playback.ticket.reply)
+                && selected == Some(playback.ticket.character)
+                && avatar == playback.ticket.avatar
+                && config.mode == playback.mode
+                && matches!(config.mode, Mode::EmotionMapped | Mode::AutoPlay)
+                && now.saturating_duration_since(playback.queued_at) < Duration::from_secs(5)
+                && entries
+                    .iter()
+                    .any(|entry| entry.path == playback.path && entry.auto_playable())
+                && playback.emotion.is_none_or(|emotion| {
+                    bound_motions(config, emotion, entries).contains(&playback.path)
+                });
+            if current {
+                return Some(AutoAction::Play(playback.path.clone()));
+            }
+            self.playback = None;
+            self.note =
+                Some("Pending gesture expired or its owner, settings or catalog changed".into());
         }
         if self.pending.is_none() || suggester.busy() {
             return None;
@@ -649,7 +748,7 @@ impl ReplyMotion {
                 self.note = suggestion
                     .label
                     .map(|label| format!("Auto-played: {label}"));
-                Some(AutoAction::Play(path))
+                Some(self.queue_playback(now, config.mode, path, None))
             }
             None => {
                 self.note = Some("No offered motion fits the latest reply".into());
@@ -695,23 +794,13 @@ impl ReplyMotion {
             .and_then(|(_, path)| paths.iter().position(|p| p == path))
             .map_or(0, |index| (index + 1) % paths.len());
         let path = paths[next].clone();
-        if let Some((_, previous)) = self
-            .last_mapped
-            .iter_mut()
-            .find(|(kind, _)| *kind == emotion)
-        {
-            *previous = path.clone();
-        } else {
-            self.last_mapped.push((emotion, path.clone()));
-        }
-        self.last_request = Some(now);
         self.note = Some(format!(
             "Selected the {} motion ({}/{})",
             emotion_name(emotion),
             next + 1,
             paths.len()
         ));
-        Some(AutoAction::Play(path))
+        Some(self.queue_playback(now, config.mode, path, Some(emotion)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -780,6 +869,7 @@ mod tests {
     fn entry(file: &str) -> MotionEntry {
         let path = PathBuf::from(format!("/lib/test/{file}"));
         MotionEntry {
+            metadata: None,
             group: "test".into(),
             label: path.file_stem().unwrap().to_string_lossy().into_owned(),
             path,
@@ -999,6 +1089,7 @@ mod tests {
         ]
         .into_iter()
         .map(|name| MotionEntry {
+            metadata: None,
             group: "lib".into(),
             label: name.into(),
             path: PathBuf::from(format!("/lib/{name}")),
@@ -1051,6 +1142,7 @@ mod tests {
             config: ReplyMotionConfig,
             affect: Option<AffectEmotion>,
             requests: Arc<std::sync::Mutex<Vec<String>>>,
+            admit_playback: bool,
         }
 
         impl Harness {
@@ -1071,6 +1163,7 @@ mod tests {
                     },
                     affect: None,
                     requests: Default::default(),
+                    admit_playback: true,
                 }
             }
 
@@ -1099,7 +1192,7 @@ mod tests {
             ) -> Option<AutoAction> {
                 self.suggester.poll(Some(self.character), &self.entries);
                 let requests = self.requests.clone();
-                self.auto.frame(
+                let action = self.auto.frame(
                     self.now,
                     &self.config,
                     Some(self.character),
@@ -1125,7 +1218,11 @@ mod tests {
                         requests.lock().unwrap().push(request.context.clone());
                         suggester.start_with(request, chooser)
                     },
-                )
+                );
+                if action.is_some() && self.admit_playback {
+                    self.auto.playback_admitted(self.now);
+                }
+                action
             }
 
             /// Frames until the worker finishes and its result is consumed.
@@ -1482,6 +1579,79 @@ mod tests {
                 );
             }
             assert_eq!(h.sent(), 0);
+        }
+        #[test]
+        fn busy_playback_retries_without_committing_cooldown_or_rotation() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            h.admit_playback = false;
+            h.affect = Some(AffectEmotion::Happy);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            bind(&mut h, AffectEmotion::Happy, "Wave.bvh");
+            let reply = Uuid::new_v4();
+            let expected = Some(AutoAction::Play("/lib/test/joy.bvh".into()));
+            assert_eq!(h.frame(Some((reply, "Hi")), "unused"), expected);
+            assert!(h.auto.playback_waiting());
+            assert!(h.auto.last_request.is_none() && h.auto.last_mapped.is_empty());
+            h.now += Duration::from_millis(100);
+            assert_eq!(h.frame(Some((reply, "Hi")), "unused"), expected);
+            h.auto.playback_admitted(h.now);
+            assert!(!h.auto.playback_waiting());
+            assert_eq!(h.auto.last_request, Some(h.now));
+            assert_eq!(h.frame(Some((reply, "Hi")), "unused"), None);
+            h.now += Duration::from_secs(120);
+            assert_eq!(
+                h.frame(Some((Uuid::new_v4(), "Next")), "unused"),
+                Some(AutoAction::Play("/lib/test/Wave.bvh".into()))
+            );
+        }
+
+        #[test]
+        fn waiting_playback_is_invalidated_without_replaying_the_reply() {
+            for reason in 0..7 {
+                let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+                h.admit_playback = false;
+                h.affect = Some(AffectEmotion::Happy);
+                bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+                let reply = Uuid::new_v4();
+                assert!(h.frame(Some((reply, "Hi")), "unused").is_some());
+                match reason {
+                    0 => h.auto.manual_override(&mut h.suggester),
+                    1 => h.avatar = Some(99),
+                    2 => h.character = Uuid::new_v4(),
+                    3 => h.config.mode = ReplyMotionMode::Off,
+                    4 => h.entries.clear(),
+                    5 => h.config.emotion_bindings[0].path = "changed.bvh".into(),
+                    _ => h.now += Duration::from_secs(5),
+                }
+                assert_eq!(
+                    h.frame(Some((reply, "Hi")), "unused"),
+                    None,
+                    "reason {reason}"
+                );
+                assert!(!h.auto.playback_waiting());
+                h.config.mode = ReplyMotionMode::EmotionMapped;
+                assert_eq!(h.frame(Some((reply, "Hi")), "unused"), None);
+            }
+        }
+
+        #[test]
+        fn superseded_or_failed_admission_cannot_resume_an_old_gesture() {
+            let mut h = Harness::new(ReplyMotionMode::EmotionMapped);
+            h.admit_playback = false;
+            h.affect = Some(AffectEmotion::Happy);
+            bind(&mut h, AffectEmotion::Happy, "joy.bvh");
+            let old = Uuid::new_v4();
+            assert!(h.frame(Some((old, "Hi")), "unused").is_some());
+            let newer = Uuid::new_v4();
+            assert!(h.frame(Some((newer, "New reply")), "unused").is_some());
+            assert_eq!(h.auto.playback.as_ref().unwrap().ticket.reply, newer);
+            h.auto.supersede_playback(Uuid::new_v4());
+            assert_eq!(h.frame(None, "unused"), None);
+            let failed = Uuid::new_v4();
+            assert!(h.frame(Some((failed, "Failed")), "unused").is_some());
+            h.auto.playback_failed("Cannot start importer".into());
+            assert_eq!(h.frame(Some((failed, "Failed")), "unused"), None);
+            assert!(h.auto.last_request.is_none() && h.auto.last_mapped.is_empty());
         }
         #[test]
         fn emotion_playlists_have_independent_positions_and_reset_for_avatar_or_character() {

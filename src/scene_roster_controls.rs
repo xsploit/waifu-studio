@@ -3,10 +3,8 @@ use waifu_studio::settings_kit as kit;
 use waifu_studio::{data::Library, scene_roster::SceneRoster};
 pub fn ui(ui: &mut egui::Ui, roster: &mut SceneRoster, library: &Library) {
     kit::section(ui, "Scene companions");
-    kit::note(
-        ui,
-        "Up to four characters including the focused character. Additional companions are visual only; chat, expressions and speech still belong to the focused character. Scene membership and placements are saved locally.",
-    );
+    ui.small("Add up to three companions beside the focused character.")
+        .on_hover_text("Scene membership and placements are saved locally. Use Talk to the scene to choose recipients for a scene conversation.");
     if let Some(error) = &roster.persistence_error {
         ui.colored_label(egui::Color32::YELLOW, format!("Scene save: {error}"));
     }
@@ -18,30 +16,40 @@ pub fn ui(ui: &mut egui::Ui, roster: &mut SceneRoster, library: &Library) {
                     remove = Some(slot.character);
                 }
             });
-            kit::row(ui, "Position", "Scene coordinates, X / Y / Z.", |ui| {
-                // Controls are right-to-left inside a settings row.
-                ui.add(
-                    egui::DragValue::new(&mut slot.position.z)
-                        .speed(0.05)
-                        .range(-10.0..=10.0)
-                        .prefix("Z "),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut slot.position.y)
-                        .speed(0.05)
-                        .range(-10.0..=10.0)
-                        .prefix("Y "),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut slot.position.x)
-                        .speed(0.05)
-                        .range(-10.0..=10.0)
-                        .prefix("X "),
-                );
-            });
-            kit::row(ui, "Rotation", "Yaw in radians.", |ui| {
-                ui.add(egui::DragValue::new(&mut slot.yaw).speed(0.03));
-            });
+            egui::CollapsingHeader::new("Advanced · placement")
+                .id_salt("scene_placement")
+                .default_open(false)
+                .show(ui, |ui| {
+                    kit::row(ui, "Position", "Scene coordinates.", |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut slot.position.x)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0)
+                                    .prefix("X "),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut slot.position.y)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0)
+                                    .prefix("Y "),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut slot.position.z)
+                                    .speed(0.05)
+                                    .range(-10.0..=10.0)
+                                    .prefix("Z "),
+                            );
+                        });
+                    });
+                    kit::row(ui, "Yaw", "", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut slot.yaw)
+                                .speed(0.03)
+                                .suffix(" rad"),
+                        );
+                    });
+                });
         });
     }
     if let Some(id) = remove {

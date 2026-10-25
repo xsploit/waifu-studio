@@ -2,7 +2,7 @@
 use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
@@ -552,9 +552,8 @@ fn save_document(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
         file.write_all(&data)
             .and_then(|()| file.sync_all())
             .map_err(|e| e.to_string())?;
-        fs::rename(&temporary, root.join(format!("{id}.json"))).map_err(|e| e.to_string())?;
-        File::open(root)
-            .and_then(|f| f.sync_all())
+        drop(file);
+        crate::durable_file::replace(&temporary, &root.join(format!("{id}.json")))
             .map_err(|e| e.to_string())
     })();
     if result.is_err() {

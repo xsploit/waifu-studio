@@ -1,0 +1,85 @@
+{
+  "api_version": 1,
+  "id": "studio.integration.twitch",
+  "version": "1.0.0",
+  "name": "Twitch",
+  "description": "Receive activity from the Twitch account authorized by your user token. Runs in a separate native process. Alerts request an original thanks nod; third-party messages stay outside local-user memory intake.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "process": {
+    "program": "run.py"
+  },
+  "capabilities": [
+    "lifecycle.observe",
+    "message.deliver",
+    "motion.play",
+    "expression.apply"
+  ],
+  "credentials": [
+    {
+      "id": "client_id",
+      "label": "Twitch application ID"
+    },
+    {
+      "id": "access_token",
+      "label": "Twitch user access token"
+    },
+    {
+      "id": "refresh_token",
+      "label": "Twitch refresh token"
+    }
+  ],
+  "settings": [
+    {
+      "id": "events",
+      "label": "Listen for",
+      "type": "choice",
+      "options": [
+        "Chat and alerts",
+        "Alerts only",
+        "Chat only"
+      ],
+      "default": "Chat and alerts"
+    },
+    {
+      "id": "chat_mode",
+      "label": "Chat intake",
+      "type": "choice",
+      "options": [
+        "Chunks",
+        "Direct"
+      ],
+      "default": "Chunks"
+    },
+    {
+      "id": "celebration_motion",
+      "label": "Alert gesture",
+      "description": "Choose a motion from enabled content packs. None keeps messages without a gesture.",
+      "type": "motion",
+      "default": "studio.integration.twitch/nod"
+    },
+    {
+      "id": "celebration_expression",
+      "label": "Alert expression",
+      "description": "Use this expression briefly during alerts, alongside the gesture. None keeps normal face behavior.",
+      "type": "expression",
+      "default": ""
+    }
+  ],
+  "content": {
+    "motions": [
+      {
+        "id": "nod",
+        "name": "Twitch: Thanks Nod",
+        "asset": "motions/nod.bvh",
+        "role": "gesture",
+        "loopable": false
+      }
+    ]
+  },
+  "test_process": {
+    "program": "test.py"
+  }
+}

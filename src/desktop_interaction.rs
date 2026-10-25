@@ -57,6 +57,8 @@ impl ScreenRect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SurfaceId {
     Window(u64),
+    /// Usable output bounds for placement; never an inferred taskbar seat.
+    Monitor(u64),
     /// A monitor's usable work area: its bottom is the floor seat line.
     WorkArea(u64),
 }
@@ -72,7 +74,7 @@ impl DesktopSurface {
     fn seat_y(self) -> f32 {
         match self.id {
             SurfaceId::Window(_) => self.rect.origin.y,
-            SurfaceId::WorkArea(_) => self.rect.origin.y + self.rect.size.y,
+            SurfaceId::WorkArea(_) | SurfaceId::Monitor(_) => self.rect.origin.y + self.rect.size.y,
         }
     }
     fn excluded(self, own_ids: &[u64]) -> bool {
@@ -173,6 +175,9 @@ fn valid_point(point: Vec2) -> bool {
 }
 
 impl DesktopInteraction {
+    pub fn seated_surface(&self) -> Option<SurfaceId> {
+        (self.state == InteractionState::Sitting).then_some(self.seat?.surface)
+    }
     /// Handle primary-pointer events after the host's avatar hit test. Move/End
     /// without a Start are ignored; Cancel safely clears both drag and seat.
     pub fn handle(
@@ -450,6 +455,30 @@ mod tests {
     ) -> InteractionOutput {
         controller.handle(InteractionInput::Start { cursor }, frame);
         controller.handle(InteractionInput::End { cursor }, frame)
+    }
+
+    #[test]
+    fn monitor_bottom_is_not_a_taskbar_but_verified_floor_is() {
+        let mut surface = DesktopSurface {
+            id: SurfaceId::Monitor(7),
+            rect: ScreenRect {
+                origin: Vec2::ZERO,
+                size: Vec2::new(1000., 350.),
+            },
+            z_order: i32::MAX,
+        };
+        let mut controller = DesktopInteraction::default();
+        let before = frame(std::slice::from_ref(&surface));
+        assert_eq!(
+            drop_on(&mut controller, &before, Vec2::new(250., 320.)).state,
+            InteractionState::Idle
+        );
+        surface.id = SurfaceId::WorkArea(7);
+        let after = frame(std::slice::from_ref(&surface));
+        assert_eq!(
+            drop_on(&mut controller, &after, Vec2::new(250., 320.)).state,
+            InteractionState::Sitting
+        );
     }
 
     #[test]

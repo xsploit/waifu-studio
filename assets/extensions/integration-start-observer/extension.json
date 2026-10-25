@@ -1,0 +1,22 @@
+{
+  "api_version": 1,
+  "id": "studio.example.integration-start-observer",
+  "version": "1.0.0",
+  "name": "Integration startup observer",
+  "description": "Local Python 3 metadata-only hook that records actual persistent integration process starts. No actions, private replies or networking.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "hooks": [
+    {
+      "event": "extension.started",
+      "handler": {
+        "program": "observer.py"
+      }
+    }
+  ],
+  "capabilities": [
+    "lifecycle.observe"
+  ]
+}

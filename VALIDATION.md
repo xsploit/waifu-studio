@@ -1,5 +1,49 @@
 # Validation receipt
 
+## Windows and Linux port — 2026-10-24
+
+Native MSVC Windows x64 and Ubuntu 24.04 in the isolated local `WaifuStudioTest` WSL distribution compile with pinned Rust 1.95.0. Release all-target tests passed **1,207 on Windows** and **1,395 on Linux**, using `--test-threads=1` because animation tests share one process-wide importer. A subsequent Linux run passed **18 credential tests**, including the additional supported-provider startup check. Both native release executables built. Five packaging regression tests passed. The new hosted Windows/Ubuntu workflow has not been dispatched.
+
+Windows acceptance loaded Hikari's bundled VRM in the real Studio window, switched to a transparent borderless desktop companion, opened the radial menu and returned to Studio. A title-query deadlock found during that check was removed: the Windows bridge now receives the actual primary HWND from winit and reads native move state without synchronous title messages. Geometry uses DWM bounds, taskbars and one consistent DPI coordinate space. Mixed-DPI/multi-monitor arrangements, taskbar seating and global-shortcut behavior still need their own interactive acceptance.
+
+The installed offline Discord replay passed through the actual Windows process supervisor into the application's persisted history, with attributed input, opt-in defaults, no model work, unchanged memory and verified cleanup. Windows Python launchers now wait for their native child; `os.execv` would otherwise exit the supervised Windows parent and cause its Job to terminate the child. Dedicated Windows fixtures passed Unicode/space paths, literal input, descendant cleanup and full-stdin timeout behavior. Memory persistence was repaired to use Windows file replacement rather than Unix directory fsync; the existing notes/facts/semantic-memory tests pass.
+
+Linux offscreen acceptance rendered AliciaSolid with llvmpipe Vulkan. The default Hikari wardrobe model exceeds this software driver's 128 MiB storage-buffer-binding limit; it rendered on the Windows hardware GPU. Native Wayland/KWin/Hyprland desktop behavior was not re-tested in this WSL environment. The pre-existing Vulkan/X11 fallback to Studio remains in place. Linux voice-worker tests used Node 22.23.4 and the locked dependencies; its native Opus module was built in a path without spaces because upstream node-gyp lost an include path in the mounted checkout.
+
+The local default Windows profile was populated with the user's existing Vercel, Fish, OpenAI and OpenRouter credentials. Values are not recorded in this receipt or copied into runtime packages. The startup allowlist now supports all configured built-in chat providers on both platforms. No live chat/speech/provider requests were used as acceptance evidence, and physical audio remains a separate check.
+
+Commands and local logs: `work/cross-platform/test4.{out,err}.log`, `linux-test4.{out,err}.log`, `linux-capture2.err.log`; source launchers are `run.cmd` / `run.ps1` and `run.sh`. See `docs/CROSS-PLATFORM.md` for dependencies, build, packaging and remaining acceptance boundaries.
+
+## Explicit click-through and direct window dragging — 2026-10-23
+
+User testing rejected the previous input behavior: automatic margin click-through still disabled native input even though the manual "Pass clicks" setting was false. Native hit testing now stays enabled throughout the companion window unless the user explicitly selects full passthrough and its recovery surface is ready. Dragging and the right-click menu no longer depend on a CPU raycast against an animated mesh. A left-button press delivered to the companion window starts its drag; presses delivered to auxiliary windows cannot start it. Global desktop pointer sampling remains for gaze and placement, not for turning native input off.
+
+## Companion-only startup correction — 2026-10-23
+
+The prior launch used Studio mode, so its side panel was visible and desktop dragging was disabled. Normal application startup now selects the draggable Desktop companion. Full Studio is explicit (`--studio`, a requested settings/screen/history/room/capture workflow, or an action from the right-click menu). `--desktop` remains an explicit override. Offscreen UI capture keeps its Studio behavior.
+
+Entering or returning to Desktop no longer creates an auxiliary controls window. That recovery surface is requested only by the explicit right-click "Pass clicks" action; its request is session-only and never saved. Settings remain accessible from the right-click menu. Escape dismisses the menu without silently opening Studio. Regression coverage checks default mode selection, absent controls at startup, restored input after closing explicit controls, no automatic reopening after returning from settings, and Escape. **208 application tests**, strict all-target Clippy, package formatting and whitespace checks passed. Real pointer movement remains a manual acceptance check.
+
+The corrected optimized build was launched by command line. Its current service invocation remains active, reports exactly one native window and a loaded VRM, and has no logged auxiliary controls window, startup panic, shader-processing failure or error line. This verifies companion-only startup; physical dragging is left for the user's check.
+
+## Desktop dragging and window occlusion — 2026-10-23
+
+Native drag status now distinguishes unavailable information from an observed end. Hyprland uses the existing compositor bridge with the ordinary pointer grab, preserving button-release delivery; KWin retains its observable native drag. New and legacy-default desktop settings enable detection on either supported compositor, preserving explicitly disabled current profiles.
+
+Window occlusion is enabled by default and has one switch in the existing Desktop controls. A depth-only pass runs before avatar rendering: the supporting window sits just behind the projected pelvis, and windows above that support in the desktop stacking order hide intersecting geometry. Front-facing limbs remain visible. Work-area seats mask only the panel below the usable floor. The bounded mask uses up to 16 intersecting rectangles; stale/missing geometry, standing, dragging, mode changes and disabling occlusion clear it. Input follows the explicit click-through policy described above, independent of the visual mask.
+
+The production renderer passed headless NVIDIA/Vulkan pixel checks with MSAA off and 4× MSAA: red geometry behind a simulated window disappears into transparent pixels, green geometry in front remains visible, and the unmasked baseline stays visible. Reproduce with `cargo run --offline --locked --example verify_desktop_occlusion -- 1 /tmp/desktop-occlusion-msaa1.png` and repeat with `4`. No desktop window, live provider, microphone, or saved character profile is used by this fixture.
+
+The optimized application build, strict all-target Clippy, package formatting and whitespace checks passed. The final offline all-target suite passed **1,364 tests** with `--test-threads=1` (1,081 library; 206 application/UI; 77 integration/example tests). An earlier parallel run hit the pre-existing shared-stream cancellation fixture's "Previous connections are still closing" timeout; that exact test passed immediately alone, then the entire serial suite passed. Initial sandbox-only fixture failures were local socket/special-file permission errors; the final suite ran with those fixture permissions. No provider credentials or live-service calls were used by these automated checks. Build SHA256: `a0c2d4e90d80023e1f4c1dc47a182decc82a8fe9a5914b666fd0e8d9555adba4`.
+
+The release was launched by command line through the existing desktop user session (`waifu-studio-desktop-20261023-occlusion.service`). Process/window creation and active service state were confirmed, with no startup panic or shader-processing failure. The saved profile still logs a missing background image under an older `work/waifu-studio-ui/` path; that is separate from the transparent desktop depth pass. No visible compositor/model acceptance is claimed from this launch check.
+
+This establishes the shader/depth path, not visual acceptance of a real VRM on the live compositor. Window masks are rectangular and do not reproduce rounded corners or translucent window contents. Pelvis-relative depth still needs the user's model/contact check; this is separate from avatar self-collision. Manual acceptance: hold a drag longer than one second; release onto a window/taskbar; move/resize the supporting window; overlap it with another window; grab the character again and check that the mask releases.
+
+## Earlier validation
+
+2026-10-19 Waifumations: the first clearance video was rejected because upper arms still crossed the torso. The mesh-derived replacement also remains rejected: clear sampled axes can coexist with unacceptable arm jumps. Correction stays experimental/off. Three explicit arms-at-side prompt trials were generated separately; the talking trial has no arm-axis/selected-torso crossings in 180 source frames, but selected surface intersections remain in 70 of 91 native samples. Idle and shrug fail the axis screen too. All remain unapproved. See [the review receipt](reviews/waifumations-arm-clearance.md). 605 offline tests, strict all-target Clippy and package formatting passed; these do not establish visual acceptance or complete collision protection.
+
 Date: 2026-10-18; earlier GPU observations are identified below. Linux KDE/Wayland, NVIDIA GeForce RTX 5060 Ti, NVIDIA 615.71.09, Vulkan. Rust 1.98.1. These observations apply to this source/build, not all devices or imported avatars.
 
 ## Compiled and automated checks
@@ -611,3 +655,869 @@ Reply emotions with no explicit binding now play scanned clips named after them 
 Camera: settings pages draw on egui's background layer, which egui does not report as pointer-captured, so scrolling a settings page zoomed the hidden scene camera out (and drags rotated it). Camera mouse input is now limited to the conversation view and desktop mode.
 
 593 tests (one new), strict Clippy and formatting passed. No live provider, audio or visual playback acceptance.
+
+### Final skin-pose diagnostics — 2026-10-20
+
+The existing `render_desktop_motion` example now exports final render-global skin-joint matrices (including spring helpers), root-relative local FK, rest matrices, inverse binds and final skin palettes. Existing humanoid/source JSON remains available. This diagnostic change does not alter runtime animation or physics defaults.
+
+`cargo build --offline --locked --example render_desktop_motion` and strict Clippy for that example passed using the existing studio target directory; touched-source rustfmt and `git diff --check` passed. Native Hikari fixed-side capture produced 91 sample positions for repaired seed108 plus one known-bad text-only seed109 pose. The selected-surface final-skin audit measured 0/91 crossing frames for the candidate and 209 crossings in the bad pose; maximum candidate chest displacement versus static helpers was 1.62993 mm and global/local-FK matrix disagreement 2.98e-7. Missing palettes/joints, wrong inverse binds and stale globals were deliberately rejected by the audit.
+
+These are diagnostic receipts, not candidate acceptance or a self-collision fix. Selected geometry, no morph/containment/swept checks, paused sampling and unchanged example spring settings cannot establish realtime maximum-jiggle clearance. The user's visible-clipping rejection remains in effect. Artifacts and audit script live in the neighboring task workspace and spare-drive `waifu-motion-library/clearance-trial/final-skin-v1/`. Full app tests were not rerun for this example-only change; no commit/push.
+
+### Core motion ownership and camera checks — 2026-10-20
+
+Current worktree: **622 all-target offline tests pass** (497 library + 114 binary + 6 integration + 2 and 3 example tests). Strict all-target offline Clippy, touched-source rustfmt checks and `git diff --check` pass. The debug application build also passes. Evidence logs are copied to the task workspace's `reports/stage1-evidence/`; no commit or push was made.
+
+Manual controls now hold body-motion ownership until Resume, cancel late automatic imports, and consume intervening reply IDs without replaying them on release. Resume is available in the ordinary Scene Behavior card. A real animation-system regression covers one-shot reaction completion into talking while speech remains active, or idle when it has already ended. Separate regressions cover character/avatar ownership, a new utterance, and bounded (750 ms) speech chunk gaps.
+
+Every production speech spawn now carries immutable character/voice-generation identity and a decoder-consumption receipt. Queued assets and decoder creation alone do not start talking; consumed silent samples do. EOF, decoder drop, replacement and Stop invalidate playback. Receipt and source-ownership regressions run without providers or an audio device; they do not establish physical speaker timing.
+
+Camera coverage exercises settings scroll/drag input, the F shortcut, explicit recenter/framing, resize, preview orbit/zoom/focus, and preview texture limits. F no longer reframes the hidden main camera from settings; preview target resizing preserves aspect ratio. The original pure settings-toggle zoom complaint has not been reproduced, so these corrections do not close that user-visible acceptance item.
+
+Native isolated-profile startup loaded Hikari (`VRM_READY`); an offscreen 1280x900 Scene settings capture was rendered and inspected. Interactive desktop verification could not run because the KDE input activity guard is missing; it was not bypassed. The isolated native instance was stopped. Capture/logs: `/run/media/subsect/toshiba/kimodo/waifu-motion-library/validation/stage1-camera-20261020/`. Live spoken-conversation transitions, physical audio, interactive camera acceptance, strong-jiggle clearance, and extension runtime/API acceptance remain outstanding.
+
+### Continuous motion probe and chest spring controls — 2026-10-20
+
+Current source passes **642 offline all-target tests** (511 library + 120 binary + 6 integration + 2 and 3 example tests), strict all-target Clippy, changed/new Rust formatting, whitespace checks and debug application build. One low-priority Cargo job was used, sequentially. Current receipts are in the task workspace's `reports/stage1-evidence/followup-*.log`; earlier 622-test logs are preserved. No commit or push.
+
+The opt-in offscreen showcase now validates a diagnostic timeline and records final motion/speech/camera/spring state. Recorded audio uses the production preview/meter/viseme paths, without providers or speakers. This exposed and fixed stale automatic gestures on character/avatar switches and an idle fallback before talking. Added regressions also cover paused single-idle Resume, transient importer retry without blacklisting, preview replacement, and applying camera framing during windowless capture without accepting physical desktop input. Take2 completed 525 frames at configured 15 fps: reaction → talking → idle, explicit speech stop, clean character switch, and one unchanged camera transform throughout the scripted settings round trip. Full-body Hikari and Neuro settings frames were inspected. Native interactive camera and live/provider audio acceptance remain open.
+
+Per-character chest spring presets now retain authored model settings, offer Expressive and Maximum jiggle, and expose manual joint selection under Physics details. Tuning is reversible, uses real selected-model spring joints, and leaves gravity, colliders, hair/clothing and the vendor simulation intact. Defaults retain authored tuning (strength 0); no maximum-jiggle default is claimed. Take2 exposed zero tuned joints because the controller checked the wrapper instead of the vendor's nested scene root. The corrected lookup and unchanged-frame cache pass 14 spring regressions, including nested roots and restoration. Continuous post-fix renderer evidence remains pending at this source checkpoint. Neither these controls nor existing selected-surface diagnostics guarantee mesh self-collision safety or approve the motion library.
+
+Post-fix take3 completed 525 frames / 35 seconds at configured capture cadence 15 fps. It discovers 104 actual spring entries on Hikari and 131 on Neuro, tuning four real bust joints at strength 1 on each throughout their shots; selected spring transforms are finite. Nine trace checks pass, covering frame completeness, reaction/talking/idle, no idle fallback, Stop, avatar switch, scripted settings camera preservation, tuning and mouth weights. Hikari enters talking at frame152 and idle at199 when recorded audio ends; Stop ends consumption at42 in shot1. Neuro begins idle despite the previous unfinished reaction; settings open105/close135 without camera-transform changes. Talking and settings images were inspected, including the correct four-joint UI status. Artifacts: spare-drive `waifu-motion-library/validation/stage1-motion-20261020/frames-take3/trace.json`, `take3-receipt.json` and `render-take3.log`. This supersedes the pending post-fix renderer status above; native interaction, live speech, strong-deformation visual acceptance and mesh clearance remain separate open checks.
+
+### Continuous final-surface diagnostics and independent reviews — 2026-10-20
+
+Four fixed front/side captures of repaired108 and known-bad109 completed 180 frames each at 30 app updates/sec, with four real chest joints tuned at strength1,16 source primitives, actual morph arrays and final spring palettes. GPU readback does not pause or seek the animator. Each app update corresponds to two expected vendor60Hz spring substeps; substeps were not individually instrumented. Original metadata named app cadence `simulation_*`; separate clarification receipts preserve that history. New exports use explicit app/spring fields. Continuous capture now rejects nonaligned or clamped cadences and gross clock drift. A fresh four-frame GPU smoke verified the new fields, paired frames and active tuning.
+
+The CPU baseline auditor processed all360 front-view poses in263.84 seconds. Every source primitive matched with zero source/palette errors; source snapshot and per-frame witnesses are retained. Known-bad109 has distal-arm/torso strict edge/triangle incidences in119/180 frames and distal-arm/lowerbody incidences in115/180. Repaired108 has zero in both comparisons but upper-arm/torso incidences in180/180 frames, including mixed-weight shoulder/chest skin. These counts are not collision depths or visual acceptance. Containment remains unknown on open/nonmanifold target components; no clip or library is approved and no swept guarantee exists.
+
+Read-only reviews completed with served `claude-opus-5-5` and Meta `muse-wonder-1.0-contributor` (configured `muse-wonder-1.0`): `reviews/opus-stage2-export-review.md` and `reviews/muse-stage2-geometry-review.md`. Opus's app/spring labeling issue and extension target-generation ambiguity were corrected. Muse's empty-comparison, joint-identity and convention findings are tracked in the task auditor report; the360-frame baseline run predates those evidence-check changes. Reviewer source inspection is distinct from parent test/GPU evidence. Warmup and visible pixels do not independently prove every shader pipeline drew every primitive.
+
+Current source passes **646 offline all-target tests**, strict all-target Clippy, debug app/example builds, touched-source formatting and whitespace checks. Task `reports/stage2-progress.md` and `stage2-evidence/review-*` contain the detailed receipts and source hashes. Native input, providers, physical audio, maximum-deformation visual acceptance, starter-pack acceptance and extension runtime remain open. Nothing was committed or pushed.
+
+Final auditor follow-up: **45 CPU Python tests passed** (34 auditor plus11 existing decoder tests). Auditor schema1.1.0 rejects empty comparisons, ambiguous unnamed/duplicate-name palettes without explicit source joint indices, unknown matrix convention and unhashed avatar relocation. Two historical and two fresh-format real frames pass source/comparison coverage checks with all16 primitives; the fresh export retains explicit app/spring cadence without claiming measured spring counts. These bounded checks do not rerun or reclassify the360-frame baseline.
+
+### Content packs and extension foundations — 2026-10-20
+
+717 offline all-target Rust tests and strict all-target Clippy passed. All 30 touched/new Rust files pass formatting and whitespace checks; the debug app builds. This extends the earlier stage-2 receipt rather than retroactively changing it.
+
+Content-only manifests, durable revision installation, an exclusive store writer, background management and the compact Extensions page are implemented. Enabled motion roles/emotion metadata join the host catalog; explicit use applies existing import/playback/room/preset paths. Disabling pack motions revokes pending/playing poses while retaining manual ownership and unrelated imports. Enabled expression mappings honor available expressions and manual/reserved ownership; disable/update removes their owned contribution immediately. The original three-clip MIT Companion Starter is included; no generated full-body clip is approved.
+
+MotionServices advances ownership/catalogs in ordinary Update, independently of egui. The protocol/session gate tests distinguish session/process/target identities and positive request sequences, enforce capability/event namespace checks and prevent replay after bounded-cache eviction. Linux process-transport tests use actual children for exchange, malformed/oversized/flooded output, closed stdin, bounded stop/timeouts, final-output draining and escaped-descendant drain bounds. Other-platform supervision and executable-plugin integration remain unsupported checkpoints; external programs are not sandboxed.
+
+Opus 5.5 and Meta Muse Wonder supplied alternate source reviews. Their findings led to kill-before-reap group handling, bounded exit drain, durable terminal receipts, explicit bounded shutdown, exclusive store ownership, visible busy rejection and staging cleanup. Render-frame drops do not join arbitrary copy/dialog work. A preexisting copy can finish under its lock after state drop; replacement stores retry safely.
+
+Extensions layout captures at 1280×800 and 800×720 were inspected. Their isolated profile was seeded with a managed pack, so those images establish layout, not native input or folder-dialog acceptance. Real worker/store lifecycle behavior is tested separately. Final source hashes, commands, logs, review dispositions and remaining boundaries are recorded in `/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/stage4-progress.md` and `stage4-evidence`.
+
+Stage 2 additionally completed 728 fresh rest/correction control frames with strong physics. Two rest and two initial corrected candidate frames have zero audited arm/body incidences, but the existing correction visibly over-spreads the arms. It stays experimental/off. Those bounded results do not establish full-sequence, between-frame or per-VRM clearance. Native pacing, live audio/provider checks, hooks/process host actions, Twitch, Discord and platform acceptance remain open. Work is uncommitted and unpushed.
+
+## Host-action execution checkpoint — 2026-10-20
+
+Added `extension_actions.rs` and `extension_connection.rs`. A bounded coordinator now joins the actual Linux process transport, typed protocol and replay gate. It dispatches opaque execution tickets, returns cached/rejected results without re-execution, rechecks current permission/target/process identity, and stops on malformed/flooded transport. `send_host` adapts the encoder's LF framing to the transport deliberately.
+
+The host executor resolves namespaced registered motion IDs, preserves manual/desktop priority, applies separately owned temporary expressions, supplies integration event attribution and cancels owned effects when the connection stops. Tokens prevent stale cancellation from stopping newer same-file/manual motion. Expressions expire/cancel without overwriting host affect/lifecycle; manual and protected facial channels retain priority. External message delivery explicitly returns Unavailable until its attributed persistence/UI path exists; it never routes external text through user-fact extraction.
+
+Review fixes include cancellation before desktop playback is parked, active-owner reclamation, predictable unknown-asset errors and serialized catalog-size limits including escaping. Speech receipts independently latch consumption history and terminal state so short playback is observable after EOF; this is a source prerequisite, not public speech event delivery.
+
+**745 offline all-target Rust tests passed; strict all-target Clippy, touched-file rustfmt and whitespace checks passed.** One actual supervised Python fixture applies an expression through coordinator → admission gate → host executor → shared BehaviorController, receives acknowledgement, and loses its contribution on disable. Additional real child tests cover duplicate replay, malformed output and lifecycle invalidation. This is execution/control evidence, not visual/native UI or live service acceptance. Logs and exact source hashes: `stage4-evidence/actions-*`.
+
+Executable manifests remain disabled. The normal app has not yet wired a persistent runtime manager to this bridge. Next: retain/drain source lifecycle receipts with explicit overflow outcomes and avatar identity; add attributed external notifications; then wire runtime lifecycle/configuration, one-shot hooks and persistent fixtures into the compact Extensions page before enabling executable installation. No commit/push or credential/proxy changes.
+
+## Source lifecycle and app-runtime checkpoint — 2026-10-20
+
+Focused and scene replies now record completion/failure/cancellation at their source with captured character and reply IDs. The scene transcript's persisted shape remains compatible. Scene speech queues carry the same reply IDs into actual audio registration. Every production audio spawn registers an independently retained consumption receipt; starts and terminal observations survive short playback and entity destruction. Explicit cancellation waits for actual receipt invalidation/termination, preserving consumption between cancellation intent and deferred audio stop. Already-terminal receipts retain their observed terminal reason.
+
+The source journal is bounded to 256 records/2 MiB, with monotonic sequences and explicit coalesced loss records. Speech tracking is bounded to 64 receipts. A per-connection relay holds at most 32 records/1 MiB and sends at most eight wire events per frame. Full reply text streams in UTF-8-safe chunks with byte offsets, followed by terminal metadata. Lifecycle metadata and private reply text use separate `lifecycle.observe` and `reply.read` grants. Revocation permanently purges queued private text; source/queue overflow explicitly stops the affected subscription rather than silently dropping an apparently complete stream.
+
+`ExtensionRuntime` is now advanced by the actual app's ordinary Update chain, using shared host animation/behavior services independently of egui. It supports four explicitly configured supervised processes, no-avatar metadata delivery, fresh-session explicit restart after authoritative termination, status and disable/removal cleanup. A transient controller revoke/regrant is latched until owned effects are cancelled. Disabled processes immediately discard queued private text. Avatar target generation follows actual character/entity incarnation, independently of speech/reply changes. Empty runtime frames avoid catalog construction. A retained runtime clone performs bounded shutdown after the app runner returns.
+
+The existing Extensions page can show compact local-runtime status, enable/disable and Restart rows when explicitly configured runtime entries exist. **Executable installation/configuration is still rejected by content-only manifests**; the default app runtime is empty. No arbitrary program discovery or automatic crash retry was enabled. `message.deliver` still returns Unavailable until typed attribution survives storage, UI and memory intake. One-shot event hooks, motion/emotion source events and live services remain separate unfinished work.
+
+**783 offline all-target tests passed**, strict all-target Clippy passed, all 13 touched/new files passed rustfmt, whitespace checks passed, and the debug app builds. Actual Linux Python-child tests cover large UTF-8 reply reconstruction, text revocation, relay overflow, no-avatar metadata, expression control after avatar availability, restart and disable, including transient permission changes and private backlog destruction. Focused-source tests retain multiple replies past the latest-result slot and retain speech events after entity removal. An initial parallel integration run hit an existing scene-worker admission timeout; the retained log records it. Subsequent complete suites passed; no permit leak or production-limit change was asserted.
+
+The current debug app rendered the isolated content-pack Extensions screen with VRM_READY and no schedule/resource panic. Picture and receipts: `stage4-evidence/lifecycle-*`, `waifu-lifecycle-extensions.png`. That image has no configured executable entry and does not prove runtime-row pointer interaction, native input or physical audio. No commit/push or credential/proxy changes.
+
+Next: explicit executable-package validation/install/configuration and startup binding to the runtime; attributed external notifications; owned event-hook fixture and persistent sample; Twitch replay before live account acceptance. The API remains an integration draft and the overall roadmap is incomplete.
+
+
+## Installed local integrations — 2026-10-20
+
+Explicit local-code installation now binds validated copied revisions to the app runtime. New installs are disabled without grants; accepted enabled state and still-requested grants survive explicit updates and app restarts. Content/executable trust-type changes are rejected. Separate stable data directories, compact saved permission controls, status/restart and an owned Python lifecycle-observer example are implemented. Capacity deferral avoids latching a startup failure while an old process terminates. General manifest-defined settings and credential references are still unfinished.
+
+Final serial offline all-target suite: **801 passed** (652 library, 134 app, 6 integration, 2 benchmark, 7 example tests), zero failures. Strict all-target Clippy, scoped rustfmt and whitespace checks passed. The final UI wording clarification was compiled and linted after the suite. The parallel run hit the previously observed scene connection-admission timeout; its failure log is retained, with no production-limit change or claimed repair. Debug app built.
+
+Actual offscreen Extensions rendering in an isolated profile showed the installed example process Running. The child wrote a target.changed receipt for the loaded avatar. This proves app startup binding, process/event delivery and rendered layout, not native pointer/dialog interaction, physical audio, live services or cross-platform execution. Linux-only supervision remains explicit. No provider calls, real-profile credential changes, commits or pushes.
+
+Next: manifest-defined typed configuration/credential references, owned one-shot event hooks, attributed external-message persistence and intake, then Twitch replay before live service acceptance. Current API remains a draft.
+
+
+## Typed integration settings checkpoint — 2026-10-20
+
+Implemented strict manifest-defined toggle/integer/text/choice settings with bounded schemas/defaults and plain value storage separate from grants. Content-only installs reject these executable settings. The store persists complete effective values with its existing atomic/rollback semantics and migrates compatible values against copied revisions; unknown, wrong-type, oversized and invalid-range values are rejected. New fields default compatibly for earlier indexes. Credential references remain unfinished; these values are not password storage.
+
+The Extensions page folds controls under Settings, keeps a draft until explicit Save, supports Reset defaults, and displays inline validation. Startup handshakes carry validated settings. Changed saved settings wait for old-process termination and launch a fresh session; equivalent saves do not restart code. Manual restarts retain configuration. Fixed the A → B → A while-stopping cache defect found during review. The lifecycle-observer example uses all four control types and records its actual startup settings.
+
+Final one-job low-priority offline all-target suite with one test thread: **819 tests passed** (670 library, 134 app, 6 integration, 2 benchmark, 7 example tests). Strict all-target Clippy, scoped rustfmt and diff whitespace passed; debug app built. Real-child regression covers typed settings received after disk reopen, changed and equivalent saves, fresh sessions, manual restart, disabled reopen, and reversal before termination. Earlier intermediate failure was an obsolete expected error-string assertion, corrected to match explicit integration installation; logs retained.
+
+Hooks remain rejected, not implemented. The reviewed design records bounded invocation queues, shared process admission, permanent payload reduction on revocation, lifecycle trigger grants, captured source/target identity, explicit expiry/failure and no automatic replay. Motion-completion source receipts are a prerequisite for useful animation hooks that await their own completion. Next: implement those receipts and the bounded one-shot hook path; credentials and attributed external message intake remain later work. No provider calls, real-profile changes, commits or pushes.
+
+Actual 1280×900 offscreen Settings capture shows all four typed controls with the installed integration Running. Its child startup receipt matches the configured toggle, choice, text and integer values. Native pointer/typing remains unverified. Receipts and source hashes: stage4-evidence/settings-*. No build or capture remains running.
+
+
+## Correlated motion results and Reply gesture example — 2026-10-20
+
+Owned one-shot requests now expose independent retained pending/completed/cancelled/failed receipts. The animation source records natural completion at its terminal frame, cancellation on replacement/manual control/stop/parking/drop, and failure on asynchronous import errors. Idle handoff cannot overwrite a terminal outcome. Only current/import receipt slots live in AnimationState; independently retained host records are capped at32 and released on disconnect.
+
+The draft motion.finished event requires captured target, registered motion ID, original action ID and terminal outcome. The host emits it once to the original active session/process under LifecycleObserve, preserving cancellations after target or control-grant loss and discarding unobserved/disconnected receipts. Newer requests cannot overwrite earlier terminal attribution. No-avatar runtime frames now reconcile and publish source cancellation rather than simply deleting the receipt.
+
+The owned Reply gesture Python integration includes one unchanged original upper-body nod with MIT attribution. Configured reply-finished or speech-started events request that registered motion only for the matching loaded source character. It waits for correlated terminal results, respects cooldown and host busy/manual/desktop ownership, and retains one latest-result file. It requests no reply text or provider key. The Extensions example menu offers both observer and gesture examples. This is a persistent event/action integration; manifest-launched one-shot process hooks remain rejected.
+
+Final serial offline all-target suite: **831 passed** (682 library,134 app,6 integration,2 benchmark,7 example tests). Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. An installed real Python process received a source reply event, requested the bundled motion through the supervised protocol, used actual asynchronous BVH import and the production animation plugin with virtual time, and received a completed terminal receipt. Headless source skeleton evidence is not native or visual playback acceptance. Other real-child/source tests cover all terminal outcomes, grant/target loss, same-file replacement, queue bounds and disconnect cleanup. No live provider/Twitch calls, real-profile changes, commits or pushes.
+
+Next: bounded manifest-launched hook invocations; emotion source events and attributed external-message persistence/intake; Twitch deterministic replay followed by live account acceptance. Motion source completion is now available for hook implementations to await; the overall roadmap remains incomplete.
+
+Actual isolated offscreen Reply gesture Settings capture shows its process Running, trigger dropdown and cooldown control with VRM_READY and no schedule/resource panic. No event was injected through this capture; event-to-motion execution is established separately by the real-child headless test. Native pointer/typing and visual gesture acceptance remain unverified. Receipts and source hashes: stage4-evidence/motion-events-* and reply-gesture.png. No build or capture remains running.
+
+Render review replaced raw trigger protocol names with Reply completed / Speech started in the sample settings. The actual installed-child event→motion→terminal test passed again against this final sample; refreshed render captured. Rust code is unchanged from the831-test and strict-Clippy snapshot.
+
+
+### One-shot hooks checkpoint — 2026-10-20
+
+848 offline all-target tests passed. Strict all-target Clippy passed after two test-only literal-unwrap fixes; scoped rustfmt and diff whitespace checks passed. Debug build and 1280×900 offscreen Extensions capture passed: enabled hooks show Waiting for events, folded permissions and compact settings. The capture is an isolated manual installation fixture, not native-input acceptance. Real installed Python handler / production motion playback tests separately prove nod terminal receipt and process-slot release.
+
+A subsequent runtime review identified that launching a queued invocation could overwrite an overflow status. A retained loss indicator is being added and requires renewed tests. Emotion transition events are the next slice. Twitch live integration, attributed external message delivery and native visual playback remain unfinished. No commit or push.
+
+
+### Emotion transitions and retained hook losses — final checkpoint
+
+860 offline all-target tests passed; strict all-target Clippy, scoped rustfmt, diff whitespace and final debug build passed. This supersedes the earlier pending-loss-fix checkpoint. The new public-frame overflow regression verifies losses remain visible after launch and Reset. Emotion wire/relay tests use actual Linux Python transport without an avatar and verify observation permission and permanent revoke/regrant purge. Source tests cover focused and scene ownership, same-label suppression, stale/failed result suppression, and scene configuration/cancellation neutral resets.
+
+Evidence/source hashes are archived as `stage4-evidence/emotion-*` in the task reports folder. The earlier hook capture remains layout evidence for the unchanged page, not a capture of native playback or this later source state. One-shot trigger choices remain reply/speech only; emotion metadata is available to persistent observers. Attributed external message delivery and Twitch replay/live remain unfinished. Nothing committed or pushed; no build remains running.
+
+
+### Attributed messages and offline Twitch replay checkpoint
+
+881 offline all-target tests passed, followed by one additional replay-control test (882 distinct passing tests). Strict all-target Clippy, scoped rustfmt, whitespace checks and debug build passed. The real installed Python replay uses the production runtime/motion plugin and an actual Store sink: one attributed external message persists, then the registered nod reports Completed. The binary sink separately proves no memory candidates/triage/generation, stale/busy rejection, and unconfirmed-write quarantine. Provider tests preserve local-only bytes and image placement with external envelopes.
+
+Review fixes cover stale UI overwrite after ambiguous commit, cancelled scene writers retaining exclusivity through actual termination, duplicate result suppression and target pinning. An isolated offscreen app run delivered the message through the actual binary adapter and accepted the nod. That still capture ended before a terminal nod receipt, so completion evidence is the separate runtime test. A second run with the replay disabled reopened the stored message and rendered External · Twitch replay at 1280×900. No native desktop-input, visual-motion quality, live Twitch, or render-frame write-latency claim. Receipts/source hashes and inspected image are archived as stage4-evidence/external-* in the task report folder. No commit or push.
+
+
+### Twitch receiver checkpoint — 2026-10-20
+
+Implemented private per-install credential definitions/storage/status/UI and the bundled receive-only native Twitch worker. Token identity/scopes, hourly validation, selected chat/subscription/cheer subscriptions, proxy-preserving observation transport, actual motion terminal correlation, reconnect draining and latched input failures are implemented. Saved secrets stay outside settings/index/handshakes; masked UI drafts do not read saved values back. Device sign-in/token refresh and real-account acceptance remain pending.
+
+Verification: full offline all-target suite passed 919 tests before the final dedup change. Updated reducer then passed all 15 dedicated tests (three additional tests, 922 distinct tested cases across these runs). Final strict all-target Clippy and scoped rustfmt/whitespace checks passed. Build/UI capture pending at this checkpoint. Local HTTP/WebSocket/proxy fixtures use fake credentials; the actual bundled launcher test verifies missing credentials fail before network startup. These are not live Twitch evidence.
+
+Review fixed duplicate/control reconnect drain handling, duplicate-based liveness, retained stdin overflow/read errors, and eviction replay. Dedup retains 256 IDs for330 seconds, including control envelopes; at capacity the worker stops explicitly rather than evicting or reconnecting. Busy-channel scalability remains limited. Process Restart resets this in-memory cache. No commit or push.
+
+Final checkpoint: debug binary built successfully; final targeted Twitch worker/reducer tests passed (see archived twitch-final-targeted.log). Rendered isolated 1280x900 Extensions overview and expanded credentials captures succeeded; expanded capture visually inspected. This is offscreen rendering, not native interaction or live Twitch acceptance. No build remains running.
+
+
+### Emotion one-shot hooks — 2026-10-20
+
+Manifest hooks now accept `emotion.changed` alongside reply/speech triggers, including all four unique handlers in one installation. Captures preserve the original character, focused/scene owner, labels and genuine optional reply correlation. Observation is required; no reply text or action target is added. Existing bounded process/queue/expiry/permission rules remain in force. Revoking observation permanently discards queued captures.
+
+The Extensions example menu includes an owned metadata-only Emotion hook. The actual package installs through ExtensionStore, binds through InstalledRuntime, starts a real copied Python handler, records original metadata and exits. Disablement prevents receipt changes and re-enablement waits for a fresh event. This is headless process evidence, not native input/visual-motion or live Twitch acceptance.
+
+925 offline all-target tests passed, followed by the added real installed-example test (926 distinct). Strict all-target Clippy passed before that new test; its targeted strict Clippy also passed. Scoped formatting/whitespace and normal debug build passed. UI capture/review pending. No commit or push. The overall roadmap remains active; live Twitch sign-in/account acceptance, broader mapping UI and streaming/distribution acceptance remain open.
+
+The isolated 1280x900 Emotion hook Extensions capture rendered and was visually inspected. A separate read-only source review found no actionable defects. Normal capture is a manually seeded disabled installation; actual installation/launch is proven separately by the real-child test. Native pointer/keyboard interaction remains unverified.
+
+800x900 narrow Extensions capture also rendered and was visually inspected: visible controls fit without horizontal clipping. No build/capture remains running.
+
+
+### Registered motion selectors — 2026-10-20
+
+Integration settings now support a generic registered-motion dropdown with human/pack labels, search, virtual rows, bounded/truncated controls, None and retained unavailable selections. The 193-byte ID validation matches MotionPlay; migration and unrelated saves preserve valid references without requiring current pack availability. Selecting never grants control or enables a pack. Twitch Alert gesture uses the selected ID, defaults to the original nod, and explicit None suppresses gesture requests without consuming cooldown or blocking messages.
+
+937 offline all-target tests passed, including four selector tests, schema/migration, Twitch selected/default/None/invalid/terminal behavior and persistence across disable/reopen. Strict all-target Clippy, scoped formatting/whitespace and debug build passed. Isolated normal1280x900 and narrow800x900 offscreen captures rendered and were visually inspected; controls fit. Fixture data is manually seeded without secrets; real store persistence is covered separately. No native-input/live Twitch acceptance, commit or push. Reply/hook-gesture sample selector follow-up is still in progress; this checkpoint's checks do not establish that slice.
+
+
+Final motion-selector checkpoint: both Reply gesture and Reply gesture hook packages now expose the same Gesture dropdown, retain original nod fallback when absent, and honor explicit None without action requests. Three actual subprocess test drivers cover default/custom/193-byte IDs, disabled/None behavior, invalid settings and terminal waiting. Final source/package snapshot passed **940 offline all-target tests**, final strict all-target Clippy, scoped rustfmt and whitespace checks. Original animation assets remain unchanged. Normal debug build and inspected normal/narrow captures are from the unchanged Rust production snapshot. Independent read-only reviews found no actionable defects. Evidence: stage4-evidence/motion-selector-*. No build/capture remains running; nothing committed or pushed. The full goal remains active: generic character/expression/event mappings and test actions, live account setup/acceptance, native streaming and platform acceptance remain outstanding.
+
+
+### Avatar expression selectors and Twitch pairing — 2026-10-20
+
+Integration schemas support exact avatar-expression selectors with None, retained unavailable values,128-byte/control/nonblank bounds and reserved blink/mouth/gaze exclusion. Expressions retain case/internal spaces. Extensions uses the loaded FacialState catalog with bounded searchable dropdowns. Choosing a value does not grant ownership.
+
+Twitch optionally applies a temporary expression at75% for2000ms before requesting the selected gesture. Message, expression and motion use distinct correlated ACK stages; motion waits for its actual terminal. One shared cooldown covers the reaction. Default expression is None, absent expression permission preserves the existing motion path, and target changes/rejection/timeouts clear the chain. Existing installations retain old grants without automatically gaining the new requested expression capability.
+
+954 offline all-target tests passed, covering schema/migration, dropdown interaction/search/bounds, saved names without an avatar, upgrade grant preservation, expression-only/both/neither, duplicate ACKs, target/cancellation/cooldown and noncelebrating messages. Strict all-target Clippy and scoped formatting passed. Normal build/UI capture pending at this checkpoint. No real Twitch calls or native visual reaction acceptance; no commit or push. Overall goal remains active.
+
+
+Final expression-selector checkpoint: normal debug build passed. Isolated1280x900 and800x900 offscreen captures loaded Hikari (VRM_READY), displayed the actual available happy expression beside the gesture dropdown, and were visually inspected with no horizontal clipping. Final help text was shortened to explain overlapping expression/gesture behavior; no Rust/behavior changes followed the954-test/Clippy snapshot. Captures use a manually seeded disabled Twitch installation with no credentials; they do not demonstrate live events, native input or visible expression/motion reaction. Source reviews found no further actionable defects. Evidence: stage4-evidence/expression-selector-*. No build or capture remains running. No commit/push. Live account setup, mapping test actions/character selection and broader streaming/platform acceptance remain open; the overall goal stays active.
+
+
+### Explicit saved-reaction test — 2026-10-20
+
+The Extensions card now offers Test reaction for packages declaring test_process. It runs saved settings in a fresh supervised child pinned to the loaded character, under existing permissions and the shared four-process budget. Stop, disable, reconfigure, permission loss and target change cancel it. The parent retains process status; process success does not establish visible playback. The owned Twitch tester uses no network, credentials or external messages.
+
+966 offline all-target tests passed, including actual bundled Python subprocess cases and installed-store/host expression ownership, completion and disable cleanup. Strict all-target Clippy, scoped rustfmt, whitespace checks and normal debug build passed. Whole-workspace cargo fmt is blocked by existing missing vendor example camera modules; scoped changed-source formatting passed. Independent read-only runtime review found no actionable defects. Evidence: stage4-evidence/reaction-test-{tests,clippy,build}.log. Native visual reaction, updated UI captures and live Twitch acceptance remain unverified. No commit or push.
+
+User clarified that “irtc” meant IRC chat, not a channel name. No channel or Twitch application ID is confirmed. Current Twitch implementation uses EventSub; an IRC chat option requires separate evaluation and must preserve proxy routing and third-party memory attribution. Overall goal remains active.
+
+
+Reaction-test capture follow-up: isolated 1280x900 and 800x900 Extensions captures rendered successfully and were visually inspected; visible controls fit without horizontal clipping. A focused 1280x900 Twitch-card fixture shows the Saved reaction row and correctly disabled Test reaction button for a disabled installation. Advanced capture shows saved expression/gesture selectors and empty credential status. These manually seeded offscreen fixtures do not establish enabled-button interaction or visible playback. Evidence: stage4-evidence/reaction-test-{ui,narrow,details,card}.{png,log}. Twitch official chat documentation (https://dev.twitch.tv/docs/chat) currently recommends EventSub/API and describes IRC as limited; retain EventSub while evaluating compatibility separately. No live account call or credential change.
+
+
+Enabled-test UI follow-up: isolated 800x900 fixture shows enabled Twitch, failed credential-free service, available Restart and enabled Test reaction, with no visible horizontal clipping. Worker has no credentials; this verifies independent test availability rendering, not a button click, playback or live service. Added docs/twitch-setup.md with source-checked account/scope binding and current limitations; marked design-history wire examples as nonauthoritative. Browser device-auth core implementation is now underway separately; no sign-in feature completion claimed.
+
+
+### Explicit Twitch device authorization and author guide — 2026-10-20
+
+Credentials now offers Connect with Twitch, explicit Open browser, transient authorization code/status and Cancel for the owned Twitch package. A registered public-client application ID is entered for each attempt; no client secret is used. Manual credential fallback remains. Saved event selection shares scope mapping with the receiver. Bounded HTTP workers retain existing environment proxy routing, prohibit redirects, cap responses at64KiB and use5s connect/8s request deadlines. Polling respects interval/slowdown/expiry; returned tokens are validated for application, user identity and required scopes before private persistence.
+
+Only one auth worker is admitted at a time, including cancellation/reaping. Pending results are pinned to the entire installed snapshot and credential revision. Store-owner writes use an atomic admission gate; cancellation before commit prevents saving, while a started write cannot be undone. Installation/configuration/credential changes discard pending work. Saving does not enable a package or grant host capabilities. Access/refresh tokens are stored together; automatic refresh is NOT implemented. Save-error status acknowledges uncertain persistence and refreshed credential status rather than falsely claiming nothing was saved. A late rejection for a cancelled write preserves the cancelled status.
+
+976 offline all-target tests passed. Subsequent command boxing/style and cancellation-status refinement passed33 final auth-focused tests. Final strict all-target Clippy, scoped rustfmt/whitespace and normal debug build passed. The six auth-core tests use local fake HTTP, covering pending/success/slowdown, denial/expiry, cancellation/late-token discard, URL/input/body bounds and validation identity/scope failures. Actual extension-store worker regression covers private once-only saving, unchanged enable/grants and cancellation. Source review found no remaining actionable auth issue. New docs/extension-authoring.md includes source-backed exact protocol examples; an actual Rust parser/validator regression checks every copyable JSONL record. Local links resolve.
+
+Isolated1280x900 and800x900 offscreen captures loaded Hikari and were visually inspected: Connect and manual credential controls fit without horizontal clipping. Fixtures contain no credentials; Connect is correctly disabled until an application ID is entered. Captures predate only the final cancellation-status refinement, which does not alter this idle layout. Neither native pointer interaction, visible challenge/consent interaction nor live Twitch authorization/event delivery is established. User explicitly requested continued offline work; do not start live authorization/account calls. Automatic refresh, recorded native event-to-reaction/capture acceptance and remaining roadmap gates stay open. No build/capture remains running. No commit or push; overall goal active.
+
+Evidence: stage4-evidence/twitch-sign-in-* and extension-authoring-tests.log; source hashes captured separately.
+
+
+### Host-owned Twitch refresh — 2026-10-20
+
+Device authorization now stores validated OAuth account/application/scopes and expiry metadata atomically with its access/refresh pair in the private credential file. Existing files load without metadata; manual value changes clear it and no-op saves retain it. Public status, handshakes and settings contain no metadata or tokens. OAuth metadata and values are bounded and validated together.
+
+For enabled Twitch installations with this metadata, the host schedules refresh within five minutes of expiry using the single global authorization slot. Preparation and commit both check the full installation snapshot and private credential revision. HTTP refresh is a single bounded grant with no retry after uncertain outcomes; returned account, application and required scopes must match. The rotating pair and new metadata are committed together. Cancelled workers retain admission until actual completion, and disable/removal/configuration/credential changes invalidate work. Automatic attempts are limited to once per credential revision per host session and at least60 seconds apart globally. The child remains receive-only and never refreshes/writes credentials.
+
+Successful saves restart the enabled receiver via ordinary credential reconciliation. This can create an event gap and resets the child’s in-memory duplicate cache; no uninterrupted/exactly-once cross-restart guarantee is made. Unknown grant or save outcomes can require fresh browser consent. Legacy/manual credentials without validated metadata are not automatically refreshed.
+
+989 offline all-target tests passed. A subsequent preparation-status label refinement passed43 final auth-focused tests and9 refresh-focused tests (overlapping filters; not additive). Final strict all-target Clippy, scoped rustfmt/whitespace and normal debug build passed. Core tests use local fake HTTP for rotation, expected-account/client/scope rejection, conservative expiry, cancellation/late-token discard and uncertain response/no-retry cases. Credential tests cover legacy compatibility, private metadata validation, atomic revision changes, no-op retention and manual invalidation. Controller tests use a bounded fake command channel to check enabled/due/revision/cooldown admission and stale snapshot cancellation; store persistence uses the actual worker separately. These are compositional offline receipts, not a full live refresh/reconnect recording.
+
+Read-only review found no blocking defect; its minor preparation-versus-saving label issue was corrected with a regression assertion. The suggested cancel-after-job-creation/before-prepare-receipt race deserves a dedicated controller harness follow-up. Existing normal/narrow sign-in captures cover unchanged idle UI markup; no new active refresh visual acceptance is claimed. User explicitly requested offline work. No live Twitch/account calls, commits or pushes. No build/capture remains running. Overall goal remains active.
+
+Evidence: stage4-evidence/twitch-refresh-*.log plus source hashes. Remaining service acceptance: live authorization/refresh/events, recorded visible integration reaction and native capture; broader motion/platform/streaming roadmap gates remain separate.
+
+
+### Refresh cancellation receipt race — 2026-10-20
+
+Added a controller regression with an actually live held auth worker: cancel before the prepared-job receipt arrives, retain global admission until worker completion, reject a second attempt while draining, and emit no credential-save command. The focused test and all807 library tests passed offline. Test helper has a hard two-second safety deadline and no network or credentials. No live authorization, commit or push.
+
+
+### Recorded offline extension reaction — 2026-10-20
+
+Added optional showcase extension_test plan entries that invoke the real installed-test runtime through saved grants/settings, with no direct motion/expression bypass. Plan validation rejects invalid identity/timeline and mixed manual/probe controls. Traces retain runtime status and motion/speech/camera observations; failures retain explicitly incomplete diagnostic traces. Seven showcase tests passed. Diagnostic capture supports5–30 FPS; production process deadlines are unchanged.
+
+Recorded85 frames at5 FPS with Hikari and a credential-free isolated profile: talking motion -> real child-triggered one-shot nod -> talking motion -> idle after reused narration ends. The child receipt is completed, the trace is successful, and the camera transform is constant across all85 observations. This is offscreen recording, not live Twitch, native input, speakers or streaming acceptance. Initial15 FPS captures at1280x900 and800x600 exceeded the wall-clock test deadline because screenshot throughput was slower than simulated animation time; logs retained. Representative frames were inspected; the final idle moves right toward the crop boundary, so framing and broad collision/animation acceptance remain open. Video: /run/media/subsect/toshiba/kimodo/waifu-motion-library/validation/extension-reaction-20261020/offline-reaction-5fps.mp4 (17s, reused narration).
+
+Strict all-target Clippy, scoped rustfmt and whitespace checks passed. Debug build passed. Read-only review found no actionable issue in runtime admission or cancellation regression. Final all-target tests are recorded separately below. No commit/push; no live authorization/account/provider calls. Overall goal remains active. Evidence: reports/stage4-evidence/extension-reaction-* and waifu-extension-recording-* logs.
+
+Final checkpoint: 994 offline all-target tests passed; strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. No build or capture remains running. No commit/push.
+
+
+### Configurable lifecycle reaction hook — 2026-10-20
+
+Added the owned Configurable reaction hook example to Install example. One card now selects a lifecycle event (completed reply, speech started/stopped, emotion changed), character, registered gesture and optional temporary expression. The Character setting is a bounded plain string: empty follows the captured loaded target, otherwise it requires a canonical lowercase hyphenated nonnil UUID. Search lists library names/UUIDs; temporarily missing identities remain saved. This is a handler filter, not an authorization grant, avatar switch or alternate action target. Settings preserve draft/save semantics and existing permissions.
+
+The Python handler uses the normal provisional API1, bounded local JSONL, host-issued session/incarnation/target identities and exact action correlation. Unselected events, nonmatching source characters, failed/cancelled replies and disabled mappings request no action. Expressions overlap one-shot gestures after expression acceptance; motion acceptance alone does not complete the invocation. A saved-reaction test uses the same handler with --test, saved settings and current grants while retaining the character filter. No private reply access, provider calls, credentials or network are used. All four declared triggers launch bounded children, including unselected triggers that exit without actions; this is not dynamic host subscription filtering.
+
+1009 offline all-target tests passed. New unit/store tests cover UUID schema/type bounds, compatibility migration, invalid-save atomicity and restart retention. Subprocess tests cover filters, malformed settings, None choices, host identities and correlated motion completion. Actual installed-runtime tests demonstrate an unselected reply event producing no expression, a selected speech-start event applying and releasing the saved expression, and manual preview honoring a changed character filter after reconciliation. Tests do not establish live speech/provider delivery.
+
+Offscreen1280x900 and800x900 screenshots loaded Hikari and were visually inspected. The first render exposed a redundant control-side note squeezing Character into a one-letter column; it was removed, and both repeated captures show readable compact rows without horizontal clipping. Before-fix artifacts are retained. Fixtures explicitly seed a credential-free profile; actual package installation is verified separately by Rust tests. No native pointer interaction or live account acceptance is claimed.
+
+Normal debug build, scoped rustfmt and whitespace checks passed. Read-only review found no actionable protocol/selector issue. Clippy receipt follows separately. Evidence: reports/stage4-evidence/configurable-hook-* and waifu-configurable-hook-* / waifu-character-setting-*; captures: /run/media/subsect/toshiba/kimodo/waifu-motion-library/validation/configurable-hook-20261020/. No commits/pushes; overall goal remains active.
+
+Final configurable-hook checkpoint: strict offline all-target Clippy passed with warnings denied; scoped rustfmt and whitespace checks passed.1009 all-target tests and debug build passed. No build or GPU capture remains running. No commit/push. Native interaction, real service acceptance, capture/streaming, motion approval, pacing, Discord and platform verification remain separate open roadmap gates.
+
+
+### Opt-in replies to attributed incoming messages — 2026-10-21
+
+The earlier delivery path only saved attributed context. Added a host-owned per-character Reply to incoming messages switch on the Extensions page. It defaults off in legacy/default scenes, does not inherit to a legacy character without saved settings, and resets off for newly imported characters. Other inherited scene preferences are preserved; stored opt-in restores only with its character. Packs/presets cannot supply this host policy. The control is disabled without a selected character.
+
+After successful delivery and exact target/scene-writer checks, opted-in host delivery can start an ordinary reply from the latest attributed external turn. It appends no authored-user turn, does not consume composer/attachments or semantic retrieval, skips user evidence intake/triage and raw-message appraisal, and uses existing read-only lexical recall plus configured provider/speech/affect/completion paths. Provider projection still quotes external metadata/text as third-party data. A global ten-second running-app cooldown prevents character switching from bypassing the incoming-reply rate boundary. One focused generation remains active; no new backlog or automatic retry is introduced. Twitch's existing bounded intake/backpressure still applies, and all delivered external context (including alerts) follows the same opt-in.
+
+Delivery and generation have separate outcomes: after context persistence succeeds, a busy/loading/provider/cooldown reply failure leaves the delivery accepted and saved, with a fixed notice. Disabled/grantless integrations still cannot deliver. No new provider credentials, direct-OpenAI path or integration-specific generation shortcut was added. Permissions help now correctly describes available attributed delivery.
+
+1017 all-target tests passed with Cargo offline and test threads serialized. Eight focused external-boundary tests passed. New loopback production-provider tests retain external ID/origin/text, omit drafts and attachments, preserve facts/triage, exercise ordinary reply completion/lifecycle, reject stale/nonlatest/quarantined/invalid-provider starts, and cover cooldown after cancel and cross-character attempts. Data tests cover default/migration, character switching, persistence and fresh imports. An initial glTF fixture omitted required scene nodes; it was corrected before the passing full run. Strict all-target Clippy, scoped rustfmt/whitespace and debug build passed. Native live-model/voice/Twitch acceptance remains untested.
+
+Evidence correction: the first failed negative provider fixture inherited a pinned gateway route, so changing base_url did not force synchronous invalid-URL rejection; a gateway request using synthetic fixture text may have been attempted. That run is not offline transport evidence. The corrected fixture replaces the complete route/configuration; passing focused tests use explicit loopback or invalid local/custom routes. Earlier offscreen captures also did not exclude incidental chat-model catalog discovery, so their blanket no-provider-call statements were too broad. Main now disables chat-model discovery before offscreen UI execution; both lookup entry points and a regression enforce this. Independent lookups on other screens and arbitrary extension networking remain separate. No credentials were displayed or modified. See stage4-evidence/external-reply-evidence-caveat.md.
+
+Current final UI captures use a credential-free isolated profile with explicit fixture opt-in, local-only provider configurations, owned nonnetworked hooks and chat-model discovery disabled. Screenshots prove layout only, not native pointer or actual delivery acceptance. Final visual receipt follows. No commit/push; overall goal remains active. Remaining native capture, real service/account, motion quality/pacing, Discord and platform gates remain open.
+
+Final incoming-reply receipt:1280x900 and800x900 captures were visually inspected; the incoming-message row is readable with no horizontal clipping.1017 tests, strict all-target Clippy, scoped rustfmt/whitespace and debug build passed. No build/capture remains running. No commits/pushes. Evidence corrections above remain applicable; live service/model/voice and native interaction are not established.
+
+
+### Bounded Twitch notification backlog — 2026-10-22
+
+Source inspection distinguished the existing32-record host-input transport queue from the missing pending-notification backlog: the native receiver previously discarded notifications whenever an action was pending. The receiver now retains FIFO notifications pinned to the captured loaded target, up to16 waiting/in-flight texts of4096 bytes each. Original notification expiry is15 seconds, including in-flight delivery; queue overflow, stale targets and expiry are reported without logging message contents. Target changes discard the queue and in-flight delivery instead of retargeting.
+
+Only a correlated explicit Busy refusal of message.deliver can retry, with at least1 second backoff, at most3 total attempts and the original expiry retained. Busy is a pre-commit refusal in the host delivery path. Acceptance, uncertain/missing results, other errors, timeouts, EOF/disconnect and expression/motion refusals are never replayed. Earlier/duplicate ACKs cannot advance a retry incarnation. Host-result handling checks expiration before consuming an ACK, so late results cannot revive expired work or start a gesture. The real worker loop dispatches waiting work after polling host input, independently of the UI.
+
+This is a short receiver backlog, not an AI-reply queue or a delivery guarantee. Accepted context can still produce no reply because of host opt-in, busy/loading/configuration/cooldown admission. Existing process restart event gaps and in-memory dedup limits remain. Earlier references to bounded intake did not prove pending notification retention; this change supplies that specific boundary.
+
+1021 all-target tests passed with Cargo offline and one test thread, including21 Twitch-worker cases. Four new regressions cover FIFO/capacity/text bounds/expiry, Busy backoff and retry exhaustion, late ACK/no uncertain replay, target-generation discard, expression Busy exclusion and result-consumption deadline ordering. Existing fake HTTP and WebSocket fixtures remain local; no live Twitch/account acceptance is established. Initial read-only queue review found no actionable issue; parent follow-up added the late-result deadline guard with its own regression. Strict all-target Clippy with warnings denied, scoped rustfmt/whitespace and debug build passed. UI/rendering code did not change in this checkpoint; no new UI/native acceptance is claimed. No build/capture remains running. No commit/push. Overall goal remains active; broader service, motion, pacing, capture, Discord and platform gates remain open.
+
+Evidence: stage4-evidence/twitch-queue-source-sha256.json and waifu-twitch-queue-*.log.
+
+
+### Read-only extension author check — 2026-10-22
+
+Added waifu-studio --check-extension FOLDER, used alone as the first option. It runs before ProjectDirs/app-data discovery, startup credentials, provider discovery, GPU/window creation and child execution. It selects the existing strict content/integration manifest validators through a shared read-only check_pack entry point, preserving bounded JSON reads, supported versions/capabilities, settings and declared content/process/test/hook path checks. Output uses fixed labels and counts, not credential values or arbitrary manifest names/descriptions. No pack is installed, enabled or granted permissions. Mixed modes (including the internal Twitch worker mode) are rejected before startup.
+
+This is deliberately a manifest/declared-path check, not full installation or asset/runtime approval. The installer still checks the whole copied folder and its own symlink/size policy and revalidates the destination. The check does not decode/render every asset or execute/test a handler. Files can change afterward. Author and content-pack guides describe these boundaries.
+
+Three real-binary regressions passed: owned content/persistent/hook examples validate without app-data creation; a declared executable sentinel is never run and the manifest remains unchanged; malformed capabilities, missing folders/assets and combined options fail without entering app or worker startup. A standalone command receipt validates the actual Configurable reaction hook manifest (API1, one content entry, four hooks, five settings, zero credential fields).
+
+1024 all-target tests passed, plus strict all-target Clippy with warnings denied, scoped rustfmt/whitespace and debug build. The first full-suite attempt under the newly restricted sandbox had74 failures including denied loopback/Unix sockets and FIFO creation. No application fix was inferred from those denials; scoped execution access was granted for existing local fixtures, and the full serialized rerun passed. The new CLI tests passed within the restricted sandbox as well. No live service/account or new native visual acceptance was performed. No commits/pushes; no build/capture remains running. Overall goal remains active; broader motion/pacing/capture, live Twitch, Discord and platform checkpoints remain open.
+
+Evidence: stage4-evidence/extension-check-source-sha256.json and waifu-extension-check-*.log.
+
+
+### Structured incoming chat chunks — 2026-10-22
+
+Twitch Chat intake now offers Chunks (default) or Direct. Chunks uses structured chat.offer admission without a delivered event; alerts retain immediate delivery/reaction. Exact source message IDs, author IDs/names and raw text remain attributed external data. The bounded buffer groups whole same-source messages after four seconds or at capacity, up to16 pending and4096 encoded JSON bytes per chunk. Original15-second expiry and256-ID/60-second dedup remain bounded. Only explicit pre-commit Busy can restore originals; uncertain saves never replay. Target, source generation, settings/grants and credential revisions invalidate outstanding chunks, including transient grant revocation. Invalid chat is isolated without terminating the Twitch worker.
+
+This checkpoint implements FIFO grouping only. The configured decision-model picker (zero to two offered IDs, no generated quotes) remains pending; no Jev ranking or selection-quality claim is made.
+
+1040 all-target tests passed in the preceding serialized offline run. A subsequent derived-Default cleanup passed all nine focused incoming-chat tests, strict all-target Clippy and debug build. Scoped formatting and whitespace passed. Normal and800x900 captures were inspected and show the Chunks dropdown without horizontal clipping. These are layout-only captures from a disabled, uncredentialed local fixture whose copied manifest omits credential controls to expose the settings section; they do not prove full Twitch UI interaction or live service behavior. No live model/Twitch calls were used for this checkpoint. No commit/push; capture and build processes have finished.
+
+Evidence: stage4-evidence/chat-chunks-source-sha256.json, waifu-chat-chunks-*.log, waifu-chat-chunk-final-focused-tests.log and chat-chunks-{normal,narrow}.png. Earlier historical network caveats remain recorded separately.
+
+
+### Installed extension card simplification — 2026-10-22
+
+Unified content/integration enablement onto the shared switch, preserving busy/error/runtime admission and stop/enable behavior. Main view retains status, errors, descriptions, content and everyday settings; settings open by default. Process restart/hook reset, saved-reaction tests, permission grants, provenance, package/version, diagnostics and removal remain available under Advanced. No permissions or credentials are automatically granted. All14 existing extension-page tests passed, debug build and whitespace checks passed.1100x900 and800x900 captures were inspected: right-aligned controls remain inside the content column and long content scrolls vertically. Layout-only isolated fixture, with disabled/uncredentialed Twitch and credentials omitted from its copied manifest; no live/native service acceptance. No commits/pushes. Full extension roadmap and decision picker remain open. Evidence: stage4-evidence/waifu-compact-extensions-v2* and waifu-compact-extension-controls-tests.log.
+
+
+### Optional decision-model chat highlights — 2026-10-22
+
+The host now connects chunked incoming chat to an optional decision picker using library.decision and the existing credential-loading path. Extensions → Incoming messages exposes Pick chat highlights (default off), conditional on incoming-reply opt-in, plus the existing searchable decision-model dropdown. Direct delivery remains immediate and bypasses this picker. No provider keys are sent to child integrations.
+
+Each request contains bounded exact attributed originals and two choice questions. Choices are mapped from offered opaque slots to original source IDs; unknown, duplicate, malformed and inconsistent selections fail closed. Zero choices produces no turn; one/two choices retain exact text, author/source metadata and original arrival order. No generated summaries or quotes are persisted. Selection errors discard the chunk with a generic notice, never silently reverting to answer-all. Explicit pre-commit Busy retains a ready selection without re-querying; uncertain saves never replay.
+
+Selection uses a bounded cancellable worker (at most two including closing requests), ten-second transport/job deadlines and the existing fifteen-second original TTL. Before dispatch the host rechecks target/source authority, permissions/incarnation and credential revision through cancellation tickets, reply/picker opt-in, decision configuration, and original expiry. Disabled sources and cancelled replies invalidate outstanding work before the empty-runtime early return. Shared bounded evaluation transport was extracted from recipient selection; existing recipient wire tests still pass.
+
+1046 all-target tests passed offline, including four new decision tests, one chunk selection/expiry test, one host invalidation test and expanded exact-selected-delivery/no-replay coverage. After a final cancellation guard/error-label cleanup, six focused shared/chat decision tests passed; the local-wire test was then strengthened to exercise the actual worker and all four chat-decision tests passed again. These focused counts overlap the full suite. Strict all-target Clippy, debug build, scoped formatting and whitespace passed. All model-wire checks use local fake HTTP and synthetic messages. No live provider/Twitch requests or account authentication were used for this checkpoint; real selection quality is not measured. No commits/pushes. The larger extension/motion/streaming/platform goal remains open.
+
+Evidence: stage4-evidence/chat-picker-source-sha256.json and waifu-chat-picker-*.log. Layout capture receipts follow; fixture warnings are expected because credentials/catalog access are deliberately unavailable.
+
+
+### Reviewed chat-selection expiry and extension readiness — 2026-10-22
+
+Read-only reviewer Rawls identified partial-expiry loss: pruning the offered set before validating a worker result could reject an expired selected ID and discard another still-live selected original. Reconciliation now observes liveness without mutating the offered set. Selection validation precedes expiry filtering, and ready selections are re-filtered before saving after Busy waits. A staggered-arrival regression and expanded exact-save/no-replay assertions cover both boundaries. Reviewer follow-up confirms the finding is addressed, with no concrete regression in this specific change; source-only review is not live/runtime acceptance.
+
+1047 all-target offline tests passed, followed by strict all-target Clippy, scoped formatting/whitespace and debug build. No new visual capture was needed for this host-only fix; earlier captures remain layout evidence only. No live provider/Twitch calls, commits or pushes. No build remains running.
+
+Updated current content/Twitch author guides to the Add menu, enable switches and Advanced permissions/restart/tests. Saved extension-readiness.md with a source/acceptance matrix: three architectural layers implemented, Linux-only execution, correlated motion receipts rather than general motion hooks, and explicit outstanding live/native/platform/streaming/Discord and quality gates. The full goal remains active.
+
+Evidence: stage4-evidence/chat-picker-reviewed-source-sha256.json, chat-picker-source-review.md and waifu-chat-picker-reviewed-*.log (plus focused expiry log).
+
+
+### Native Vulkan/X11 startup guard and recording boundary — 2026-10-22
+
+A local window-only recording attempt exposed a real startup crash: NVIDIA Vulkan/X11 reported supported alpha modes [Opaque], while primary_window requested PreMultiplied unconditionally. The app panicked in surface configuration before model load. The final fix uses actual RawHandleWrapper Xlib/Xcb identity plus actual RenderAdapterInfo Vulkan identity on Linux, in main-world Last before extraction/configuration. It selects Auto there, returns Desktop to Studio and displays the build limitation. Native Wayland and other backends remain unchanged. This explicitly treats Vulkan/X11 transparent Desktop as unsupported in this build; it does not infer transparency support on untested hardware. The direct wgpu29 dependency reuses the already locked renderer version; no vendored engine code changed.
+
+An initial generic temporary-surface probe avoided the X11 panic but a Wayland capture stalled after saving. That implementation was removed entirely. It is not the final fix or clean-exit evidence. A read-only reviewer confirmed ordering/specificity in the replacement, with no concrete finding. No unsafe handle access, extra GPU surfaces, RenderApp probe systems, caches or atomics remain.
+
+Final isolated native tests: Wayland saved Hikari's transparent735x1120 frame and exited0 in7.22 seconds;823200 alpha samples span0–255 with90.1444% fully transparent. X11 saved an inspected Studio fallback frame with the explanation visible and exited0 in7.83 seconds. Both used a temporary local-only profile, disabled Twitch and no credentials/replies. Ordinary system/user settings were not changed. All owned fixture processes are stopped.
+
+The FFmpeg X11 window-only attempt produced zero video frames with XGetImage BadMatch/permission errors, despite exit0. Its receipt is explicitly corrected to capture_success=false; no recording acceptance is claimed. No root/monitor capture or other app recording was attempted. Practical native Wayland recording still needs user-approved window selection in the screen-sharing portal, followed by actual audio/lip-sync and recovery review. docs/streaming-capture.md documents the current support and checklist; README links the author/user guides. Remaining current menu references now match Add/Advanced and enable switches.
+
+1048 all-target offline tests passed, plus strict all-target Clippy, debug build, scoped formatting and whitespace. No live provider/Twitch calls, commits or pushes. No build/capture remains running. The broader goal stays active, including compositor/OBS video/audio, live Twitch/model quality, motion, pacing, Discord and platform acceptance.
+
+Evidence: stage4-evidence/native-alpha-backends/ contains original crash logs, failed recording receipt, removed-probe limitation, source review, final native frames/clean-exit receipts/alpha histogram, source hashes and test/lint/build logs.
+
+
+### Connections and Voice clarity; local presets/session isolation — 2026-10-22
+
+Connections now has one ordinary provider/model/creativity selector location. Advanced retains exact IDs, refresh, endpoints and routing rather than repeating ordinary selectors/sliders. Voice service/read-aloud/model/speed controls are not duplicated in speech tuning; the everyday voice/reference-ID field is on the ordinary Voice card. Keys reports each feature independently with saved/session/OIDC sources, using Loaded/Not loaded rather than claiming a verified connection. Local services can work without keys. Manage requests opening/scrolling to the existing Advanced section without exposing any key value.
+
+Two functional issues were found during the cleanup. Simple microphone model discovery passed an empty session key; it now passes ListeningState.session_key. New Custom/local selections previously installed direct hosted OpenAI speech/transcription URLs despite their labels. Those compatible-wire presets now use localhost8000 endpoints with no hosted key environment variable; Vercel/OpenRouter choices retain their routes and explicit saved endpoint/key fields remain unchanged. Both transcription service selectors now use change_service: cancel/discard the previous operation, clear its provider-scoped session key, then configure the new route while retaining microphone/VAD preferences. This prevents forwarding an old service's session credential to the newly selected service.
+
+1050 all-target offline tests passed, including two new preset/credential-isolation/explicit-profile preservation regressions. A subsequent unused-import/documentation cleanup passed strict all-target Clippy and debug build; scoped formatting and whitespace passed. Read-only reviewer found no concrete regression in the scoped change. Normal1100x900 and narrow800x900 Connections/Voice captures completed and were inspected without horizontal overflow. These are layout-only, uncredentialed local-only fixtures; catalog warnings and Not loaded statuses are expected. No model/voice/microphone requests, live provider/account acceptance or native Manage-click acceptance is claimed. No commits/pushes; no build/capture remains running.
+
+Evidence: stage4-evidence/simple-connections/ contains source hashes, review disposition, full-suite/lint/build logs and four layout captures. docs/connection-settings.md explains everyday/Advanced controls, saved/session status and local routing. Broader whole-app UI, service, motion, capture, Discord and platform acceptance remain open.
+
+
+### Everyday voice browser and focused microphone tuning — 2026-10-22
+
+Moved Browse Fish voices from the long Advanced section to a folded Voice library card immediately after the ordinary Voice card and before Microphone. Searches now happen only on explicit Search/Enter/pagination actions; opening the browser no longer triggers the prior automatic fetch. Public/My voices and title remain primary; tag/language/sort/page-size controls are under More filters. Selected labels are truncated within the existing control width. Removed duplicate microphone enable/autosend/service/model dropdowns from Advanced; endpoint/exact-ID, key, language, VAD/silence and manual diagnostics remain there. Ordinary controls keep their existing behavior.
+
+Source review also exposed retained voice results across credential changes. VoiceLibraryState now records an in-memory connection fingerprint (library/speech endpoint, key source, adapter and effective credential), clears cached/unapplied choices and cancels pending work on change. UI reconciles before poll/selection and fetch reconciles before admission. Old workers retain their slot until they close; queued stale responses cannot repopulate the chooser. Only the fingerprint is retained in state; no new credential persistence or environment mutation.
+
+1051 all-target offline tests passed, including a new channel-based account/endpoint stale-result regression. After the final layout-only move beside Voice, all173 binary/UI tests passed again (overlapping, not an additional full-suite count). Strict all-target Clippy, debug build, scoped formatting and whitespace passed. Read-only reviewer found no concrete regression. Normal1100x900 and narrow800x900 captures of the browser entry were inspected without horizontal overflow. Open/populated browser and native pointer/search acceptance remain unverified; fixtures are uncredentialed and local-only, and no library search/model/voice/microphone action was triggered during rendering. No live account/provider calls, commits or pushes. No build/capture remains running.
+
+README/connection guide now point to the normal browser location and reflect the pre-existing new-profile auto-send default accurately; this checkpoint did not change that default. The broader extension/service/motion/capture/platform goal remains active.
+
+Evidence: stage4-evidence/voice-browser/ contains full/final-focused tests, lint/build receipts, source review/hashes and two normal-window layout captures.
+
+
+### One session-key manager — 2026-10-22
+
+Connections → Keys → Manage now reaches four masked, service-labelled memory-only overrides together at the beginning of Advanced: selected chat connection, decision model, voice and microphone. Removed their duplicate editors from deeper connection/speech/microphone controls; expert endpoint/key-environment settings remain. Voice and transcription service rows point users to Connections for keys. Existing credential fields, saved/environment fallback and serialization exclusions remain unchanged; no runtime environment mutation, secret copying between features or new persistence path was introduced.
+
+A new headless Egui user-input regression clicks and types distinct synthetic keys into all four visible fields, verifies correct feature routing, checks that no raw key is painted and saves the library to verify no session value appears on disk or in microphone configuration JSON.1052 all-target offline tests passed. After a semantic-neutral Clippy control-flow cleanup the input regression passed again; strict all-target Clippy, debug build, scoped formatting and whitespace passed. Read-only reviewer found no concrete regression.1100x900 and800x900 expanded-panel captures were inspected; all four fields fit without horizontal overflow. Empty-field, uncredentialed local-only fixture; no native Manage-click or live-provider acceptance claimed. No live calls, commits or pushes; no build/capture remains running.
+
+Evidence: stage4-evidence/session-manager/ contains source hashes/review, full/final-focused tests, lint/build and two expanded-panel captures. Updated docs/connection-settings.md describes the single session override location. Broader UI/extension/native/live/platform gates remain open; the goal remains active.
+
+
+### Isolated extension restart pressure — 2026-10-22
+
+Added a test-only lifecycle regression covering 20 restart/disable/remove cycles and 40 real local Python process incarnations. It exercises host expression requests, avatar-generation changes, temporary grant revocation, private queued reply disposal and fresh-session isolation. PID plus process-start identity confirms old incarnations terminate; controller contributions and queues are reclaimed. The focused isolated run returned file descriptors 4 → 7 → 4 and threads 2 → 3 → 2. These are bounded test observations, not native speech/GPU long-session or performance acceptance.
+
+A source reviewer identified parallel-test interference in process-wide resource counts. The final test re-executes its exact test path in an isolated single-threaded harness, requires a scenario metric marker and successful exit, and enforces a 75-second parent timeout. Re-review found the issue addressed with no further concrete finding. The isolated scenario also passed alongside ten other concurrent extension-runtime tests. Final all-target offline suite: 1,053 tests passed; strict all-target Clippy passed. Production runtime code was unchanged in this checkpoint; no additional native capture or production build was needed.
+
+Evidence: reports/stage4-evidence/lifecycle-stress/ contains final full-suite, lint, isolated and parallel logs and source hashes. No live calls, commits or pushes. Native recording/audio, live Twitch/model quality, whole-app UI, motion, pacing and platform gates remain open. The goal remains active.
+
+
+### Independent character-selection lifecycle — 2026-10-22
+
+Implemented character.selected source metadata with previous/new nullable UUIDs and a positive monotonic application-run selection revision. Actual host selection, removal and final import paths record changes after old-source cancellation; no-op selection emits no event while existing same-selection reload/cancellation behavior remains. Selection is independent of avatar loading, and target.changed retains loaded-avatar action authority. Speech decoder termination may follow selection; no synthetic stopped receipt is invented.
+
+Selection hooks retain only lifecycle.observe and a permanently null action target even when installations have broader grants. New revisions supersede queued/running older selection handlers; ordinary avatar availability changes do not retarget the metadata handler. Persistent observation retains ordered source events. Added the metadata-only Python selection-observer example, installable from Add → Examples, plus readable trigger labels and updated author documentation. Its latest-event receipt is not a durable complete event log.
+
+Review found and fixed first content-pack character import suppressing None→id notification. New regressions cover source/cancellation order, rapid switches/no-op/import/removal, positive revision/wire validation, queue expiry/overflow/revocation, real-child authority restrictions and cancellation, and installed observer latest-only/null-target/restart/reenable behavior. Final all-target offline suite passed 1,063 tests, including the real installed observer and twelve subprocess cases in one script regression. Strict all-target Clippy, debug build, scoped rustfmt, whitespace and final --check-extension for the bundled package passed. Two semantic-neutral test fixture lint cleanups followed the full suite. Initial sandbox loopback denials and malformed glTF fixtures were corrected before the final suite; they are not accepted failures.
+
+Evidence: stage4-evidence/character-selection/ contains final test/lint/build/package receipts, source hashes and review disposition. No live provider/account calls, commits or pushes. No build/capture is running. Native menu/selection interaction, app/extension lifecycle events, general motion hooks and the broader motion/pacing/capture/service/platform gates remain open; goal stays active.
+
+
+### Local app-ready lifecycle — 2026-10-22
+
+Added app.ready with a nonnil app_run_id, emitted once after initial local extension loading has settled and installed bindings are reconciled, before source-journal drain. It represents local host initialization, not avatar, provider, account or every-extension success. A sticky initial-load completion signal prevents later OAuth/install busy work from delaying readiness. Initial error, worker-start failure and receiver failure settle the same boundary.
+
+Ready hooks are observation-only, permanently targetless and independent of selection/avatar availability. Existing queue/expiry/process bounds remain; no historical ready event is replayed after late installation, enablement or restart. Added Startup observer under Add → Examples with a metadata-only Python handler and author documentation. It records only app_run_id metadata; it is not a durable startup task. The four-hook-per-package bound is unchanged.
+
+Final offline all-target suite passed 1,074 tests, including source/initial-load-vs-OAuth-busy failures, wire/relay/permission/queue checks, installed real-child startup delivery, late-install non-replay and fifteen subprocess cases in one script regression. Strict all-target Clippy, debug build, scoped rustfmt, whitespace and final bundled-package --check-extension passed. Formatting and semantic-neutral cloned-test-slice lint cleanups followed the full suite; production behavior was unchanged by those cleanups. Read-only review found the busy-state issue, confirmed its fix and identified no further concrete defect.
+
+Shutdown remains a separate implementation gap. The current immediate-kill supervisor cannot prove delivery merely by queuing a stopping event. Saved and source-reviewed extension-shutdown-contract.md: quiesce authority, preserve partial JSONL framing without flushing revoked private bytes, enforce one shared grace/cleanup deadline and signal every survivor before receipt waits. No graceful stopping or extension-started/stopping implementation is claimed.
+
+Evidence: stage4-evidence/app-ready/ contains final test/lint/build/package logs, source hashes, source review and shutdown-design disposition. No live provider/account calls, commits or pushes. No build/capture is running. Native menu/startup acceptance, app stopping, extension lifecycle, general motion hooks and broader motion/pacing/capture/service/platform gates remain open. Goal remains active.
+
+
+### Bounded graceful app shutdown and JavaScript plugin example — 2026-10-22
+
+Implemented a distinct sticky quiescence transition: begin_shutdown cancels extension-owned controller contributions while the world is live, rejects already admitted actions and cannot be reversed by runtime clones, restart, grants, hooks or later frames. Main wires a CPU Last exit system and keeps transport waiting in its existing post-run retained-runtime path. Calling shutdown alone is transport teardown, not proof of cancellation of controllers held by a live embedding caller.
+
+app.stopping carries the retained source app_run_id only to eligible existing persistent observers with lifecycle observation and a fully written handshake. It is not a manifest hook and starts no replacement handler. One grace interval of at most100ms stays inside the supplied total deadline; main retains its two-second total. Untouched staged/queued input is discarded, while partial prior JSONL forces termination rather than completing revoked private data or splicing records. At cutoff all survivors are signalled before any receipt wait. Protocol/overflow/explicit-stop immediate termination remains. No synthetic app-ready identity is invented. Notification admission is not delivery proof; terminal supervisor receipts remain authoritative for process exit.
+
+Added a dependency-free Node.js lifecycle observer under Add → Examples. The installed real runtime test explicitly executed Node v26.8.1, observed startup, received the stopping receipt and exited with no avatar actions or provider requests. Eleven additional raw Node smoke cases covered malformed/session/authority/private-text handling, fragmented records, oversized input and invalid UTF-8. Node runtime checks are optional on development machines without the interpreter; this host executed the check and did not skip it.
+
+1,085 all-target offline tests passed, including real owned-expression cancellation, stale ticket rejection, shared four-child/zero-deadline cleanup, queued private input purge, partial framing, blocked stdin, floods/held descendant pipes and CPU exit-system scheduling. Strict all-target Clippy, debug build, scoped rustfmt, whitespace and final JavaScript package --check-extension passed. After the full suite, the non-short-circuit reap fold was rewritten as an explicit all-child loop for Clippy; all four shutdown regressions passed again on that final source. Read-only transport/runtime review found no concrete defect; review also established the required live-controller cancellation boundary.
+
+Evidence: stage4-evidence/graceful-shutdown/ contains full/focused/transport/actual-JavaScript logs, lint/build/package receipts, source hashes and review dispositions. No live provider/account calls, commits or pushes; no build/capture remains running. Native exit/menu acceptance, extension-started/stopping and disable/remove/restart notifications, general motion hooks and the broader service/motion/pacing/capture/platform gates remain open. Goal remains active.
+
+
+### Actual integration-process start lifecycle — 2026-10-22
+
+Implemented extension.started with source installation_id, session_id and process_generation, backed by an OS-spawn receipt retained independently of bounded stdout/event delivery. Failed OS spawn produces no event; a genuinely launched child that exits quickly or floods output retains its evidence. Collection occurs before incarnation replacement/removal as well as ordinary polling. A fixed32-record observation buffer transfers original identities into the host-owned LifecycleJournal, preserving its sequence ownership and reporting overflow explicitly as source loss.
+
+Only persistent integration incarnations produce this event; one-shot handlers and manual test children are excluded at source to prevent recursive hook spawning. Startup hooks retain observation-only grants and a null target. Subscription timestamps/floors reject starts predating registration, reset or observation regrant, including delayed receipt delivery. Restarting a persistent integration creates a new session/generation; no host action target is inferred from either source UUID. Added Integration startup observer under Add → Examples and documented the copyable wire event. Its latest-event file is not a durable audit log or a service readiness claim.
+
+Read-only review found two issues and confirmed their fixes: stale subscription boundaries after restart/regrant, and constructor handshake failure discarding a real fast spawn/exit receipt. A stopped coordinator now retains evidence without falsely reporting Running. Source, wire, metadata grants, retained fast/flood/failure receipts, bounded gap accounting, two drains before delivery, persistent regrant, failed spawn, hook/test exclusions, quiescence and real installed observer restart/fast-exit behavior are covered.
+
+1,095 all-target offline tests passed. Strict all-target Clippy, scoped rustfmt, whitespace, debug build and final example --check-extension passed. After a semantic-neutral test-only conditional cleanup, the installed observer regression passed again. Seventeen real Python subprocess cases also cover the standalone example's input/authority/identity validation. No native app or live account/provider acceptance is implied.
+
+Evidence: stage4-evidence/extension-started/ contains final full/focused/lint/build/package logs, example subprocess log, source hashes and review disposition. No commits/pushes, live calls, or running builds/captures. Extension-stopping/terminal and disable/remove/restart reason notifications, general motion hooks and the broader native/service/motion/pacing/capture/platform gates remain open; goal remains active.
+
+
+### Stop-request versus confirmed integration exit — 2026-10-22
+
+Added extension.stopping for the first captured host request and extension.stopped for retained completed supervisor termination after an actual persistent-process spawn. Both preserve source installation_id/session_id/process_generation. Stopping carries a typed reason; stopped carries nullable exit_code and requested_reason. Reasons distinguish disabled, removed, restarted, reconfigured and host_shutdown. Null code does not identify a signal/failure, and requested intent is not proof of exit causation or external cleanup. Failed OS spawn produces no invented incarnation exit. A missing retained receipt is reported once as source loss rather than fabricated completion.
+
+Request capture and terminal timestamp publication share the terminal mutex. The ordering boundary is completed supervision/reaping, not earlier OS exit while pipes/descendants may still be cleaning up. First reason wins; late host requests do not rewrite completed evidence. Installed reconciliation now preserves distinct disable/uninstall/reconfiguration reasons instead of labelling all removals alike. Old-incarnation observations are collected before replacement/removal and forwarded through the existing bounded journal/gap/subscription boundaries. Hook/manual-test sources are excluded, callbacks remain observation-only/targetless, and app quiescence launches no handlers. Disable/remove/restart remain nonblocking immediate-stop operations; no new per-child grace wait was introduced.
+
+Added Integration exit observer under Add → Examples with separate latest-stop-request.json and latest-exit.json receipts, plus documented schemas/examples. 1,104 all-target offline tests passed, including actual normal/nonzero/fast exits, first request correlation, already-completed/late request behavior, lost-receipt gap, reason routing, bounds, exclusions, subscription reset and real installed observer delivery without recursion. The standalone observer passed28 real subprocess cases. Strict all-target Clippy, scoped formatting, whitespace, debug build and final example --check-extension passed. A test-only unused closure parameter was removed after the full suite; production behavior was unchanged. Final read-only source review found no concrete defect.
+
+Evidence: stage4-evidence/extension-stopped/ contains final test/lint/build/package logs, subprocess log, source hashes and source review. No live provider/account calls, commits or pushes; no build/capture is running. General motion lifecycle hooks, native menu/service/exit acceptance and the broader motion/pacing/capture/Discord/platform gates remain open. Goal remains active.
+
+
+### General retained motion playback outcomes — 2026-10-22
+
+Added motion.playback.ended for admitted ordinary host and extension playback requests, separate from unchanged requester-only motion.finished. Each request has a fresh playback UUID, immutable source snapshot, nullable original target/registered motion ID, tagged host or extension source and completed/cancelled/failed outcome. Unknown host incarnation stays null; current selection, file paths and arbitrary error text are never substituted at drain time. Retained generic observations survive requester receipt cleanup/disconnect.
+
+All three import activation paths transfer the admitted identity; rejected loads create no record and admitted failures can terminate before activation. Non-loop timeline completion is recorded before pause, loop wraps do not complete, and same-file selections remain distinct. Source cancellation describes logical request/ownership termination rather than disappearance of every outgoing pose. Bounded64-receipt storage lives independently of replaceable animation state and reports evidence loss explicitly. Desktop park/restore preserves legacy visible clip/time/manual flags while cancelling parked logical requests and minting restored identities. Pure scrub no longer calls synthetic play/pause admissions.
+
+General motion hooks are observation-only and permanently targetless; controller/message/event grants cannot be restored into the callback. This prevents terminal-hook feedback chains, while full-capability persistent integrations may still intentionally chain their own correlated receipts. Motion and integration observations merge by original timestamps into the host journal; per-event subscription eligibility avoids mixed-source floor suppression and historical replay after reset/regrant. Added Motion end observer under Add → Examples.
+
+1,119 all-target offline tests passed, including all three imports, rejection/failure/late completion, ordinary nonloop and one-shot completion, loop wrap/no-avatar behavior, same-file supersession, scrub, revocation preserving unrelated import, desktop parking/restoration, drop/replacement, immutable attribution, requester disconnect, bounded gaps, mixed-source subscriptions and real installed metadata-only observer delivery. The standalone Python observer passed31 real subprocess cases in one aggregate test. Strict all-target Clippy, scoped formatting, whitespace, debug build and final example --check-extension passed without subsequent production edits. Source reviews found no remaining concrete defect; original requester receipt compatibility remains covered.
+
+Evidence: stage4-evidence/motion-ended/ contains full-suite/lint/build/package logs, subprocess log, source hashes and source review; motion-lifecycle-contract.md records scope and evidence boundaries. No native rendered-motion, collision, live voice/provider or service acceptance is implied. No commits/pushes or live calls; no build/capture is running. Broader native menu/workflow, motion-quality pack, pacing, streaming, Twitch/model quality, Discord and platform gates remain open; goal stays active.
+
+
+### Labeled settings navigation at ordinary window sizes — 2026-10-22
+
+Settings retain their 184px labeled navigation down to 800px window width, rather than hiding labels below1100px. Conversation and smaller windows retain the existing compact rail. The existing full-content/scrolling layout regression now exercises the expanded rail at800x600 and passed. Offline debug build, rustfmt check and git diff whitespace check passed. A fresh800x900 GPU render of Extensions with the disabled synthetic Twitch fixture shows readable navigation labels, wrapped hints, bounded controls and no horizontal overflow. This is one page/layout check, not acceptance of every settings page or native workflow. Evidence: stage4-evidence/navigation-labels/. No provider/account calls, commits or pushes; no build/capture remains running. Overall goal remains active.
+
+
+### Simpler everyday Twitch account setup — 2026-10-22
+
+The Twitch credential section is now named Twitch account. Normal setup shows browser sign-in and the application-ID replacement field; access and refresh-token fields remain available inside collapsed Manual tokens. Other integrations retain their manifest credential controls. Masking, undo clearing, saved-value reuse and explicit save/clear paths are preserved. The setup guide matches the new labels.
+
+All16 extension-page tests passed offline, including saved-ID connect/invalid override and draft-save coverage. Strict binary Clippy, debug build, scoped rustfmt and diff whitespace checks passed. A fresh800x900 disabled-Twitch synthetic-ID GPU render confirms collapsed manual tokens, labeled navigation and no horizontal overflow. Manual expansion interaction and live sign-in remain unverified; no live account/provider calls occurred. Evidence: stage4-evidence/twitch-account-ui/. No commits/pushes or running build/capture. Goal remains active, including motion, pacing, capture, service, Discord and distribution acceptance gates.
+
+
+### Discoverable app access and setup interaction coverage — 2026-10-22
+
+Permissions now lives directly on executable extension cards instead of under Advanced, retaining the compact disclosure/menu and explicit grant/revoke behavior. This exposes a required setup step alongside account/settings without changing granted capabilities or enabling integrations. Twitch and content-pack setup guides use the new location. Advanced retains process controls and diagnostics.
+
+Added an actual egui pointer-event regression using an installed, disabled Twitch package: open Twitch account, verify sign-in/application-ID controls, verify token fields absent, expand/collapse Manual tokens and verify both token fields appear/disappear. It asserts no credentials saved, no authorization started and no pending store command. No runtime reconciliation or service worker is invoked by the test. All17 extension-page tests passed offline; strict binary-and-tests Clippy, debug build, scoped formatting and diff whitespace checks passed. The new800x900 GPU capture shows Permissions outside Advanced without overflow.
+
+Evidence: stage4-evidence/extension-setup-interactions/. No live calls, commits/pushes or running build/capture. Full native interaction, live integration, motion/physics, pacing, capture, Discord and distribution gates remain open; goal remains active.
+
+
+### Discord message decoding boundary — 2026-10-22
+
+Added a pure bounded Discord Gateway MESSAGE_CREATE decoder returning the existing ChatMessage type. Exact server/channel filtering excludes DMs and other channels/threads; bot, webhook, system and content-less messages are ignored. Ordinary messages/replies preserve original text and author identity. Source IDs qualify original message IDs with server/channel IDs. Nickname/global-name/username fallback is explicit. Invalid IDs/names, malformed payloads, oversized packets and host-invalid text fail with fixed diagnostics; no truncation or network fetching.
+
+Seven targeted offline tests passed; strict library/tests Clippy, scoped rustfmt and diff whitespace checks passed. No full-suite claim is made for this checkpoint. This is a transport prerequisite, not a usable Discord integration: no Gateway connection/authentication, heartbeat/resume, installed-process delivery, outgoing messages or voice/media implementation exists yet. docs/discord-adapter.md records integration boundaries and next work. Evidence: stage6-evidence/discord-message-decoder/. No live calls, credentials, commits/pushes or running builds. Overall goal remains active.
+
+
+### Discord Gateway connection policy — 2026-10-22
+
+Added a deterministic token-free Gateway state machine for bounded Hello/auth waits, jittered heartbeat scheduling/ACK deadlines, server-requested heartbeats, disconnect/invalid-session recovery, fatal close-code stops and resumable sequence checkpoints. Bot READY data validates the bot identity and Discord WSS resume endpoint. Authenticated resume can decode replay before RESUMED; duplicate/older dispatches are ignored. A duplicate ACK arriving at the next heartbeat boundary cannot acknowledge the newly emitted heartbeat.
+
+All18 Discord decoder/policy tests passed offline, including resume replay, recoverable/fatal close codes, rate-limit delay, missing ACK/Hello/auth timeouts, malformed inputs, untrusted resume endpoints and duplicate-ACK timing. Strict library/tests Clippy, scoped formatting and diff whitespace checks passed. Evidence: stage6-evidence/discord-gateway-policy/. No full-suite or live compatibility claim.
+
+The policy emits effects only: socket/TLS, bot credential loading, actual Identify/Resume writes, reconnect scheduling/session-start quotas, host action delivery and media are still required. Decoder sequence admission is not host delivery evidence. The extension remains unavailable in Add until a functioning worker exists. No network/account calls, credentials, commits/pushes or running builds. Full goal remains active.
+
+
+### Bounded Discord-to-host chat bridge — 2026-10-22
+
+Added explicit saved server/channel configuration validation and a pure host bridge emitting normal chat.offer envelopes. A valid handshake, message grant and actual loaded target are required; offers capture the target rather than acquiring a later avatar. Bounds cover16 queued/in-flight messages, one pending action,15-second original TTL,10-second result timeout and256 source IDs retained60 seconds. Source dedup survives avatar changes and fails closed at capacity.
+
+Only a correlated explicit Busy refusal permits up to3 attempts with1-second minimum spacing and the original expiry. Accepted/other-error/uncertain-timeout outcomes are not replayed. Matching includes action ID and target; host envelopes must match session/generation and advance host sequence. Avatar changes clear owned pending/queue state. App shutdown and malformed/stale-incarnation failures permanently quiesce this bridge; transport must also stop it on EOF/cancellation/output failure.
+
+All27 Discord tests passed on final source; strict library/tests Clippy, scoped rustfmt and diff whitespace checks passed. Tests cover permission/target admission, encoded protocol-valid offers, retries, uncertainty, queue and dedup bounds, expiry, avatar replacement, shutdown, stale frames/results and explicit configuration. Evidence: stage6-evidence/discord-host-bridge/. No full-suite, real-child delivery or service acceptance claim. Socket worker, credential loading, actual supervised delivery and voice/media remain unfinished. No live calls, commits/pushes or running builds; full goal remains active.
+
+
+### Experimental native Discord message worker — 2026-10-22
+
+Wired --discord-extension to private bot credentials, explicit saved server/channel settings, the Gateway policy and standard host chat.offer bridge. Added an experimental manually installable discord-live package; it remains outside Add pending transport acceptance. Uses the existing proxy-aware TLS WebSocket helper with64KiB frame/message bounds, bounded HTTPS Gateway discovery, single-shard validation, session-start allowance checks, per-worker5-second Identify floor, heartbeat/resume, bounded reconnect attempts and redacted fixed errors. Outgoing Discord writes are authentication/heartbeat/control only; no Discord chat-send or voice transport exists.
+
+Host input is bounded32 with out-of-band EOF/error/overflow; it is checked before service effects/output, after bounded connection/discovery and during reconnect waits. Failed host writes permanently stop uncertain chat delivery. Network control write/discovery failures stop for explicit restart. Eight reconnect failures stop, resetting only after60 seconds healthy. Invalid or oversized individual chat is rejected with a fixed diagnostic while preserving session/checkpoint, rather than killing authentication. No bot token is copied to host actions, settings or logs.
+
+Final all-target offline suite passed1,170 tests with --test-threads=1, including35 Discord decoder/Gateway/bridge/worker tests and two actual CLI/package tests. CLI checks never supply a token and terminate before networking. Synthetic Gateway message→encoded host offer is covered in-process; broken outputs, private control frames, malformed discovery/quotas, input overflow and EOF are covered. Strict all-target Clippy, scoped rustfmt, git diff whitespace and debug build passed. Evidence: stage6-evidence/discord-native-worker/.
+
+Verification limitations: the first sandboxed full run failed76 local fixture/socket/special-file operations with permission errors; an escalated parallel run then passed928 library tests but failed the existing extension_installed store-reopen test at lock acquisition. Serial full suites passed before and after the final chat-rejection fix. This does not establish the cause or repair of parallel store-lock contention; retain that finding.
+
+No live account/provider/Discord calls, credential changes, commits/pushes or running builds. Actual local socket-loop fault tests, installed-host successful delivery, shared-token identify coordination across installations, live service compatibility, outgoing reply design and all call/media work remain open. The helper tests and compilation do not establish those gates. Broader motion/physics, pacing, streaming and distribution acceptance also remain open; overall goal remains active.
+
+
+### Real localhost Discord session-loop tests — 2026-10-22
+
+Extracted the production connected-socket loop into a private testable session driver, preserving the existing TLS/proxy connector, discovery, reconnect delays and per-worker Identify floor. Session errors now quiesce the host bridge as well as propagating the failure. Real TCP/WebSocket fixtures call that same driver using synthetic controls and credentials; they do not override production service URLs or contact Discord.
+
+Five local socket tests cover actual fragmented Hello frames, Identify/READY, exact chat-to-host JSONL output with no token, app shutdown/EOF during idle read, missed heartbeat ACK, fatal4004 authentication close, binary-frame rejection and a second connection resuming/replaying with duplicate suppression. The shutdown case found a real input-loop error: after accepted app.stopping, the poller could read another input-channel state and report unexpected disconnect. It now immediately returns stopped.
+
+All1,175 all-target offline tests passed serially on final source. Strict all-target Clippy, scoped formatting, diff whitespace and debug build passed. Evidence: stage6-evidence/discord-local-sockets/. No remote account/provider/service calls, credential changes, commits/pushes or running builds/captures. Fixtures use plain localhost sockets; this does not establish Discord TLS/discovery compatibility, cancellation during DNS/connect/HTTPS, actual installed-host successful delivery, all quota/failure cases or voice/media. Shared-token identify coordination remains open. The prior parallel store-lock contention is still unresolved; serial success does not repair it. Discord remains experimental/outside Add; full goal stays active.
+
+
+### Store owner lock lifetime across fork/exec — 2026-10-22
+
+Investigated the earlier parallel store-reopen failure. Reproduced the same lock-retention mechanism deterministically: a duplicated descriptor and a controlled Linux child paused before exec both keep the shared OS open-file description alive after the parent drops its store. Both new tests failed against close-only cleanup. CLOEXEC does not cover that pre-exec window. This demonstrates a matching failure mechanism; the original transient did not retain a child/descriptor trace.
+
+Added a private StoreLock guard that explicitly unlocks before closing the owner descriptor. The guard is installed immediately after successful acquisition, covering subsequent open-error cleanup as well as normal store drop. Lock-file inode retention and active-owner exclusion are preserved. The duplicate-descriptor regression also verifies closing an old descriptor does not release a newly acquired store owner's lock. The fork fixture executes only pause in the child, then is killed/reaped by a parent guard; no child Rust allocator/destructor work occurs.
+
+Both reproductions passed after the fix. All1,177 all-target offline tests passed using normal/default parallel test execution, including the formerly failing installed-store reopen case. Strict all-target Clippy, scoped rustfmt, diff whitespace and debug build passed. Evidence: stage4-evidence/store-lock-lifetime/ contains red/green targeted logs, full parallel suite, lint/build and final source hash. This supersedes the unresolved lock-retention item from recent stage6 checkpoints; it is not a universal concurrency or crash-recovery claim.
+
+No live service/account/provider calls, credentials, commits/pushes or running builds. Discord installed-host/quotas/live/media, motion/physics, pacing, native capture and distribution acceptance remain open; overall goal remains active.
+
+
+### Installed native Discord replay and import Busy semantics — 2026-10-22
+
+Added Add→Examples→Discord replay (offline), an owned versioned package launching --discord-replay-extension. The native path uses embedded synthetic Gateway packets, the decoder and the normal chat.offer bridge; it contains no discovery/socket/credential calls. It waits for loaded-target authority, filters duplicate/wrong-channel/bot packets and replays once per process start. Restart mints one fresh synthetic message ID; duplicates within that start retain their identity. Host incoming-reply settings can still invoke configured models in ordinary app use; the fixture itself never does.
+
+Two actual installed/reconciled/supervised-process tests passed: disabled/no-grant defaults, wait without target, unchanged package launcher→native CLI→host-authored attributed offer sink, exact original author/text, one accepted candidate, no replay on avatar change, fresh explicit restart, disable/reaping and cancellation of Busy retries after target change. A test-only launcher shim supplies the real application executable because runtime current_exe otherwise refers to the Rust test harness. The recording sink is the validated runtime offer boundary, not real conversation history, model replies, speech or rendered reaction. Both Discord packages also pass the read-only package CLI check.
+
+A parallel full run exposed existing global animation-import contention being returned as Unavailable. Added typed MotionLoadError admission and a typed owned-load entry point, preserving existing string-returning UI APIs. Contention now returns Busy with no new playback request; failures retain Unavailable at the extension boundary. Updated the existing bounded retry test helper to the corrected code. A focused regression covers Busy versus invalid-path admission without taking the shared import permit. No import capacity, rendering, animation quality or playback behavior was relaxed.
+
+All1,180 all-target offline tests passed serially on final source. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Normal parallel runs still expose motion-completion fixtures receiving a legitimate Busy refusal from the process-wide single importer; final recorded failure is the reply-gesture example, rather than the resolved store-lock problem. Parallel motion-fixture isolation remains open; serial success does not resolve it. Evidence: stage6-evidence/discord-installed-replay/ contains targeted, failed-parallel, final serial/lint/build logs and source hashes.
+
+No live accounts/services/providers, credentials, commits/pushes or running builds/captures. Live Discord remains outside Add pending shared-token quota coordination, discovery/TLS/interruption and actual network-to-installed-host acceptance; actual conversation/history, voice/media and broader motion/pacing/capture/distribution gates remain open. Overall goal remains active.
+
+
+### Independent motion fixture processes — 2026-10-22
+
+Resolved the parallel motion-fixture interference recorded in the Discord replay checkpoint. The reply-gesture, one-shot hook and Twitch replay roundtrips require actual successful imports and terminal receipts; unrelated library-test imports were legitimately occupying their shared process-wide one-worker importer. Each of these three fixture tests now launches only its exact named case in a fresh harness, following the repository's existing isolated OS-resource test pattern.
+
+Production import capacity, Busy behavior, asset loading, playback, completion, target correlation and saved-attribution assertions remain unchanged. The original inner8-second deadlines remain; a20-second outer bound covers child startup and kills/reaps a timed-out harness. The parent checks successful exit, exact selected test name and a one-test-passed receipt, so an empty exact-test selection cannot produce a false pass. No tests were ignored or accepted Busy as successful playback.
+
+All three targeted cases passed. All1,180 all-target offline tests then passed using normal/default parallel execution on final source. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Evidence: stage4-evidence/motion-fixture-isolation/. The earlier serial-only motion-fixture limitation is superseded by this isolation checkpoint; production still rejects conflicting import admissions as Busy. No universal nondeterminism-free claim is made.
+
+No live services/accounts/providers, credential changes, commits/pushes or running builds/captures. This verifies CPU/logical/headless playback and source attribution, not native rendered animation quality. Discord quotas/live/media, motion/physics visual review, pacing, capture, distribution and the full goal remain open.
+
+
+### Shared Linux Discord Identify admission — 2026-10-22
+
+Added an internal per-OS-user coordinator used before Identify writes by normal supervised native workers, across installation/profile data directories. A private fixed-inode file under the default Waifu Studio data directory stores only schema version, kernel boot UUID and next eligible boot-clock millisecond. It contains no token/account/message IDs. Admission reserves and syncs five seconds under a nonblocking OS lock; held locks return a short wait rather than blocking the session loop. Reservations survive worker restart and remain consumed after cancellation/uncertain writes. Resume bypasses Identify admission.
+
+Uses Linux CLOCK_BOOTTIME plus kernel boot identity, independent of wall-clock changes and including suspend. New boot uptime must reach5 seconds even without saved state. Corrupt/oversized/inconsistent state fails closed. Root/file ownership, private permissions, leaf symlink rejection and one-link file checks are enforced. Unlock guards release on early errors. Coordination conservatively spans all this app's bot tokens for one OS user; it controls client admission, not server processing times, other applications/users/hosts or the full Discord daily budget. Service discovery still checks remaining session starts. Non-Linux backend remains unsupported with explicit error, matching current integration-runtime support. Offline replay does not open the coordination directory.
+
+Eight coordinator regressions cover live kernel clock, two handles/restarts,8 simultaneous independent handles with one reservation, a separate exact child process observing prior reservation, contention/error unlock, reboot/backward state, initial-boot grace, symlink/permissions and size limits. Real localhost socket tests verify a shared wait prevents Identify, Resume does not request a slot, and EOF after reservation prevents control output. Core tests use synthetic boot times and temporary roots; no real default coordination state or credentials were touched.
+
+All1,190 all-target offline tests passed in default parallel execution. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Evidence: stage6-evidence/discord-shared-identify/. This completes the same-OS-user cross-installation admission implementation gate, not live quota/service acceptance. Live Discord stays outside Add; discovery/TLS blocking-stage interruption, actual live network-to-installed history/reply, other platforms, voice/media and broader motion/pacing/capture/distribution gates remain open. No live calls, credential changes, commits/pushes or running builds/captures; full goal remains active.
+
+
+### Discord discovery deadline and startup cancellation boundaries — 2026-10-22
+
+Added private testable discovery client/request helpers while keeping the production endpoint fixed. Eight local HTTP/startup tests cover Bot/User-Agent headers, valid metadata, no redirect follow or credential forwarding to a redirect target, redacted HTTP errors,64KiB body bounds, slow-drip total deadline, host EOF around success/error operations, pre-EOF skip, late-value disposal and terminal input failure. Fixtures use localhost, synthetic credentials, no-proxy clients and temporary in-memory host channels. No runtime endpoint override is exposed.
+
+The first targeted run passed7 tests but failed the slow-drip deadline: blocking Client::timeout restarted on each Read and the body lasted roughly2 seconds despite a150ms client timeout. Added request-level timeout to reach the underlying async body, using the existing appraisal-client pattern. Production now has an absolute8-second request/body deadline; the short400ms request fixture passes within its1.5-second scheduler ceiling. The client-only control would still exceed that ceiling. Red/green logs are archived.
+
+A generic private startup-boundary wrapper now checks host state before and after both discovery and the existing proxy/TLS connector. EOF takes precedence over late operation success/error, and late returned values/sockets are dropped before continuation/authentication. Input failure remains terminal. This is boundary cancellation, not interruption inside an OS syscall; tests prove real HTTP boundaries plus generic returned-resource disposal, not a DNS/TLS handshake abort. The supervisor remains the termination boundary during blocked calls.
+
+All1,198 all-target offline tests passed in normal/default parallel execution. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Evidence: stage6-evidence/discord-startup-boundaries/. No live service/account/provider calls, real credentials/default profiles, commits/pushes or running builds/captures. Live TLS/service compatibility, DNS/TLS blocking-stage interruption, actual live network-to-installed history/reply, voice/media, platform and broader motion/pacing/capture/distribution gates remain open. Goal remains active.
+
+
+### Supervisor termination during blocked Discord startup — 2026-10-22
+
+Added two Linux exact-child tests that execute production HTTP discovery and the existing proxy-aware WebSocket connector under the real ProcessHandle supervisor. One fixture withholds HTTP response headers after receiving a synthetic Bot-auth request; another withholds TLS ServerHello after an actual ClientHello. A separate child installs a permanently pending reqwest resolver hook; no DNS query or address is produced, and a trap listener receives no TCP connection. These are exact test harnesses calling the production helpers, not a live Discord worker or new runtime endpoint override.
+
+Parents wait for physical entry evidence (HTTP headers, TLS record, resolver marker), confirm the process is still active, then stop it. Assertions require shutdown/reaping via the2-second shutdown API with2.5-second scheduling ceiling, retained Stopped termination, no after-operation continuation marker, absent child PID, rejected late input and closed HTTP/TLS sockets. The targeted two-test run, covering all three phases, completed in0.04 seconds. Child-only launch shims clear all proxy variables and route harness text away from protocol stdout. No parent proxy/system configuration changes occur.
+
+All1,200 all-target offline tests passed in normal/default parallel execution. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Evidence: stage6-evidence/discord-blocked-supervision/. No live services/accounts/providers, real credentials/default profiles, commits/pushes or running builds/captures.
+
+This verifies supervised termination/reaping and socket closure during representative stalled startup operations. It does not establish successful trusted TLS/certificate acceptance, a stall inside native OS getaddrinfo, graceful in-call cleanup, live service/quota compatibility or full installed live-worker network-to-history/reply acceptance. Those, voice/media, other platforms and the broader motion/pacing/capture/distribution gates remain open; the full goal remains active.
+
+
+### Owned localhost HTTPS/WSS certificate acceptance — 2026-10-22
+
+Added four real TLS tests with owned public fixture material: test-local CA acceptance for HTTPS discovery and WSS upgrade/Gateway Hello, plus rejection of unknown roots and wrong IP peer identity for each transport. The negative certificate shares the fixture issuer/key and differs in its SAN so name validation is exercised independently of trust. HTTPS verifies a synthetic Bot header only after trusted TLS; WSS verifies no provider authorization/model header is sent. Failed TLS yields no decrypted application request or WebSocket upgrade and fixed redacted errors.
+
+Factored the observation connector without changing production roots/routes/limits: production callers pass the default connector; a cfg(test) wrapper supplies fixture connectors and accepts only WSS127.0.0.1 with empty environment lookup. Root stores are local to test clients; no OS or global trust changes occur. Only a cached dev-dependency rustls0.23.46 was added; existing Cargo edits were preserved and no package downloads occurred. Owned CA/peer DER and public test-only server key are checked in with provenance and an optional OpenSSL regeneration script. Tests read DER directly; fixtures are valid2020–2120.
+
+All1,204 all-target offline tests passed in default parallel execution, including prior proxy/failure/cancellation checks. Strict all-target Clippy, scoped rustfmt, whitespace and debug build passed. Evidence: stage6-evidence/discord-local-tls/ includes targeted/full/lint/build logs and hashes for code, metadata and all fixture files.
+
+No live Discord/provider/account calls, real keys/default profiles, commits/pushes or running builds/captures. The success uses fixture trust, not Discord's actual public certificate chain. Actual DNS/public trust/service/quota acceptance, full installed live network-to-history/reply, native OS resolver fault injection, voice/media, other platforms and broader motion/pacing/capture/distribution remain open. The live adapter remains experimental/outside Add and the full goal remains active.
+
+
+### Actual application replay-to-history check — 2026-10-22
+
+Added developer CLI --verify-discord-replay, an explicit execution check that owns a fresh private temporary profile and accepts no profile arguments. It installs/enables the bundled replay, launches the unchanged Python/native package entry point through InstalledRuntime (no test launcher shim), and uses the real StudioExternalMessages sink, IncomingChat queue and Store history. A synthetic headless target supplies host authority; no renderer/VRM is started. It waits for the actual four-second chunk window rather than advancing test time.
+
+Chat/voice/model discovery/replies are disabled, provider and decision routes are invalidated, and memory intake is left enabled for boundary verification. Success requires one external turn, exact original source/author/text, host origin, an observed queued-before-delivery stage, disk/UI history agreement, preserved composer draft, unchanged memory candidates/records/notes/generation/triage status with no busy work, no response/picker work, no credentials, installation opt-in defaults, and successful worker/profile cleanup. A shared read-only Studio response-work predicate preserves the prior delivery Busy check. The new queue status query is read-only.
+
+Two real application-binary integration tests passed: the full normal launcher→app intake→disk path and rejection of caller profile arguments before any profile access, preserving a supplied sentinel directory. A final manual execution emitted status ok, history_rows1, role external, queued_before_delivery true, disk_matches true, memory_unchanged true, model_work_started false, draft_preserved true, credential_free true and cleanup_verified true, with empty stderr. Final JSON is archived.
+
+All1,206 all-target offline tests passed with default parallel execution. Strict all-target Clippy, scoped formatting, whitespace and final debug build passed. Evidence: stage6-evidence/discord-application-history/. No live accounts/services/providers, real credentials/default profiles, commits/pushes or running builds/captures. This closes the offline installed replay→actual app history gate, not live network-to-history/reply, rendered speech/motion, voice/media, native OS resolver faults or platform/distribution acceptance. Broader motion/physics, pacing and capture gates remain open; overall goal remains active.
+
+
+## Native pacing: safe Mailbox default — 2026-10-22
+
+The normal native window now requests Mailbox. A documented local `bevy_render` 0.19.1 patch resolves unsupported Mailbox directly to FIFO, retaining VSync; the old intermediate Immediate fallback is removed only for Mailbox requests. Actual surface creation/reconfiguration logs requested and resolved mode. Explicit FIFO and diagnostic auto/no-VSync policies remain unchanged; overrides still require metrics. Frame caps, deadlines, rendering quality, shaders and assets are unchanged.
+
+Four exact-source capability tests cover supported/unsupported Mailbox, including Immediate-capable surfaces without Mailbox. The patched debug native Wayland FIFO → default → FIFO reversal measured 20 → 59.2–59.6 → 20 app updates/sec with the same focused 2240×1575 workload and asset counts. Actual surface modes were FIFO → Mailbox → FIFO. A metrics-disabled launch ignored a stray diagnostic FIFO override, resolved Mailbox and reached VRM readiness without metrics. All four owned native fixture processes ended, with no errors; existing app instances were untouched. No real credentials/services/speaker output were used.
+
+All 1,337 serial offline all-target tests passed across 46 suites, zero failures/ignored. Strict all-target Clippy, package formatting, whitespace and debug build passed. Evidence and patch provenance: `/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/stage3-evidence/safe-mailbox-default/`. Unsupported Mailbox fallback is capability-test evidence, not a native unsupported-adapter run. App-update timing and renderer brackets do not prove physical display smoothness/tearing, GPU timing, release timing, long sessions or platform acceptance. Broader roadmap gates remain open; changes are uncommitted/unpushed, and no owned build/test/capture remains running.
+
+
+## Relocated examples and optimized pacing — 2026-10-22
+
+Extensions → Add now resolves shipped examples from executable-adjacent assets instead of requiring the build checkout. Development binaries without adjacent assets retain source discovery. Omitted packaged examples do not borrow a development copy; unavailable starter/examples are disabled with a concise hint. Existing Twitch availability, package validation and disabled/ungranted installation behavior are preserved. Real owned example relocation to a directory containing spaces, installation with a nonexistent development-root fixture, packaged omission/development fallback and egui disabled/enabled pointer behavior are covered by regressions. This is not complete-package or native-menu acceptance.
+
+The corrected locked/offline optimized build passed. Native release FIFO → default → FIFO, 48s each with matching focused 2240×1575 workload, resolved FIFO → Mailbox → FIFO and measured 20 → 59.8 → 20 settled app updates/sec. Default settled frame-interval p99 was17.17–17.24ms. A metrics-disabled startup ignored a stray FIFO probe and resolved Mailbox. All owned fixture children stopped, with no recorded errors/fallbacks; existing apps were untouched. No credentials, live services or speaker output were used.
+
+All1,341 serial offline all-target tests passed across46 suites, zero failed/ignored. Strict all-target Clippy, package formatting and whitespace passed. The initial release warning from an import moved to test-only use was corrected before final checks. Evidence: `/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/stage7-evidence/portable-examples-release/`. Physical presentation/tearing, a complete relocated package, long sessions and other-platform acceptance remain open, as do broader motion/live-service gates. Nothing committed/pushed; no owned build/test/native fixture remains running.
+
+
+## Private package with source hidden — 2026-10-22
+
+Shared asset discovery now covers characters, motion lists, illustrated backgrounds, room art, examples and headless replay. Release builds require executable-adjacent assets or an explicit WAIFU_STUDIO_ASSET_ROOT; source run.sh sets that root. Debug fallback and explicit external motion libraries remain available; the old local WebWaifu4 checkout is development-only. The first Clippy run caught a redundant and_then(Some) after simplifying room paths; corrected before final checks.
+
+Created the private Linux candidate on the spare drive, with 136 hashed runtime files, no profiles/credentials/source/cache and no unapproved external generated motion pack. Actual archive extraction/relocation passed17 manifest checks, actual installed offline replay and3 native captures under bubblewrap: home/source hidden, IP network disabled, minimal HOME/XDG/profile/TMP environment, read-only package, unrelated working directory. First load seeded22 models; a second move with spaces/non-ASCII repaired22 model paths and preserved fixture selection/persona/background RGB. Captures and logs showed room art, shipped illustration, VRM readiness and actual Mailbox; no native errors, and package inventory stayed unchanged. The fixture manually repointed its absolute illustrated-image path, so generic reference migration is not verified. An initial manually loaded head-only BVH showed arms out; normal automatic startup showed lowered arms. These stills are not full motion/conversation/clipping or settings interaction acceptance.
+
+All1,344 serial offline all-target Rust tests passed across46 suites, zero failed/ignored. Five Python packaging regressions, strict all-target Clippy, optimized locked/offline build, formatting and whitespace passed. Opus5.5 completed two generic packaging-plan reviews without source/tools; Muse1.0 reached Meta but returned subscription-quota HTTP429 and no review. No private-source export was performed. Logs/dispositions/source/harness/receipts/captures: `/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/stage7-evidence/private-package-v1/` and sibling portable-plan-reviews/. Archive and separate SHA256 sidecar: `/run/media/subsect/toshiba/waifu-studio-private-packages/waifu-studio-linux-x86_64-private-20261022-v1.tar.gz`. This is a private same-host candidate, not redistribution or cross-distribution/platform approval. Native interactive/streaming/live/long-session and motion quality gates remain open. All owned runs terminal; no commit/push/publication.
+
+
+## 2026-10-22: reviewed motion and bundle fixes
+
+Fixed queued emotion admission, revocation of cached/mixed/parked motions, incoming-only cancellation, and recorded bundled-model relocation. Opus 5.5 reviewed three successive candidate snapshots; its final pass reported no verified findings. The final unchanged source passed 1,356 serial offline tests across 46 suites, strict all-target Clippy and formatting. Six behavioral probes fail against a separate old-source snapshot. Source hashes, raw results and review dispositions are in `/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/waifu-fix-loop-20261022/`. DeepSeek completed through the official OpenCode client after a supported per-run permission/reasoning configuration change; its returned model, stop completion and zero cost were verified by the native session export. Its claims were dispositioned against current source. Earlier HTTP403 and reasoning-only length failures were preserved; no alternate provider was used. The optimized locked/offline executable rebuild passed. These checks are not new rendered, collision, live-service or long-session acceptance. The earlier private package was not updated.
+
+The same-frame park/restore follow-up preserves queued pose-cache invalidations. The latest hash-bound checkpoint is candidate-round4; earlier review/replay and closed live-run attempts retain their original scopes.
+
+
+## Latest motion fixes and Squad / Harness² verification
+
+Candidate-round7 passed 1,359 serial offline tests across 46 suites, strict
+all-target Clippy, formatting and an optimized locked/offline build. All six
+scoped source/context hashes match. All 41 animation tests pass. New behavioral
+contrasts proved stale cache-path attribution after revocation and after stop
+before fixes. The final animator clears cached clip/path identity on revocation
+and whenever it restores idle, preserving unrelated later crossfades.
+
+The real Harness² round on candidate-round6 completed eight native Opus 5.5 /
+OpenCode DeepSeek reviews, four rollouts and three refinement stages through
+actual Squad task receive/acknowledge/delivery. Full OpenCode stdin and native
+session/model identity were verified; export capture uses a bounded regular file
+after a 128 KiB pipe-truncation failure was reproduced. The final round7 patch
+received a valid no-findings Opus review. DeepSeek's additional targeted answer
+was rejected for incomplete finding evidence, not accepted as clean. Full-round
+and targeted-patch scopes are distinct in review-matrix.json.
+
+Evidence: /home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/waifu-fix-loop-20261022/.
+Rendered/interactive/live-service and long-session acceptance remain separate.
+No app launch, credential/profile change, package publication, commit or push.
+All owned build/test/review work is finished; bridge Squad sessions archived.
+
+## Desktop sitting camera regression — 2026-10-23
+
+Sit/stand transitions no longer invalidate the companion camera fit. Refitting
+from transient animation bounds could shrink the camera distance, magnify the
+avatar and discard the user's zoom/pan/orbit. Explicit recenter, avatar/roster
+changes and portrait/room framing still request their existing fits.
+
+Two new production-system regressions failed before the fix and pass after it.
+They check repeated sit/stand transitions, preserved user camera/placement
+adjustments and projected head size/headroom in a 420×640 companion viewport
+through synthetic pose-bound changes and small head movements. All 210
+application tests, strict all-target Clippy, package formatting and whitespace
+checks passed. Logs: `/tmp/waifu-seating-before.log`,
+`/tmp/waifu-seating-after.log`, `/tmp/waifu-seating-tests.log` and
+`/tmp/waifu-seating-clippy.log`.
+
+The optimized locked/offline build passed (`/tmp/waifu-seating-release.log`).
+Relaunched through the CLI as `waifu-studio-input-fix-20261023.service`; the
+current invocation loaded the VRM with Mailbox presentation and no recorded
+errors/panics (`/tmp/waifu-seating-startup.log`). No mouse input was injected.
+
+This is numerical/fixture evidence; actual model framing, native dragging and
+window seating still need interactive acceptance. The earlier input changes
+remain in place: companion input stays enabled unless full passthrough is
+explicitly requested with ready recovery controls, and startup opens no settings.
+
+## Desktop size, taskbar geometry and stacking — 2026-10-23
+
+The native Wayland winit backend implements `set_window_level` as a no-op.
+The KWin bridge now applies the requested keep-above flag only to the exact
+companion PID/title, reports its actual stacking order relative to visible
+panels on that output, and restores the original flag when its temporary script
+finishes. Bridge teardown allows a bounded stop exchange before unloading.
+The Hyprland adapter explicitly reports that above-panel stacking is unavailable
+for its ordinary client surface; this does not claim generic Wayland support.
+
+Placement bounds now have a distinct `SurfaceId::Monitor` identity. They remain
+available for moving/snapping but cannot create taskbar seats. KWin supplies
+seats from actual visible bottom docks or reserved bottom edges; Hyprland uses
+reserved bottom edges. Explicit snap requests use verified usable output bounds
+when the bridge is active. The old monitor-bottom fallback is removed. A taskbar
+seat no longer writes depth masks for the panel or every overlapping application;
+ordinary window-ledges retain their depth occlusion.
+
+Desktop scroll/size controls grow the render surface uniformly with the avatar,
+up to the current monitor's bounds, rather than moving the camera into a fixed
+420×640 surface. Studio camera zoom remains available. Production-system tests
+verify doubled projected head size in pixels with unchanged camera/headroom,
+monitor fitting, preserved sit/stand framing and snapping above reserved panels.
+
+The shipped KWin script executes against owned fake compositor objects in
+`tools/test_kwin_surfaces.cjs`: all five cases pass. The identical cases against
+the saved pre-change script produce four failures and one pass. They cover actual
+stack-order reports, restoration, a bare monitor bottom, floating taskbar edges
+and PID/title targeting. These are script fixtures, not native visual acceptance.
+Logs: `/tmp/waifu-taskbar-kwin-before.log`, `/tmp/waifu-taskbar-kwin-after.log`.
+
+All 1,374 serial offline Rust tests across 47 suites passed, with zero failures
+or ignored tests. Strict all-target Clippy, package formatting and whitespace
+checks passed. The first suite run caught one old Hyprland fixture assertion
+that classified a monitor with no bottom reservation as a taskbar; it now checks
+the distinct monitor bound. Logs: `/tmp/waifu-taskbar-tests-final.log` and
+`/tmp/waifu-taskbar-clippy.log`.
+
+The optimized locked/offline build passed (`/tmp/waifu-taskbar-release.log`).
+The CLI-launched current native KDE/KWin Wayland invocation reported actual
+above-panel stacking changing from `Some(false)` to `Some(true)` before VRM
+readiness, with Mailbox presentation and no recorded errors/panics. This proves
+the running window moved above a visible panel in KWin's stacking order; it is
+not rendered seating/dragging acceptance. Receipt: `/tmp/waifu-taskbar-startup.log`.
+The companion remains running for the user's test. No pointer injection,
+compositor configuration edits, commits or pushes were performed.
+
+## Voice shortcuts and complete menu audit — 2026-10-23
+
+Added one voice-action router for focused keyboard input, the desktop context
+menu and Voice settings. Ctrl+Shift+Space starts/stops the microphone,
+Ctrl+Shift+M toggles voice replies, Ctrl+Shift+Period interrupts speech and
+cancels microphone work, and Ctrl+Shift+Comma opens Voice settings at the
+shortcut section. Existing capture/transcription, source-character attribution,
+draft protection, speech cancellation and voice persistence paths are reused.
+The desktop has a small busy/recording indicator with Stop/Cancel actions.
+
+Linux global shortcuts use the GlobalShortcuts portal through a private worker
+connection. Setup is explicit in Voice settings; the desktop's dialog selects
+and approves bindings. Displayed keys come from the actual portal response.
+Matching global actions suppress native-key fallback to prevent double toggles;
+unfocused native input, foreign sessions, unbound IDs, held-key repeats and old
+worker generations are rejected. Disable/error/exit cancels requests and closes
+the owned session/connection off the render thread. The actual KDE desktop
+reported GlobalShortcuts version 2 by introspection; no real registration or
+physical shortcut/microphone/provider acceptance was performed.
+
+Audited all ten main routes and all 24 advanced control modules. Shared cards,
+rows, fields, switches, dropdowns, popups and spacing are compact and responsive;
+technical sections are collapsed. The primary/auxiliary desktop contexts use
+the same style as Studio. Replaced the radial with a compact context menu and
+bounded the character picker. Existing settings/actions/defaults and extension
+review gates remain. The new main-menu shortcut route opens the shortcut section
+without forcing a settings window at startup.
+
+All 1,390 serial offline Rust tests across 47 suites passed. This includes
+13 shortcut/portal checks, shared narrow/wide row and widget-ID checks, and
+small-companion context menu bounds. The portal tests use serialized messages,
+in-memory queues and cancellation probes; they are not a private-bus or real
+portal registration test. A layout-sensitive existing emotion dropdown test now
+targets the foreground None item rather than an identically labelled closed
+row. Strict all-target Clippy, package formatting and whitespace passed.
+Logs: `/tmp/waifu-menus-tests-final.log`, `/tmp/waifu-voice-hotkeys-tests.log`,
+`/tmp/waifu-menus-clippy-final.log`.
+
+Rendered and inspected 22 real GPU captures: ten default routes, nine runs with
+the Advanced flag and three 960×720 checks; the other captures use 1280×900. Every capture
+used an isolated credential-free profile, disabled audio playback and an
+unshared IP network. Empty fixture libraries do not prove populated extension,
+history or per-record menu acceptance. Captures/receipts are in
+`/home/subsect/Documents/Codex/2026-10-18/its-useful-memory-idea-is-separating/reports/voice-hotkeys-menu-review-20261023/`.
+
+The optimized locked/offline build passed (`/tmp/waifu-menus-release.log`).
+Restarted only the conversation-owned test service through the CLI. The current
+native invocation loaded the VRM, resolved Mailbox presentation and reported
+actual KWin above-panel stacking false→true without recorded errors/panics
+(`/tmp/waifu-menus-startup.log`). It remains running for interactive testing.
+No microphone/provider calls, physical input injection, real portal shortcut
+registration, commits or pushes were performed. Final review receipt and scoped
+source hashes are saved beside the captures.
+
+
+### Desktop radial restoration (2026-10-23)
+
+Restored the existing eight-wedge desktop radial instead of the unrequested list-menu replacement. Reviewed the local Mate Engine CircleSelector source for pie/hover interaction; no Unity code or assets copied. Voice opens a five-wedge secondary radial for microphone recording, voice replies, stop, hotkey settings, and dismissal. Preserved primary-window input, drag suppression, explicit passthrough recovery, character picker, and recording status controls. Radius adapts to small companion windows. Three targeted regression tests cover compass/dead-zone selection, all voice wedges, sit/stand labels, and viewport containment at 170, 210, and 420 pixels wide. Native mouse selection and microphone behavior remain unverified.
+
+Restoration validation: all 226 application binary tests passed; strict binary Clippy, package formatting, whitespace checks, and release build passed. CLI relaunched the conversation-owned companion service. No physical mouse or microphone acceptance claimed.
+
+
+### Radial visual polish (2026-10-24)
+
+Reviewed local Mate Engine `CircleSelector.cs`, `Button.cs`, selector/button prefabs, and the main scene menu overrides (icons, ring separators, hover coloring, scale animation). Implemented original vector icon artwork and an original charcoal/lavender palette in `src/desktop_menu/paint.rs`; no Unity artwork/code copied and no new runtime dependencies. The existing main and voice wheels/actions remain, with contextual center captions, short hints, a 160 ms opening animation, animated wedge feedback, a feathered rim and icon-only compact layouts. Paint animation leaves hit-test geometry fixed. Existing egui animation-time preference is respected.
+
+All 227 application binary tests passed on Rust 1.99.1. Four focused radial checks also cover dead-zone/direction/voice wedge selection, sitting labels, bounds and actual egui mesh paint validity. Software-rendered review images derive from production egui tessellation plus its font atlas; they verify static UI appearance, not native GPU compositing, physical mouse acceptance, or temporal animation. Binary Clippy completed with inherited warnings; strict Clippy stops at an existing needless borrow in `src/expressions.rs:1124`, and Rust 1.99 additionally deprecates existing `fetch_update` calls. Those unrelated files were not changed.
+
+
+### Saved profile cards and desktop switching (2026-10-24)
+
+The existing Character records remain the profile storage format; no library migration or UUID reassignment. Studio navigation now labels this page Profiles. Portrait cards, search, explicit Save profile / Save as new, editable avatar selection and Use on desktop share the existing per-character model/personality/voice/provider/appearance settings. The radial Profiles action opens a compact thumbnail switcher with Profiles, Avatar and Personality tabs. New model/personality combinations clone source customization under a fresh UUID without copying history/facts; existing combinations restore their own identity. Existing custom prompt text is preserved. Source originals and fresh combinations persist through Store reopening in the regression.
+
+Portrait extraction runs serially on a bounded background worker, deduplicates by model path, caps cached models at96, reads at most128 MiB per model and8 MiB per embedded image, limits decoder dimensions/allocation, resizes to192 px, and never fetches external images. VRM0 texture references and VRM1 image references are covered with synthetic GLBs; real Hikari, Neuro and Riko portraits are loaded in headless egui card layout checks. Gallery widths760/420/280 and switcher windows420x640/210x320 have layout/paint checks. Software review PNGs use actual production egui meshes/font and portrait textures, not a separate mockup. An outer switcher scroll area handles short windows.
+
+Native Vulkan offscreen captures at1280x900 and960x720 failed before UI rendering: NVIDIA userspace/kernel driver mismatch (NVML library615.78). No desktop driver changes or app-service restart were attempted. Physical clicks, native GPU appearance and temporal animations remain unverified. Existing unrelated deprecation/Clippy warnings are retained.
+
+Final profile validation: 231 binary application tests passed, final compact switcher layout test passed after sizing refinement, package formatting/whitespace passed, binary Clippy completed with the existing library warning, and final release build passed. Review images and source hashes are saved in the calling chat reports directory. The app was not relaunched because the native graphics driver mismatch remains unresolved.
+
+
+### Hikari ARKit default (2026-10-24)
+
+User explicitly selected the ARKit export. Copied and hash-verified the recovered Blender export (133 face morph targets,52 ARKit channels,88 expression clips), updated only the bundled Hikari model/hash and appended its original metadata/provenance. Updated the two identified saved Hikari profile model pointers using a private backup and atomic replacement; normalized JSON comparison confirms all other fields and the selected UUID unchanged. The existing bundle-reference receipt was updated for stock Hikari. No conversation, memory, credential, voice or personality file was edited. Older VRM files remain available. Runtime facial deformation and appearance are not claimed.
+
+
+### Hikari versions, final selection (2026-10-24)
+
+Following the user's revised preference, Wardrobe is the default; ARKit remains a separate profile. All five recovered Blender exports plus the original cool_HIKKY and older hikkyc2 are exposed as seven named Hikari choices. Copied VRM hashes were verified, source morph/expression counts recorded, and author metadata retained. Six stable variant UUIDs were added to the bundle (28 profiles total, three distinct original personality templates). The saved library was privately backed up before atomic updates, with comparison proving preservation of every pre-existing profile field other than the two explicitly changed Hikari avatar pointers. New variants were appended, with import receipts, without changing the selected profile identity. No chat, memory or credential file changed. Previous ARKit-only default notes above describe the intermediate selection, not the final default. Native model appearance and clipping remain unverified.
+
+## 2026-10-25: Windows/Linux preview preparation
+
+Version `0.1.0-preview.1` excludes Elmer, Zome and Lazuli from the bundled catalog and runtime asset trees, retaining 25 character profiles. The catalog test now expects 25. The restored personal profile remains outside release inputs.
+
+Local optimized, locked all-target tests passed serially: 1,207 on Windows and 1,396 on Ubuntu 24.04 under WSL. Six Python package-integrity tests passed, including tagged-preview provenance checks. Package-scoped Rust formatting and GitHub workflow validation passed. Vendored upstream examples require source files outside this checkout, so formatting is scoped to `waifu-studio`, not all vendored packages.
+
+The staged source audit found no known local provider credentials or credential-shaped secrets. All retained bundle model hashes matched. Runtime archives exclude profiles and record file hashes plus the source commit. These checks do not establish native Wayland/KDE/Hyprland, every GPU/audio device, or long-session acceptance; see `docs/PREVIEW.md`.

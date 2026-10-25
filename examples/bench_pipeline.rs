@@ -724,8 +724,8 @@ fn main() -> Result<(), String> {
                                     }
                                 });
                             config.routing = route.routing.clone();
-                            let turns = vec![Turn { role:"system".into(), content:"You are a friendly VTuber. Answer in two brief spoken sentences, 20 to 30 words total. No formatting, stage directions, or metadata.".into() },
-                        Turn { role:"user".into(), content:user_text }];
+                            let turns = vec![Turn { external: None, role:"system".into(), content:"You are a friendly VTuber. Answer in two brief spoken sentences, 20 to 30 words total. No formatting, stage directions, or metadata.".into() },
+                        Turn { external: None, role:"user".into(), content:user_text }];
                             if app_path {
                                 let (tx, rx) = mpsc::channel();
                                 chat = Some(Chat::App(rx, provider::spawn_chat(config, turns, tx)));

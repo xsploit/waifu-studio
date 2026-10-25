@@ -1,0 +1,11 @@
+# Muse extension review
+
+Supplied-source review, 2026-10-20. No reviewer builds, commands or live UI checks. Source snapshot predates resulting fixes.
+
+Found 3 concrete issues:
+
+1. **Detached extension worker can outlive its state** — [src/extensions.rs](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extensions.rs:51) discards the `JoinHandle`; [ExtensionState](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extensions.rs:36) stores only channels. Trigger: drop/recreate the state while the worker is copying a pack or blocked in the folder picker. The old thread can later write the same store concurrently with the new worker, violating the serialized-writer requirement in [src/extension_store.rs](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extension_store.rs:4). Smallest fix: store the handle as an `Option`, and on drop first drop/close the command sender, then join the worker.
+
+2. **Busy submissions are silently lost** — [submit()](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extensions.rs:142) returns immediately when `busy` is true. Trigger: calling install/remove/enable/refresh during initial load or another operation. The public wrapper returns normally, but the action never runs and no error/status records the rejection. Smallest fix: return `bool`/`Result` from `submit()` and the public methods; alternatively set a visible “busy” error/status.
+
+3. **Crash/rollback paths leave store debris forever** — staging dirs are created at [src/extension_store.rs](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extension_store.rs:215) and temp index files at [src/extension_store.rs](/home/subsect/Documents/Codex/2026-10-17/ma/outputs/waifu-studio/src/extension_store.rs:312), but cleanup at lines 259/345 only runs on normal in-process exits. A kill/power loss mid-copy can leave up to a 2 GiB `.stage-*` tree; repeated crashes accumulate them because `open()` never reaps recognized debris. Also, rollback removes the target revision but not the newly created empty installation parent from line 232. Smallest fix: during `open()`, under the documented single-writer rule, delete only recognized `.stage-*` and `.installed-*.tmp` entries; on install rollback also `remove_dir(parent)` so it only succeeds when empty.

@@ -4,7 +4,7 @@
     {
       "id": "1a2aab99-759d-5e92-977d-a90bbddb7d99",
       "name": "Hikari-chan",
-      "model": "models/9bcc6aedeb4b-hikkyc2.vrm",
+      "model": "models/81453f3567d8-hikari-wardrobe.vrm",
       "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
       "greeting": "",
       "format": "VRM 0.0",
@@ -15,11 +15,12 @@
         "voiceId": "ee4867b6908d41e58ee7736ce4874622",
         "label": "Hikari Fish (Audrey voice)"
       },
-      "sha256": "9bcc6aedeb4b19843faa3c753c7d7cc2fc7061bb07ddfea01260fcc501481b98",
+      "sha256": "81453f3567d8c57e2153a2aa232931a2e09b537c301ba82b8b8abfe3055ba21a",
       "voice": {
         "reference_id": "ee4867b6908d41e58ee7736ce4874622",
         "enabled": true
-      }
+      },
+      "model_variant": "Latest Blender Wardrobe export: rebuilt fabric sleeves; 133 face morphs and 52 ARKit channels"
     },
     {
       "id": "41320f86-cb93-5f58-bee1-4e0c76a64aab",
@@ -54,15 +55,6 @@
       "sha256": "36def4e3592a11462796d0d11b0f6ef76f4bd91863fbbe5a0754fd17f4041666"
     },
     {
-      "id": "e35f0c81-9f1d-5ec7-af99-fd38fc143383",
-      "name": "Elmer",
-      "model": "models/55f2fa2ac87c-Elmer.vrm",
-      "persona": "",
-      "greeting": "",
-      "format": "VRM 1.0",
-      "sha256": "55f2fa2ac87cb8dfa21cb9b50eab7e549bacfd26077e51109be90bb20338376b"
-    },
-    {
       "id": "b75e90dd-8d34-5cf1-b96c-e3ead8fc2c6b",
       "name": "AliciaSolid",
       "model": "models/55badf725d08-AliciaSolid.vrm",
@@ -72,15 +64,6 @@
       "sha256": "55badf725d08ca7ab57c48e097adfea9c44d7025cef0065d128d23d853464058"
     },
     {
-      "id": "2568d52c-0a4d-5c21-a112-6c7f2e1840dd",
-      "name": "Zome",
-      "model": "models/848f99eb76e6-Zome.vrm",
-      "persona": "",
-      "greeting": "",
-      "format": "VRM 0.0",
-      "sha256": "848f99eb76e6e6fa3bed249b5e86be4e46e1d9a58a7b51ee1292d0d04dab6e52"
-    },
-    {
       "id": "637184a3-090d-57ac-93ba-ab81b36804a6",
       "name": "aldina",
       "model": "models/0afa94b999e8-aldina.vrm",
@@ -88,15 +71,6 @@
       "greeting": "",
       "format": "VRM 0.0",
       "sha256": "0afa94b999e8521aaae3f6df1eba386412800e08fa5f51232456e1471a876c5b"
-    },
-    {
-      "id": "83c36ae5-ba51-572f-84b2-f46d7c5fc574",
-      "name": "Lazuli_VRM",
-      "model": "models/78950b046daa-Lazuli_VRM.vrm",
-      "persona": "",
-      "greeting": "",
-      "format": "VRM 0.0",
-      "sha256": "78950b046daa169859025d1c1616e302da3a0980c29ef9d4049195f27f8ca462"
     },
     {
       "id": "8b00c811-c19a-5bf3-ae43-319509e6bb2e",
@@ -223,6 +197,132 @@
       "greeting": "",
       "format": "VRM 0.0",
       "sha256": "bff1aeb96f366f519bccefd276559e31e2c00b7c371aab76c8ffa0e34bd204b6"
+    },
+    {
+      "id": "3f1a92ab-c904-554e-b995-d7b064c8fcae",
+      "name": "Hikari · ARKit",
+      "model": "models/9cf6019d46d1-hikari-arkit.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Blender ARKit export; saved separately for comparison.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "9cf6019d46d143a0f3c06344bdd30b9c93884a18716942f1f00e336f13a9a8b2",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "ARKit comparison profile"
+    },
+    {
+      "id": "25e476dd-6fa1-5986-9484-51e032700387",
+      "name": "Hikari · Cel",
+      "model": "models/7b7f106a9b2c-hikari-cel.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Blender Cel export; saved separately for comparison.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "7b7f106a9b2cfccb6c02c485d64d73040e68e4209f46610b3e538e8a842049c6",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "Cel comparison profile"
+    },
+    {
+      "id": "42ed8f3a-2f5b-5271-ba82-096f43473f42",
+      "name": "Hikari · Moto",
+      "model": "models/99a95e9e829b-hikari-moto.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Blender Moto export; saved separately for comparison.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "99a95e9e829bc9327833ddd8e1e8aa664ee7317020d2de32d7161a42dd3d92dd",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "Moto comparison profile"
+    },
+    {
+      "id": "86d8631c-86dd-5609-82e2-58e6f1a24ded",
+      "name": "Hikari · Refined",
+      "model": "models/a4f45d37bdbb-hikari-refined.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Blender Refined export; saved separately for comparison.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "a4f45d37bdbb1615dc610d518fb8cf35cac4d277780af595d97ccf48551b9cec",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "Refined comparison profile"
+    },
+    {
+      "id": "5ecd3676-e197-523f-95be-10254f959108",
+      "name": "Hikari · Classic",
+      "model": "models/b70818a59cb3-model.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Original cool_HIKKY model before the Blender edits.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "b70818a59cb398a82c8ee82908db1b18a611f52507e4521b79bc3b983b89b9c8",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "Classic comparison profile"
+    },
+    {
+      "id": "4f059474-cdc7-5410-9c14-cd927fbb44da",
+      "name": "Hikari · Original",
+      "model": "models/9bcc6aedeb4b-hikkyc2.vrm",
+      "persona": "You are Hikari-chan, also known as Hikky C, a quick-witted AI streamer girl with bright confidence, chaotic curiosity, and a soft streak she tries to hide behind jokes. Stay in character throughout the conversation. You are playful, clever, teasing, expressive, and a little smug, but you are not cruel. You can riff on chat messages, roast gently, make sudden funny pivots, and sound amused by your own thoughts. You like turning awkward moments into bits, but when someone is sincere or struggling, you become warmer while still keeping your lively edge. Avoid sounding formal, robotic, overly wholesome, or like a lore dump. Write natural spoken dialogue, not lists, markdown, or stage directions. Reply as a single paragraph.",
+      "greeting": "",
+      "format": "VRM 0.0",
+      "source_persona_id": "hikari-chan",
+      "description": "Earlier bundled hikkyc2 avatar.",
+      "original_voice": {
+        "provider": "fish-speech",
+        "voiceId": "ee4867b6908d41e58ee7736ce4874622",
+        "label": "Hikari Fish (Audrey voice)"
+      },
+      "sha256": "9bcc6aedeb4b19843faa3c753c7d7cc2fc7061bb07ddfea01260fcc501481b98",
+      "voice": {
+        "reference_id": "ee4867b6908d41e58ee7736ce4874622",
+        "enabled": true
+      },
+      "model_variant": "Original comparison profile"
     }
   ]
 }

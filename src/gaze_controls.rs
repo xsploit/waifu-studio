@@ -8,33 +8,36 @@ pub fn ui(ui: &mut egui::Ui, state: &mut GazeState) -> bool {
     kit::group(ui, "Procedural gaze", |ui| {
         kit::toggle_row(
             ui,
-            "Enable gentle head and eye movement",
-            "",
+            "Head & eye movement",
+            "Gentle motion over the current animation.",
             &mut state.config.enabled,
         );
         ui.add_enabled_ui(state.config.enabled,|ui| {
         kit::row(ui, "Gaze target", "", |ui| {
 egui::ComboBox::from_id_salt("gaze-target")
-            .selected_text(match state.config.target { GazeTarget::Ambient => "Ambient movement", GazeTarget::Pointer => "Follow pointer in avatar view" })
+            .selected_text(match state.config.target { GazeTarget::Ambient => "Ambient", GazeTarget::Pointer => "Follow pointer" })
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.config.target, GazeTarget::Ambient, "Ambient movement");
-                ui.selectable_value(&mut state.config.target, GazeTarget::Pointer, "Follow pointer in avatar view");
+                ui.selectable_value(&mut state.config.target, GazeTarget::Ambient, "Ambient");
+                ui.selectable_value(&mut state.config.target, GazeTarget::Pointer, "Follow pointer");
             });
 });
         kit::slider_row(ui, "Overall strength", "", egui::Slider::new(&mut state.config.intensity,0.0..=1.0));
+        egui::CollapsingHeader::new("Advanced · gaze")
+            .id_salt("gaze_advanced")
+            .default_open(false)
+            .show(ui, |ui| {
         kit::slider_row(ui, "Head follow", "", egui::Slider::new(&mut state.config.head_follow,0.0..=1.0));
         kit::slider_row(ui, "Head drift", "", egui::Slider::new(&mut state.config.head_drift,0.0..=1.0));
         kit::slider_row(ui, "Eye motion", "", egui::Slider::new(&mut state.config.eye_motion,0.0..=1.0));
-        kit::slider_row(ui, "Target smoothing (seconds)", "", egui::Slider::new(&mut state.config.smoothing_seconds,0.05..=2.5));
+        kit::slider_row(ui, "Target smoothing", "", egui::Slider::new(&mut state.config.smoothing_seconds,0.05..=2.5).suffix(" s"));
         kit::note(ui, "Slow head sway and occasional focus shifts; eyes make smaller independent movements. The current animation remains the base pose.");
+        });
     });
         if !state.status.is_empty() {
             ui.small(&state.status);
         }
-        kit::note(
-            ui,
-            "Applies to the selected character. Eyes follow the model's authored VRM look-at: bone rigs use its range maps, expression rigs drive lookLeft/Right/Up/Down (manual look sliders and overrideLookAt win). Models without look-at metadata need eye bones. Pointer following uses the avatar viewport and returns to ambient movement outside it. Desktop window detection can supply pointer coordinates during click passthrough.",
-        );
+        ui.small("Pointer following applies inside the avatar view.")
+            .on_hover_text("Outside the avatar view, gaze returns to ambient movement. Uses the model’s VRM look-at range maps or expressions; manual look controls take priority. Models without look-at metadata need eye bones. Desktop detection can provide pointer coordinates during click passthrough. Applies to the selected character only.");
         if ui.button("Reset gaze settings").clicked() {
             state.config = GazeConfig::default();
         }

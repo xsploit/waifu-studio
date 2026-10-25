@@ -7,11 +7,8 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
     let before = state.config.clone();
     kit::section(ui, "Avatar parts");
     ui.label(&state.status);
-    ui.small(
-        "Shows or hides whole mesh parts the model already contains. Pieces baked \
-         into one mesh with the body cannot be separated here; this is not an \
-         outfit or geometry editor.",
-    );
+    ui.small("Show or hide this model’s mesh parts.")
+        .on_hover_text("Only whole mesh parts can be hidden. Clothing baked into the body mesh cannot be separated here.");
     if state.parts.is_empty() {
         if !state.config.hidden_parts.is_empty() {
             ui.label(format!(
@@ -31,7 +28,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
         &mut state.filter,
         "Part name…",
     );
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
                 state.hidden_count() > 0,
@@ -47,7 +44,8 @@ pub fn ui(ui: &mut egui::Ui, state: &mut AppearanceState) -> bool {
         let missing = state.missing_saved();
         if missing > 0
             && ui
-                .button(format!("Forget {missing} choices for other models"))
+                .button(format!("Forget missing ({missing})"))
+                .on_hover_text("Remove saved visibility choices for parts absent from this model.")
                 .clicked()
         {
             state.forget_missing();

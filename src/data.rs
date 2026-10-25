@@ -27,10 +27,78 @@ pub struct Character {
     pub voice: Option<crate::voice::VoiceConfig>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Host-authored external attribution; not an extension-supplied identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalMessage {
+    pub message_id: Uuid,
+    pub origin: crate::extension_protocol::IntegrationOrigin,
+}
+impl ExternalMessage {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.message_id.is_nil() {
+            return Err("External message ID must not be nil".into());
+        }
+        self.origin.validate().map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Turn {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalMessage>,
+}
+impl Turn {
+    pub fn external(content: impl Into<String>, metadata: ExternalMessage) -> Result<Self, String> {
+        metadata.validate()?;
+        Ok(Self {
+            role: "external".into(),
+            content: content.into(),
+            external: Some(metadata),
+        })
+    }
+
+    pub fn validate_attribution(&self) -> Result<(), String> {
+        if (self.role == "external") != self.external.is_some() {
+            return Err(
+                "External role requires attribution, and attribution requires external role".into(),
+            );
+        }
+        if let Some(metadata) = &self.external {
+            metadata.validate()?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_history(turns: &[Turn]) -> Result<(), String> {
+    let mut ids = std::collections::HashSet::new();
+    for turn in turns {
+        turn.validate_attribution()?;
+        if let Some(metadata) = &turn.external
+            && !ids.insert(metadata.message_id)
+        {
+            return Err("Conversation contains duplicate external message IDs".into());
+        }
+    }
+    Ok(())
+}
+
+fn history_turn_bytes(turn: &Turn) -> usize {
+    // Six bytes per input byte covers JSON escaping. Fixed overhead includes
+    // UUID, keys, punctuation, and pretty-print whitespace, without allocating.
+    let metadata = turn.external.as_ref().map_or(0, |external| {
+        external
+            .origin
+            .integration_id
+            .len()
+            .saturating_add(external.origin.display_name.len())
+            .saturating_mul(6)
+            .saturating_add(512)
+    });
+    turn.content.len().saturating_add(metadata)
 }
 
 /// Conversation storage is a rolling window, not long-term semantic memory.
@@ -49,7 +117,7 @@ fn history_start(turns: &[Turn]) -> usize {
     let mut bytes = 0usize;
     let mut start = turns.len();
     for turn in turns.iter().rev().take(200) {
-        let Some(next) = bytes.checked_add(turn.content.len()) else {
+        let Some(next) = bytes.checked_add(history_turn_bytes(turn)) else {
             break;
         };
         if next > 2 * 1024 * 1024 {
@@ -120,6 +188,11 @@ impl Default for CompanionMotionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneSettings {
+    /// Host-owned opt-in to generate replies to attributed external messages.
+    #[serde(default)]
+    pub reply_to_external_messages: bool,
+    /// Optional provider-backed selection for chunked chat. Requires reply opt-in.
+    pub select_incoming_messages: bool,
     pub automatic_reflection: crate::facts_memory::automatic::AutomaticReflectionConfig,
     pub memory_triage: crate::facts_memory::triage::MemoryTriageConfig,
     pub routine: crate::routines::RoutineConfig,
@@ -129,6 +202,7 @@ pub struct SceneSettings {
     pub affect: crate::reply_affect::AffectConfig,
     pub behavior: crate::behavior::BehaviorConfig,
     pub appearance: crate::appearance::AppearanceConfig,
+    pub spring_physics: crate::spring_physics::SpringPhysicsConfig,
     pub facial: crate::expressions::FacialConfig,
     pub visemes: crate::viseme_audio::VisemeConfig,
     pub environment: crate::environments::EnvironmentKind,
@@ -144,6 +218,8 @@ pub struct SceneSettings {
 impl Default for SceneSettings {
     fn default() -> Self {
         Self {
+            reply_to_external_messages: false,
+            select_incoming_messages: false,
             automatic_reflection: Default::default(),
             memory_triage: Default::default(),
             routine: Default::default(),
@@ -154,6 +230,7 @@ impl Default for SceneSettings {
             facial: Default::default(),
             visemes: Default::default(),
             appearance: Default::default(),
+            spring_physics: Default::default(),
             behavior: Default::default(),
             environment: Default::default(),
             room_view: false,
@@ -173,6 +250,8 @@ impl Default for SceneSettings {
 pub struct Library {
     pub decision: crate::recipient_decision::DecisionConfig,
     pub bundled_seen: std::collections::BTreeSet<Uuid>,
+    /// Last resolved bundled path, distinct from the user's current model choice.
+    pub bundled_models: std::collections::BTreeMap<Uuid, PathBuf>,
     pub version: u32,
     pub characters: Vec<Character>,
     pub selected: Option<Uuid>,
@@ -188,6 +267,7 @@ impl Default for Library {
             version: 2,
             decision: Default::default(),
             bundled_seen: Default::default(),
+            bundled_models: Default::default(),
             characters: vec![],
             selected: None,
             providers: ProviderConfig::presets(),
@@ -252,6 +332,10 @@ impl Library {
         }
         if let Some(scene) = scene {
             self.scene = scene;
+        } else {
+            // General scene preferences still inherit, but permission to reply
+            // to external messages belongs to the selected character only.
+            self.scene.reply_to_external_messages = false;
         }
         if let Some(provider) = provider {
             self.provider = provider.min(self.providers.len().saturating_sub(1));
@@ -293,6 +377,9 @@ impl Library {
         };
         let id = Uuid::new_v4();
         self.capture_selected_settings();
+        // A new character inherits appearance and other preferences, but must
+        // receive its own explicit permission to reply to external messages.
+        self.scene.reply_to_external_messages = false;
         self.characters.push(Character { delegation: Default::default(), id, name: name.clone(), model: path, format,
             greeting: format!("Hi, I'm {name}. What's on your mind?"),
             scene: Some(self.scene.clone()), provider: Some(self.provider), voice: Some(self.voice.clone()),
@@ -356,21 +443,70 @@ impl Store {
         atomic_json(&self.root.join("library.json"), &snapshot, 8_000_000)
     }
     pub fn history(&self, id: Uuid) -> Result<Vec<Turn>, String> {
+        let mut turns = self.read_history(id)?;
+        trim_history(&mut turns);
+        Ok(turns)
+    }
+    fn read_history(&self, id: Uuid) -> Result<Vec<Turn>, String> {
         let path = self.root.join("conversations").join(format!("{id}.json"));
         if !path.try_exists().map_err(|e| e.to_string())? {
             return Ok(vec![]);
         }
-        let mut turns: Vec<Turn> = serde_json::from_slice(&read_bounded(&path, 16_000_000)?)
+        let turns: Vec<Turn> = serde_json::from_slice(&read_bounded(&path, 16_000_000)?)
             .map_err(|e| format!("Cannot read conversation; original file left intact: {e}"))?;
-        trim_history(&mut turns);
+        validate_history(&turns)
+            .map_err(|e| format!("Cannot read conversation; original file left intact: {e}"))?;
         Ok(turns)
     }
     pub fn save_history(&self, id: Uuid, turns: &[Turn]) -> Result<(), String> {
+        validate_history(turns)?;
         atomic_json(
             &self.root.join("conversations").join(format!("{id}.json")),
             &turns[history_start(turns)..],
             16_000_000,
         )
+    }
+
+    /// Persist the candidate before exposing an external delivery in the UI.
+    /// On a save error (including directory sync failure after rename), read
+    /// back once: Ok means the exact retained candidate, including message_id,
+    /// is observable on disk. It does not promise crash durability after a sync
+    /// error. Never appends or retries a write. Err leaves commit status uncertain;
+    /// callers must reconcile by UUID before attempting another delivery.
+    pub fn save_external_history(
+        &self,
+        id: Uuid,
+        turns: &[Turn],
+        message_id: Uuid,
+    ) -> Result<(), String> {
+        self.save_external_history_with(id, turns, message_id, || self.save_history(id, turns))
+    }
+
+    fn save_external_history_with(
+        &self,
+        id: Uuid,
+        turns: &[Turn],
+        message_id: Uuid,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        validate_history(turns)?;
+        let candidate = &turns[history_start(turns)..];
+        if message_id.is_nil()
+            || !candidate.iter().any(|turn| {
+                turn.external
+                    .as_ref()
+                    .is_some_and(|external| external.message_id == message_id)
+            })
+        {
+            return Err("External message ID must occur in the retained candidate history".into());
+        }
+        match write() {
+            Ok(()) => Ok(()),
+            Err(error) => match self.read_history(id) {
+                Ok(saved) if saved == candidate => Ok(()),
+                _ => Err(error),
+            },
+        }
     }
 }
 
@@ -387,7 +523,11 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn atomic_json<T: Serialize + ?Sized>(path: &Path, data: &T, limit: usize) -> Result<(), String> {
+pub(crate) fn atomic_json<T: Serialize + ?Sized>(
+    path: &Path,
+    data: &T,
+    limit: usize,
+) -> Result<(), String> {
     struct BoundedBytes {
         bytes: Vec<u8>,
         limit: usize,
@@ -486,6 +626,357 @@ pub fn find_models(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn external_turn() -> Turn {
+        Turn::external(
+            "external text",
+            ExternalMessage {
+                message_id: Uuid::new_v4(),
+                origin: crate::extension_protocol::IntegrationOrigin {
+                    integration_id: "test.source".into(),
+                    display_name: "Test source".into(),
+                },
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn legacy_and_external_history_round_trip_without_changing_legacy_json() {
+        let legacy = r#"{"role":"user","content":"hello"}"#;
+        let turn: Turn = serde_json::from_str(legacy).unwrap();
+        assert!(turn.external.is_none());
+        assert_eq!(serde_json::to_string(&turn).unwrap(), legacy);
+        let root = std::env::temp_dir().join(format!("studio-attribution-{}", Uuid::new_v4()));
+        let (store, _) = Store::open(root.clone()).unwrap();
+        let id = Uuid::new_v4();
+        let turns = vec![turn, external_turn()];
+        let message_id = turns[1].external.as_ref().unwrap().message_id;
+        store.save_external_history(id, &turns, message_id).unwrap();
+        assert_eq!(store.history(id).unwrap(), turns);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attribution_validation_rejects_bad_roles_ids_origins_and_duplicate_ids_before_trim() {
+        let good = external_turn();
+        let mut invalid = Vec::new();
+        let mut turn = good.clone();
+        turn.role = "user".into();
+        invalid.push(turn);
+        let mut turn = good.clone();
+        turn.external = None;
+        invalid.push(turn);
+        let mut turn = good.clone();
+        turn.external.as_mut().unwrap().message_id = Uuid::nil();
+        invalid.push(turn);
+        let mut turn = good.clone();
+        turn.external
+            .as_mut()
+            .unwrap()
+            .origin
+            .integration_id
+            .clear();
+        invalid.push(turn);
+        let mut turn = good.clone();
+        turn.external.as_mut().unwrap().origin.display_name = "bad\0name".into();
+        invalid.push(turn);
+        let root =
+            std::env::temp_dir().join(format!("studio-invalid-attribution-{}", Uuid::new_v4()));
+        let (store, _) = Store::open(root.clone()).unwrap();
+        let id = Uuid::new_v4();
+        let path = root.join("conversations").join(format!("{id}.json"));
+        store.save_history(id, std::slice::from_ref(&good)).unwrap();
+        let original = fs::read(&path).unwrap();
+        for turn in invalid {
+            assert!(turn.validate_attribution().is_err());
+            // Invalid entries must not disappear silently through rolling trim.
+            let mut turns = vec![turn];
+            turns.extend(std::iter::repeat_n(
+                Turn {
+                    role: "user".into(),
+                    content: "ok".into(),
+                    external: None,
+                },
+                201,
+            ));
+            assert!(store.save_history(id, &turns).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+            let malformed = serde_json::to_vec(&turns).unwrap();
+            fs::write(&path, &malformed).unwrap();
+            assert!(store.history(id).is_err());
+            assert_eq!(fs::read(&path).unwrap(), malformed);
+            fs::write(&path, &original).unwrap();
+        }
+        assert!(store.save_history(id, &[good.clone(), good]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_metadata_counts_toward_rolling_budget_without_allocating_serialization() {
+        let mut external = external_turn();
+        let overhead = history_turn_bytes(&external) - external.content.len();
+        assert!(overhead > 0);
+        external.content = "x".repeat(2 * 1024 * 1024 - overhead + 1);
+        let mut turns = vec![external.clone()];
+        trim_history(&mut turns);
+        assert!(turns.is_empty());
+        external.external = None;
+        external.role = "user".into();
+        turns.push(external);
+        trim_history(&mut turns);
+        assert_eq!(turns.len(), 1);
+        // The escaping bound covers even public, unvalidated metadata strings.
+        let mut escaped = external_turn();
+        escaped.external.as_mut().unwrap().origin.display_name = "\u{0001}".repeat(1000);
+        let actual = serde_json::to_vec_pretty(escaped.external.as_ref().unwrap())
+            .unwrap()
+            .len();
+        assert!(history_turn_bytes(&escaped) - escaped.content.len() >= actual);
+    }
+
+    #[test]
+    fn external_save_reconciles_post_write_error_only_for_exact_candidate() {
+        let root = std::env::temp_dir().join(format!("studio-external-commit-{}", Uuid::new_v4()));
+        let (store, _) = Store::open(root.clone()).unwrap();
+        let id = Uuid::new_v4();
+        let turn = external_turn();
+        let message_id = turn.external.as_ref().unwrap().message_id;
+        let candidate = vec![turn.clone()];
+        let path = root.join("conversations").join(format!("{id}.json"));
+        let mut writes = 0;
+        store
+            .save_external_history_with(id, &candidate, message_id, || {
+                writes += 1;
+                store.save_history(id, &candidate)?;
+                Err("simulated post-rename directory sync failure".into())
+            })
+            .unwrap();
+        assert_eq!(writes, 1);
+        assert_eq!(store.history(id).unwrap(), candidate);
+        let original = fs::read(&path).unwrap();
+        let mut different = candidate.clone();
+        different[0].content.push_str(" different");
+        assert!(
+            store
+                .save_external_history_with(id, &different, message_id, || Err(
+                    "pre-write failure".into()
+                ))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let mut different_origin = candidate.clone();
+        different_origin[0]
+            .external
+            .as_mut()
+            .unwrap()
+            .origin
+            .display_name = "Other source".into();
+        assert!(
+            store
+                .save_external_history_with(id, &different_origin, message_id, || Err(
+                    "write failure".into()
+                ))
+                .is_err()
+        );
+        // A matching UUID alone, or a match only after trimming readback, is insufficient.
+        let mut extra = vec![
+            Turn {
+                role: "user".into(),
+                content: "old".into(),
+                external: None
+            };
+            200
+        ];
+        extra.extend(candidate.clone());
+        atomic_json(&path, &extra, 16_000_000).unwrap();
+        assert!(
+            store
+                .save_external_history_with(id, &candidate, message_id, || Err(
+                    "write failure".into()
+                ))
+                .is_err()
+        );
+        assert!(
+            store
+                .save_external_history_with(id, &candidate, Uuid::new_v4(), || panic!(
+                    "must validate before write"
+                ))
+                .is_err()
+        );
+        let mut oversized = turn;
+        oversized.content = "x".repeat(2 * 1024 * 1024);
+        assert!(
+            store
+                .save_external_history_with(id, &[oversized], message_id, || panic!(
+                    "must retain delivery before write"
+                ))
+                .is_err()
+        );
+        fs::write(&path, b"[broken").unwrap();
+        assert!(
+            store
+                .save_external_history_with(id, &candidate, message_id, || Err(
+                    "write failure".into()
+                ))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"[broken");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_scenes_do_not_opt_in_to_external_replies() {
+        assert!(!SceneSettings::default().reply_to_external_messages);
+        for saved in ["{}", r#"{"shader":2,"portrait":false}"#] {
+            let scene: SceneSettings = serde_json::from_str(saved).unwrap();
+            assert!(!scene.reply_to_external_messages);
+        }
+        let mut legacy = serde_json::to_value(character("Legacy")).unwrap();
+        legacy["scene"] = serde_json::json!({"shader": 2});
+        let legacy: Character = serde_json::from_value(legacy).unwrap();
+        assert!(!legacy.scene.unwrap().reply_to_external_messages);
+        assert!(
+            serde_json::from_str::<SceneSettings>(r#"{"reply_to_external_messages":"true"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn external_reply_opt_in_round_trips_per_character_and_restores_on_selection() {
+        let root = std::env::temp_dir().join(format!("studio-external-policy-{}", Uuid::new_v4()));
+        let (store, mut library) = Store::open(root.clone()).unwrap();
+        let mut first = character("Opted in");
+        first.scene = Some(SceneSettings {
+            reply_to_external_messages: true,
+            ..Default::default()
+        });
+        let mut second = character("Opted out");
+        second.scene = Some(SceneSettings::default());
+        let (first_id, second_id) = (first.id, second.id);
+        library.characters = vec![first, second];
+        assert!(library.select_character(first_id));
+        assert!(library.scene.reply_to_external_messages);
+        store.save(&library).unwrap();
+
+        let (_, mut restored) = Store::open(root.clone()).unwrap();
+        assert!(restored.scene.reply_to_external_messages);
+        assert!(
+            restored.characters[0]
+                .scene
+                .as_ref()
+                .unwrap()
+                .reply_to_external_messages
+        );
+        assert!(
+            !restored.characters[1]
+                .scene
+                .as_ref()
+                .unwrap()
+                .reply_to_external_messages
+        );
+        assert!(restored.select_character(second_id));
+        assert!(!restored.scene.reply_to_external_messages);
+        store.save(&restored).unwrap();
+
+        let (_, mut restored) = Store::open(root.clone()).unwrap();
+        assert!(!restored.scene.reply_to_external_messages);
+        assert!(restored.select_character(first_id));
+        assert!(restored.scene.reply_to_external_messages);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_character_inherits_general_scene_but_not_external_reply_opt_in() {
+        for clear_selection in [false, true] {
+            let root =
+                std::env::temp_dir().join(format!("studio-legacy-policy-{}", Uuid::new_v4()));
+            let (store, mut library) = Store::open(root.clone()).unwrap();
+            let (first, legacy) = (character("Opted in"), character("Legacy"));
+            let (first_id, legacy_id) = (first.id, legacy.id);
+            library.characters = vec![first, legacy];
+            assert!(library.select_character(first_id));
+            library.scene.reply_to_external_messages = true;
+            library.scene.shader = 2;
+            library.scene.outlines = false;
+            if clear_selection {
+                library.capture_selected_settings();
+                library.selected = None;
+            }
+            assert!(library.characters[1].scene.is_none());
+            assert!(library.select_character(legacy_id));
+            assert!(!library.scene.reply_to_external_messages);
+            assert_eq!(library.scene.shader, 2);
+            assert!(!library.scene.outlines);
+            store.save(&library).unwrap();
+
+            let (_, mut restored) = Store::open(root.clone()).unwrap();
+            assert_eq!(restored.selected, Some(legacy_id));
+            assert!(!restored.scene.reply_to_external_messages);
+            assert!(restored.select_character(first_id));
+            assert!(restored.scene.reply_to_external_messages);
+            assert!(restored.select_character(legacy_id));
+            assert!(!restored.scene.reply_to_external_messages);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn new_import_preserves_general_settings_without_inheriting_external_reply_opt_in() {
+        let root = std::env::temp_dir().join(format!("studio-import-policy-{}", Uuid::new_v4()));
+        let (store, mut library) = Store::open(root.clone()).unwrap();
+        let existing = character("Existing");
+        let existing_id = existing.id;
+        library.characters.push(existing);
+        assert!(library.select_character(existing_id));
+        library.scene.reply_to_external_messages = true;
+        library.scene.shader = 2;
+        library.scene.background = [0.2, 0.3, 0.4];
+        library.scene.outlines = false;
+        let mut expected = library.scene.clone();
+        expected.reply_to_external_messages = false;
+        let expected = serde_json::to_value(expected).unwrap();
+        let path = root.join("imported.gltf");
+        fs::write(
+            &path,
+            br#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}],"nodes":[]}"#,
+        )
+        .unwrap();
+
+        let imported = library.import(&path).unwrap();
+        assert_ne!(imported, existing_id);
+        assert_eq!(library.selected, Some(imported));
+        assert_eq!(serde_json::to_value(&library.scene).unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(
+                library
+                    .selected_character()
+                    .unwrap()
+                    .scene
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap(),
+            expected
+        );
+        assert!(
+            library.characters[0]
+                .scene
+                .as_ref()
+                .unwrap()
+                .reply_to_external_messages
+        );
+        store.save(&library).unwrap();
+        let (_, mut restored) = Store::open(root.clone()).unwrap();
+        assert!(!restored.scene.reply_to_external_messages);
+        assert!(restored.select_character(existing_id));
+        assert!(restored.scene.reply_to_external_messages);
+        // Importing an already-known asset selects its saved policy.
+        assert_eq!(restored.import(&path).unwrap(), imported);
+        assert!(!restored.scene.reply_to_external_messages);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn scenes_default_to_automatic_reply_motion_and_keep_saved_choices() {
         let scene: SceneSettings = serde_json::from_str("{}").unwrap();
@@ -530,6 +1021,7 @@ mod tests {
             .save_history(
                 id,
                 &[Turn {
+                    external: None,
                     role: "user".into(),
                     content: "Hello".into(),
                 }],
@@ -749,6 +1241,7 @@ mod tests {
             .save_history(
                 first_id,
                 &[Turn {
+                    external: None,
                     role: "user".into(),
                     content: "first conversation".into(),
                 }],
@@ -758,6 +1251,7 @@ mod tests {
             .save_history(
                 second_id,
                 &[Turn {
+                    external: None,
                     role: "assistant".into(),
                     content: "second conversation".into(),
                 }],
@@ -794,6 +1288,7 @@ mod tests {
     fn rolling_history_keeps_recent_whole_unicode_messages_within_both_limits() {
         let mut turns: Vec<Turn> = (0..205)
             .map(|i| Turn {
+                external: None,
                 role: "user".into(),
                 content: i.to_string(),
             })
@@ -804,6 +1299,7 @@ mod tests {
         let message = "🌸".repeat(200_000);
         let mut turns = vec![
             Turn {
+                external: None,
                 role: "user".into(),
                 content: message
             };
@@ -813,6 +1309,7 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].content.chars().count(), 200_000);
         turns.push(Turn {
+            external: None,
             role: "user".into(),
             content: "x".repeat(2 * 1024 * 1024 + 1),
         });

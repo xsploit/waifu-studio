@@ -12,6 +12,7 @@ const MAX_ENTRIES: usize = 4000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct MotionEntry {
     /// Folder the motion came from, relative to its library root.
+    pub metadata: Option<waifu_studio::extension_manifest::MotionContent>,
     pub group: String,
     pub label: String,
     pub path: PathBuf,
@@ -22,8 +23,12 @@ pub fn roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::var_os("WAIFU_MOTION_LIBRARY")
         .map(|value| std::env::split_paths(&value).collect())
         .unwrap_or_default();
-    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/animations/companion"));
-    roots.push(PathBuf::from(WEBWAIFU4_ANIMATIONS));
+    roots.push(waifu_studio::bundled::assets_path().join("animations/companion"));
+    // The user's existing unlicensed checkout is a development convenience,
+    // never an implicit dependency of a relocated package.
+    if waifu_studio::bundled::development_assets_in_use() {
+        roots.push(PathBuf::from(WEBWAIFU4_ANIMATIONS));
+    }
     roots.retain(|root| root.is_dir());
     roots.dedup();
     roots
@@ -79,6 +84,7 @@ pub fn scan(roots: &[PathBuf]) -> Vec<MotionEntry> {
                                 .into_owned()
                         });
                     entries.push(MotionEntry {
+                        metadata: None,
                         group,
                         label: label_of(&path),
                         path,
@@ -217,12 +223,20 @@ pub fn category_of(path: &Path) -> MotionCategory {
 
 impl MotionEntry {
     pub fn category(&self) -> MotionCategory {
-        category_of(&self.path)
+        use waifu_studio::extension_manifest::MotionRole;
+        self.metadata.as_ref().map_or_else(
+            || category_of(&self.path),
+            |m| match m.role {
+                MotionRole::Idle => MotionCategory::Idle,
+                MotionRole::Talking => MotionCategory::Talking,
+                MotionRole::Gesture => MotionCategory::Unknown,
+            },
+        )
     }
 
     /// Automatic playback never starts locomotion.
     pub fn auto_playable(&self) -> bool {
-        self.category() != MotionCategory::Locomotion
+        category_of(&self.path) != MotionCategory::Locomotion
     }
 }
 
@@ -244,7 +258,11 @@ fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
 fn revision_of(entries: &[MotionEntry]) -> u64 {
     entries.iter().fold(0xcbf2_9ce4_8422_2325, |hash, entry| {
         let hash = fnv(hash, entry.path.as_os_str().as_encoded_bytes());
-        fnv(hash, entry.format.as_bytes())
+        let hash = fnv(hash, entry.format.as_bytes());
+        fnv(
+            hash,
+            &serde_json::to_vec(&entry.metadata).unwrap_or_default(),
+        )
     })
 }
 
@@ -412,6 +430,7 @@ mod tests {
     fn entry(group: &str, file: &str) -> MotionEntry {
         let path = PathBuf::from(format!("/lib/{group}/{file}"));
         MotionEntry {
+            metadata: None,
             group: group.into(),
             label: label_of(&path),
             format: format_of(&path).unwrap(),

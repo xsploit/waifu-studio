@@ -3,10 +3,8 @@ use waifu_studio::memory::{MemoryState, RecallOutcome};
 use waifu_studio::settings_kit as kit;
 
 pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
-    kit::note(
-        ui,
-        "Explicit local notes, stored separately for this character. Nothing is extracted automatically. Relevant and pinned notes are sent with chat only when enabled.",
-    );
+    ui.small("Local notes for this character.")
+        .on_hover_text("Nothing is extracted automatically. Relevant and pinned notes are sent with chat only when enabled.");
     if !state.has_character() {
         ui.label("Select a character to manage memory.");
         return;
@@ -25,6 +23,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
         {
             state.error = Some(e);
         }
+        ui.label("New note");
         ui.add(
             egui::TextEdit::multiline(&mut state.draft)
                 .hint_text("New note (maximum 1000 characters)"),
@@ -38,12 +37,14 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
         let mut linked_recall = state.linked_recall();
         if ui.add_enabled_ui(!state.busy, |ui| kit::toggle_row(ui, "Recall explicitly linked notes", "One hop from directly matched notes.", &mut linked_recall)).inner.changed()
             && let Err(error) = state.set_linked_recall(linked_recall) { state.error = Some(error); }
-        kit::note(ui, "Links are authored by you. When enabled, up to two linked notes follow directly matched notes within the existing recall limits. Lexical recall only; semantic lookup is unchanged. No automatic fact inference.");
+        ui.small("Related notes follow links you choose.")
+            .on_hover_text("When enabled, up to two linked notes follow directly matched notes within the existing recall limits. Lexical recall only; semantic lookup is unchanged. No automatic fact inference.");
         let links: std::collections::BTreeSet<_> = state.links().iter().map(|link| (link.a, link.b)).collect();
         let notes = state.notes().to_vec();
         for note in &notes {
             ui.push_id(note.id, |ui| {
-                ui.group(|ui| {
+                kit::card(ui, |card| {
+                    let ui = &mut *card.ui;
                     let draft_id = ui.id().with("note-edit");
                     let mut text = ui
                         .data_mut(|data| data.get_temp::<String>(draft_id))
@@ -56,7 +57,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
                         {
                             state.error = Some(e);
                         }
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui
                             .add_enabled(
                                 !state.busy && text != note.text,

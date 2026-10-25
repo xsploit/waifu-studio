@@ -176,10 +176,17 @@ fn parse_snapshot(
                 visible_workspaces.push(special.id);
             }
             work_areas.push(DesktopSurface {
-                id: SurfaceId::WorkArea(surface_id(&format!("monitor-{}", monitor.id))),
+                id: SurfaceId::Monitor(surface_id(&format!("monitor-{}", monitor.id))),
                 rect,
                 z_order: i32::MAX,
             });
+            if bottom > 0.0 {
+                work_areas.push(DesktopSurface {
+                    id: SurfaceId::WorkArea(surface_id(&format!("floor-{}", monitor.id))),
+                    rect,
+                    z_order: i32::MAX,
+                });
+            }
         }
     }
 
@@ -252,7 +259,8 @@ fn parse_snapshot(
                 .collect(),
             own_window_rect,
             // Hyprland does not report whether a native move is in progress.
-            own_interactive_move: false,
+            own_interactive_move: None,
+            own_above_panels: None,
             cursor,
         },
         own,
@@ -268,7 +276,7 @@ fn move_command(target: Vec2, own: &OwnWindow, snapshot: &DesktopSnapshot) -> Op
     let best = snapshot
         .surfaces
         .iter()
-        .filter(|surface| matches!(surface.id, SurfaceId::WorkArea(_)))
+        .filter(|surface| matches!(surface.id, SurfaceId::Monitor(_)))
         .map(|area| {
             let r = area.rect;
             let low = r.origin - size + REACHABLE;
@@ -572,12 +580,35 @@ mod tests {
         let parsed = parse("[]").unwrap();
         let areas: Vec<_> = parsed.snapshot.surfaces.iter().map(|s| s.rect).collect();
         assert_eq!(areas.len(), 2);
+        assert!(
+            parsed
+                .snapshot
+                .surfaces
+                .iter()
+                .all(|s| matches!(s.id, SurfaceId::Monitor(_)))
+        );
         assert_eq!(areas[0].origin, Vec2::new(0., 30.));
         assert_eq!(areas[0].size, Vec2::new(1920., 1050.));
         assert_eq!(areas[1].origin, Vec2::new(1920., 0.));
         assert_eq!(areas[1].size, Vec2::new(1080., 1920.));
         assert_eq!(parsed.snapshot.cursor, Vec2::new(-5., 12.5));
         assert!(parsed.own.is_none() && parsed.snapshot.own_window_rect.is_none());
+    }
+
+    #[test]
+    fn only_a_reserved_bottom_edge_supplies_a_taskbar_seat() {
+        let monitors = MONITORS.replace("[0,30,0,0]", "[0,30,0,40]");
+        let parsed =
+            parse_snapshot(&monitors, "[]", r#"{"x":0,"y":0}"#, 4242, "Waifu Studio").unwrap();
+        let floors: Vec<_> = parsed
+            .snapshot
+            .surfaces
+            .iter()
+            .filter(|s| matches!(s.id, SurfaceId::WorkArea(_)))
+            .collect();
+        assert_eq!(floors.len(), 1);
+        assert_eq!(floors[0].rect.origin.y + floors[0].rect.size.y, 1040.);
+        assert_eq!(parsed.snapshot.own_above_panels, None);
     }
 
     #[test]
@@ -624,7 +655,7 @@ mod tests {
             ids[..4],
             [window("0x3"), window("0x4"), window("0x2"), window("0x1")]
         );
-        assert!(matches!(ids[4], SurfaceId::WorkArea(_)));
+        assert!(matches!(ids[4], SurfaceId::Monitor(_)));
         assert_eq!(ids.len(), 6);
     }
 

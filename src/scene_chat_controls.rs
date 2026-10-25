@@ -9,14 +9,8 @@ pub fn ui(
     decision: &waifu_studio::recipient_decision::DecisionConfig,
 ) {
     kit::section(ui, "Talk to the scene");
-    kit::note(
-        ui,
-        "Each selected character replies in order. Scene conversations are saved separately per character; private chat histories and other characters' notes are never shared.",
-    );
-    kit::note(
-        ui,
-        "Selected recipients override @names. With none selected, exact @names route locally; a sole scene character is selected automatically. Jev runs only when you click its button.",
-    );
+    ui.small("Choose recipients; each character replies in order.")
+        .on_hover_text("Scene conversations are saved separately per character. Private chat histories and other characters’ notes are never shared. Selected recipients override @names. With none selected, exact @names route locally; a sole scene character is selected automatically. Jev runs only when you click its button.");
     let busy = chat.is_busy();
     ui.add_enabled_ui(!busy, |ui| {
         for c in &library.characters {
@@ -41,28 +35,34 @@ pub fn ui(
                 }
             }
         }
+        ui.label("Message");
         ui.add(
             egui::TextEdit::multiline(&mut chat.draft)
                 .desired_rows(3)
                 .hint_text("Message the selected characters…"),
         );
-        if chat.recipients.is_empty()
-            && ui.button("Ask Jev to choose recipient").clicked()
-            && let Err(error) = chat.route_draft(decision, library, roster)
-        {
-            chat.status = error;
-        }
-        if ui.button("Send to recipients").clicked()
-            && let Err(error) = chat.submit(library, roster)
-        {
-            chat.status = error;
-        }
+        ui.horizontal_wrapped(|ui| {
+            if chat.recipients.is_empty()
+                && ui
+                    .button("Choose recipient · Jev")
+                    .on_hover_text("Ask the configured decision model to route this draft.")
+                    .clicked()
+                && let Err(error) = chat.route_draft(decision, library, roster)
+            {
+                chat.status = error;
+            }
+            if ui.button("Send to scene").clicked()
+                && let Err(error) = chat.submit(library, roster)
+            {
+                chat.status = error;
+            }
+        });
     });
     if busy && ui.button("Cancel scene replies").clicked() {
         chat.cancel();
     }
     ui.label(&chat.status);
-    egui::CollapsingHeader::new("Latest scene emotions").show(ui, |ui| {
+    egui::CollapsingHeader::new("Advanced · scene emotions").id_salt("scene_emotions").default_open(false).show(ui, |ui| {
         kit::note(ui, "Uses each recipient’s saved automatic-emotion opt-in. Local behavior is required for facial output. Reply metadata costs no extra call; Jev appraisal adds a separate bounded request. Neither guarantees speech-onset synchronization.");
         for receipt in chat.affect_receipts() {
             let name = library.characters.iter().find(|c| c.id == receipt.character).map(|c| c.name.as_str()).unwrap_or("Removed character");
@@ -73,8 +73,9 @@ pub fn ui(
     if !chat.partial.is_empty() {
         ui.label(&chat.partial);
     }
-    egui::CollapsingHeader::new("Latest scene recall")
+    egui::CollapsingHeader::new("Advanced · scene recall")
         .id_salt("scene_recall")
+        .default_open(false)
         .show(ui, |ui| {
             kit::note(ui, "Memory prepared for the latest scene requests. This does not confirm provider delivery or a successful reply. Traces stay in this session; focused-chat inspectors are separate.");
             if chat.recalls().is_empty() {

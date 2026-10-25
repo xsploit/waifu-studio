@@ -1,0 +1,61 @@
+{
+  "api_version": 1,
+  "id": "studio.example.reply-gesture",
+  "version": "1.0.0",
+  "name": "Reply gesture",
+  "description": "Python 3 example: a completed reply or speech start requests one original gentle nod, then waits for its actual terminal receipt. No private reply text is requested.",
+  "provenance": {
+    "author": "Waifu Studio contributors",
+    "license": "MIT"
+  },
+  "process": {
+    "program": "gesture.py"
+  },
+  "capabilities": [
+    "lifecycle.observe",
+    "motion.play"
+  ],
+  "settings": [
+    {
+      "id": "motion",
+      "label": "Gesture",
+      "type": "motion",
+      "default": "studio.example.reply-gesture/nod"
+    },
+    {
+      "id": "active",
+      "label": "React to events",
+      "type": "toggle",
+      "default": true
+    },
+    {
+      "id": "trigger",
+      "label": "Trigger",
+      "type": "choice",
+      "options": [
+        "Reply completed",
+        "Speech started"
+      ],
+      "default": "Reply completed"
+    },
+    {
+      "id": "cooldown_seconds",
+      "label": "Cooldown seconds",
+      "type": "integer",
+      "min": 1,
+      "max": 60,
+      "default": 5
+    }
+  ],
+  "content": {
+    "motions": [
+      {
+        "id": "nod",
+        "name": "Reply: Gentle Nod",
+        "asset": "motions/nod.bvh",
+        "role": "gesture",
+        "loopable": false
+      }
+    ]
+  }
+}

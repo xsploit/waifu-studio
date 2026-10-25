@@ -203,29 +203,34 @@ pub fn dock(ui: &mut egui::Ui, preview: &mut AvatarPreview) {
 }
 fn widget(ui: &mut egui::Ui, preview: &mut AvatarPreview, height: f32) {
     let top = ui.cursor().top();
-    ui.heading("Live preview");
-    egui::ComboBox::from_id_salt("preview_framing")
-        .width(ui.available_width())
-        .selected_text(match preview.framing {
-            Framing::FullBody => "Full body",
-            Framing::UpperBody => "Upper body",
-            Framing::Face => "Face & hair",
-        })
-        .show_ui(ui, |ui| {
-            for (value, label) in [
-                (Framing::FullBody, "Full body"),
-                (Framing::UpperBody, "Upper body"),
-                (Framing::Face, "Face & hair"),
-            ] {
-                if ui
-                    .selectable_value(&mut preview.framing, value, label)
-                    .changed()
-                {
-                    preview.zoom = 1.0;
-                }
-            }
-        });
-    ui.label("Drag to rotate · scroll to zoom");
+    waifu_studio::settings_kit::row(
+        ui,
+        "Live preview",
+        "Drag to rotate · scroll to zoom",
+        |ui| {
+            egui::ComboBox::from_id_salt("preview_framing")
+                .width(180.0)
+                .selected_text(match preview.framing {
+                    Framing::FullBody => "Full body",
+                    Framing::UpperBody => "Upper body",
+                    Framing::Face => "Face & hair",
+                })
+                .show_ui(ui, |ui| {
+                    for (value, label) in [
+                        (Framing::FullBody, "Full body"),
+                        (Framing::UpperBody, "Upper body"),
+                        (Framing::Face, "Face & hair"),
+                    ] {
+                        if ui
+                            .selectable_value(&mut preview.framing, value, label)
+                            .changed()
+                        {
+                            preview.zoom = 1.0;
+                        }
+                    }
+                });
+        },
+    );
     let size = egui::vec2(
         ui.available_width(),
         (height - (ui.cursor().top() - top) - 44.0).max(60.0),
@@ -233,10 +238,7 @@ fn widget(ui: &mut egui::Ui, preview: &mut AvatarPreview, height: f32) {
     if let Some(texture) = preview.texture {
         let response = ui.add(egui::Image::new((texture, size)).sense(egui::Sense::drag()));
         let pixels = ui.ctx().pixels_per_point();
-        preview.size = UVec2::new(
-            (size.x * pixels).round().clamp(128.0, 1536.0) as u32,
-            (size.y * pixels).round().clamp(128.0, 2048.0) as u32,
-        );
+        preview.size = target_size(size, pixels);
         if response.dragged() {
             let delta = ui.input(|i| i.pointer.delta());
             preview.yaw -= delta.x * 0.008;
@@ -255,9 +257,304 @@ fn widget(ui: &mut egui::Ui, preview: &mut AvatarPreview, height: f32) {
         preview.zoom = 1.0;
     }
 }
+
+fn target_size(size: egui::Vec2, pixels_per_point: f32) -> UVec2 {
+    let pixels = Vec2::new(size.x, size.y) * pixels_per_point;
+    // Scale both axes together: independently clamping them stretches the
+    // rendered avatar when a narrow dock or a HiDPI view reaches a limit.
+    let scale = (1536.0 / pixels.x).min(2048.0 / pixels.y).min(1.0);
+    (pixels * scale).round().max(Vec2::ONE).as_uvec2()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview_fixture() -> (App, Entity, std::path::PathBuf) {
+        let directory =
+            std::env::temp_dir().join(format!("studio-preview-{}", uuid::Uuid::new_v4()));
+        let (store, library) = waifu_studio::data::Store::open(directory.clone()).unwrap();
+        let mut studio = Studio::new(store, library);
+        studio.tab = Tab::Scene;
+        studio.frame_requested = false;
+        let mut app = App::new();
+        app.insert_resource(studio)
+            .init_resource::<AvatarLoadState>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<EguiUserTextures>()
+            .add_plugins(AvatarPreviewPlugin);
+        let root = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            ChildOf(root),
+            Mesh3d::default(),
+            Aabb::from_min_max(Vec3::new(-0.5, 0.0, -0.2), Vec3::new(0.5, 1.8, 0.2)),
+            GlobalTransform::IDENTITY,
+        ));
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        app.update();
+        let camera = app
+            .world_mut()
+            .query_filtered::<Entity, With<PreviewCamera>>()
+            .single(app.world())
+            .unwrap();
+        (app, camera, directory)
+    }
+
+    fn widget_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        width: f32,
+        height: f32,
+    ) -> egui::FullOutput {
+        let mut preview = app.world_mut().resource_mut::<AvatarPreview>();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width + 40.0, height + 200.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                ui.set_width(width);
+                widget(ui, &mut preview, height);
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    fn image_rect(app: &App, output: &egui::FullOutput) -> egui::Rect {
+        fn locate(shape: &egui::Shape, texture: egui::TextureId) -> Option<egui::Rect> {
+            match shape {
+                // egui paints unrotated images as textured rectangles, and
+                // rotated images as meshes. Either can be nested in a group.
+                egui::Shape::Rect(rect)
+                    if rect
+                        .brush
+                        .as_ref()
+                        .is_some_and(|brush| brush.fill_texture_id == texture) =>
+                {
+                    Some(rect.rect)
+                }
+                egui::Shape::Mesh(mesh) if mesh.texture_id == texture => Some(mesh.calc_bounds()),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| locate(shape, texture)),
+                _ => None,
+            }
+        }
+        let texture = app.world().resource::<AvatarPreview>().texture.unwrap();
+        let rect = output
+            .shapes
+            .iter()
+            .find_map(|shape| {
+                let rect = locate(&shape.shape, texture)?;
+                // Retain the complete widget bounds for aspect checks while
+                // requiring that the actual image intersects the painted clip.
+                rect.intersects(shape.clip_rect).then_some(rect)
+            })
+            .expect("preview texture must be painted within the visible clip");
+        assert!(rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0);
+        rect
+    }
+
+    fn click(position: egui::Pos2) -> Vec<egui::Event> {
+        std::iter::once(egui::Event::PointerMoved(position))
+            .chain(
+                [true, false]
+                    .into_iter()
+                    .map(|pressed| egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    }),
+            )
+            .collect()
+    }
+
+    fn text_center(output: &egui::FullOutput, text: &str) -> egui::Pos2 {
+        fn locate(shape: &egui::Shape, text: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(label) if label.galley.job.text == text => {
+                    Some(label.visual_bounding_rect().center())
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| locate(shape, text)),
+                _ => None,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| locate(&shape.shape, text))
+            .unwrap_or_else(|| panic!("missing preview control: {text}"))
+    }
+
+    #[test]
+    fn preview_widget_orbit_zoom_and_focus_survive_settings_round_trip() {
+        let (mut app, camera, directory) = preview_fixture();
+        let ctx = egui::Context::default();
+        widget_frame(&mut app, &ctx, vec![], 300.0, 600.0);
+        let output = widget_frame(&mut app, &ctx, vec![], 300.0, 600.0);
+        let center = image_rect(&app, &output).center();
+        widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(center)],
+            300.0,
+            600.0,
+        );
+        widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: default(),
+            }],
+            300.0,
+            600.0,
+        );
+        let dragged = center + egui::vec2(35.0, 20.0);
+        widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(dragged)],
+            300.0,
+            600.0,
+        );
+        widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: dragged,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: default(),
+            }],
+            300.0,
+            600.0,
+        );
+        let output = widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 80.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: default(),
+            }],
+            300.0,
+            600.0,
+        );
+        let (yaw, pitch) = {
+            let preview = app.world().resource::<AvatarPreview>();
+            assert!(preview.yaw.abs() > 0.01 && preview.pitch.abs() > 0.01);
+            assert!(preview.zoom > 1.0);
+            (preview.yaw, preview.pitch)
+        };
+        let combo = text_center(&output, "Full body");
+        // Move away from the image so inertial scrolling cannot affect its zoom.
+        widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(combo)],
+            300.0,
+            600.0,
+        );
+        widget_frame(&mut app, &ctx, click(combo), 300.0, 600.0);
+        assert!(
+            egui::Popup::is_any_open(&ctx),
+            "framing click must open the popup"
+        );
+        // Popup::show uses an invisible sizing pass on the opening frame.
+        // Inspect the next painted frame, then click the actual option bounds.
+        let popup = widget_frame(&mut app, &ctx, vec![], 300.0, 600.0);
+        let face = text_center(&popup, "Face & hair");
+        widget_frame(&mut app, &ctx, click(face), 300.0, 600.0);
+        assert!(
+            !egui::Popup::is_any_open(&ctx),
+            "selecting a focus must close the popup"
+        );
+        let selected = widget_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(combo)],
+            300.0,
+            600.0,
+        );
+        text_center(&selected, "Face & hair");
+        {
+            let preview = app.world().resource::<AvatarPreview>();
+            assert!(preview.framing == Framing::Face);
+            assert_eq!(preview.zoom, 1.0);
+            assert_eq!((preview.yaw, preview.pitch), (yaw, pitch));
+        }
+        app.update();
+        let pose = *app.world().get::<Transform>(camera).unwrap();
+        let focus = Vec3::new(0.0, 1.8 * 0.86, 0.0);
+        assert!(
+            (pose.rotation * Vec3::NEG_Z).abs_diff_eq((focus - pose.translation).normalize(), 1e-5)
+        );
+        for tab in [Tab::Chat, Tab::Connections, Tab::Characters, Tab::Scene] {
+            app.world_mut().resource_mut::<Studio>().tab = tab;
+            app.update();
+            assert_eq!(
+                app.world().get::<Camera>(camera).unwrap().is_active,
+                matches!(tab, Tab::Characters | Tab::Scene)
+            );
+            assert_eq!(*app.world().get::<Transform>(camera).unwrap(), pose);
+            let preview = app.world().resource::<AvatarPreview>();
+            assert_eq!(
+                (preview.yaw, preview.pitch, preview.zoom),
+                (yaw, pitch, 1.0)
+            );
+            assert!(preview.framing == Framing::Face);
+            assert!(!app.world().resource::<Studio>().frame_requested);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn preview_widget_resize_preserves_aspect_and_orbit_at_texture_limits() {
+        let (mut app, camera, directory) = preview_fixture();
+        let ctx = egui::Context::default();
+        {
+            let mut preview = app.world_mut().resource_mut::<AvatarPreview>();
+            preview.yaw = 0.4;
+            preview.pitch = -0.2;
+            preview.zoom = 1.7;
+        }
+        let initial = *app.world().get::<Transform>(camera).unwrap();
+        for (width, height, pixels) in [
+            (300.0, 80.0, 1.0),
+            (2800.0, 600.0, 2.0),
+            (300.0, 1800.0, 3.0),
+            (600.0, 900.0, 1.0),
+        ] {
+            ctx.set_pixels_per_point(pixels);
+            widget_frame(&mut app, &ctx, vec![], width, height);
+            let output = widget_frame(&mut app, &ctx, vec![], width, height);
+            let rect = image_rect(&app, &output);
+            let size = app.world().resource::<AvatarPreview>().size;
+            assert!(size.x > 0 && size.x <= 1536 && size.y > 0 && size.y <= 2048);
+            // Allow rounding by one physical pixel without accepting stretching.
+            assert!(
+                (size.x as f32 * rect.height() - size.y as f32 * rect.width()).abs()
+                    <= rect.width().max(rect.height())
+            );
+            app.update();
+            let target = &app.world().resource::<PreviewImage>().0;
+            let image = app.world().resource::<Assets<Image>>().get(target).unwrap();
+            assert_eq!((image.width(), image.height()), (size.x, size.y));
+            let preview = app.world().resource::<AvatarPreview>();
+            assert_eq!((preview.yaw, preview.pitch, preview.zoom), (0.4, -0.2, 1.7));
+        }
+        assert_ne!(*app.world().get::<Transform>(camera).unwrap(), initial);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn framing_contains_full_avatar_at_portrait_and_landscape_aspects() {
         let min = Vec3::new(-0.5, 0.0, -0.2);

@@ -1,12 +1,13 @@
 [package]
 name = "waifu-studio"
-version = "0.1.0"
+version = "0.1.0-preview.1"
 edition = "2024"
 rust-version = "1.95"
 description = "A native Rust character companion studio with VRM, chat, desktop overlay and configurable speech"
 license = "MIT"
 
 [dependencies]
+wgpu = { version = "29", default-features = false }
 bevy = { version = "=0.19.0", default-features = false, features = ["default_app", "3d_bevy_render", "mesh_picking", "bevy_world_serialization", "bevy_winit", "multi_threaded", "x11", "wayland", "png", "jpeg", "bevy_audio", "wav", "mp3"] }
 bevy_egui = { version = "=0.42.0", default-features = false, features = ["render", "default_fonts", "manage_clipboard"] }
 bevy_vrm = { path = "vendor/crates/bevy_vrm" }
@@ -36,6 +37,9 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", features = ["blocking-api"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_IO", "Win32_System_SystemInformation"] }
+
 [profile.dev]
 debug = 0
 
@@ -43,4 +47,8 @@ debug = 0
 debug = 0
 
 [patch.crates-io]
+bevy_render = { path = "vendor/crates/bevy_render" }
 bevy_mesh = { path = "vendor/crates/bevy_mesh" }
+
+[dev-dependencies]
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

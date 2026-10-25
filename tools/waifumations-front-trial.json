@@ -1,0 +1,18 @@
+{
+  "_about": "Unreviewed Waifumations prompt trial. Keep out of the shipped library until target-avatar playback is reviewed. Arms start/end beside the torso; gesture paths stay ahead of the body.",
+  "defaults": {"seconds": 6},
+  "clips": [
+    {
+      "name": "idle_sides_trial_01",
+      "prompt": "A person stands facing forward with both arms hanging relaxed at their sides, elbows slightly away from the ribs and hands just ahead of the outer thighs, gently breathing and making a small head tilt while keeping the arms relaxed beside the body throughout."
+    },
+    {
+      "name": "talking_front_trial_01",
+      "prompt": "A person starts standing with arms relaxed at their sides, then talks with small open palm gestures in the space in front of their waist, elbows beside the ribs and hands separated, moving the hands smoothly forward from beside the hips and returning along the same path to arms relaxed at the sides."
+    },
+    {
+      "name": "shrug_front_trial_01",
+      "prompt": "A person stands with arms relaxed at their sides, raises both forearms forward into a small palms up shrug with elbows beside the waist and hands well apart in front of the body, tilts the head slightly, then lowers both hands forward and down to the sides."
+    }
+  ]
+}

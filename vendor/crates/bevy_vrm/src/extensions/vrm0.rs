@@ -55,7 +55,7 @@ impl Avatar {
             .secondary_animation
             .as_ref()
             .and_then(|sa| sa.bone_groups.as_ref())
-            .map_or_default(|groups| {
+            .map_or_else(Default::default, |groups| {
                 groups
                     .iter()
                     .map(|group| {

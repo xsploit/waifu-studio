@@ -1,7 +1,7 @@
 //! Explicit microphone recording with OpenAI-compatible, Fish and Vercel transcription.
 //! VAD uses local energy or optional Silero ONNX inference. Audio is
 //! downmixed and band-limited to 16 kHz with a streaming polyphase FIR resampler.
-mod resample;
+pub(crate) mod resample;
 use base64::Engine;
 use cpal::{
     Sample,
@@ -132,9 +132,9 @@ impl ListenConfig {
         self.backend = backend;
         let (endpoint, model, key) = match backend {
             SttBackend::OpenAiCompatible => (
-                "https://api.openai.com/v1/audio/transcriptions",
+                "http://127.0.0.1:8000/v1/audio/transcriptions",
                 "whisper-1",
-                "OPENAI_API_KEY",
+                "",
             ),
             SttBackend::FishAsr => (
                 "https://api.fish.audio/v1/asr",
@@ -280,6 +280,12 @@ impl ListeningState {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         self.status = "Finishing recording / transcribing…".into();
+    }
+    /// A service switch must not forward the previous provider's session key.
+    pub fn change_service(&mut self, configure: impl FnOnce(&mut ListenConfig)) {
+        self.cancel();
+        self.session_key.clear();
+        configure(&mut self.config);
     }
     /// In-flight HTTP finishes within its timeout; its result is discarded.
     pub fn cancel(&mut self) {
@@ -807,6 +813,26 @@ fn clean_fish_transcript(text: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changing_transcription_service_clears_session_key_and_custom_stays_local() {
+        let mut state = ListeningState::default();
+        state.session_key = "synthetic-provider-key".into();
+        state.config.auto_send = false;
+        state.change_service(|config| config.preset(SttBackend::OpenAiCompatible));
+        assert!(state.session_key.is_empty());
+        assert!(!state.config.auto_send);
+        assert_eq!(
+            state.config.endpoint,
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert!(state.config.api_key_env.is_empty());
+        let old: ListenConfig = serde_json::from_str(
+            r#"{"endpoint":"https://custom.example/asr","api_key_env":"EXISTING_KEY"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.endpoint, "https://custom.example/asr");
+        assert_eq!(old.api_key_env, "EXISTING_KEY");
+    }
     #[test]
     fn automatic_send_intent_is_scoped_consumed_once_and_cancelled() {
         let mut state = ListeningState::default();
