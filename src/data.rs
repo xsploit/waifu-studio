@@ -161,7 +161,7 @@ impl Default for ReplyMotionConfig {
     fn default() -> Self {
         Self {
             mode: ReplyMotionMode::AutoPlay,
-            cooldown_seconds: 30,
+            cooldown_seconds: 8,
             emotion_bindings: Vec::new(),
         }
     }
@@ -981,7 +981,7 @@ mod tests {
     fn scenes_default_to_automatic_reply_motion_and_keep_saved_choices() {
         let scene: SceneSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(scene.reply_motion.mode, ReplyMotionMode::AutoPlay);
-        assert_eq!(scene.reply_motion.cooldown_seconds, 30);
+        assert_eq!(scene.reply_motion.cooldown_seconds, 8);
         let scene: SceneSettings =
             serde_json::from_str(r#"{"reply_motion":{"mode":"auto_play","cooldown_seconds":45}}"#)
                 .unwrap();
@@ -995,7 +995,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mapped.mode, ReplyMotionMode::EmotionMapped);
-        assert_eq!(mapped.cooldown_seconds, 30);
+        assert_eq!(mapped.cooldown_seconds, 8);
         assert_eq!(
             mapped.emotion_bindings,
             [EmotionMotionBinding {

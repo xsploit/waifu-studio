@@ -2,12 +2,12 @@
 //! Narrow rows stack their controls below the label without changing widget salts.
 use bevy_egui::egui::{self, Color32, RichText, Stroke};
 
-const CARD: Color32 = Color32::from_rgb(28, 28, 28);
-const CARD_LINE: Color32 = Color32::from_rgb(42, 42, 42);
+const CARD: Color32 = Color32::from_rgb(46, 46, 46);
+const CARD_LINE: Color32 = Color32::from_rgb(62, 62, 62);
 const TITLE: Color32 = Color32::from_rgb(232, 232, 232);
 const HINT: Color32 = Color32::from_rgb(145, 145, 145);
-const ON: Color32 = Color32::from_rgb(214, 104, 112);
-pub const COLUMN: f32 = 680.0;
+const ON: Color32 = Color32::from_rgb(85, 171, 95);
+pub const COLUMN: f32 = 760.0;
 
 /// Small label above a card.
 pub fn section(ui: &mut egui::Ui, title: &str) {
@@ -21,8 +21,8 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut Card) -> R) -> R {
     egui::Frame::new()
         .fill(CARD)
         .stroke(Stroke::new(1.0, CARD_LINE))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(10, 4))
+        .corner_radius(14)
+        .inner_margin(egui::Margin::symmetric(18, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let mut card = Card { ui, rows: 0 };
@@ -246,20 +246,12 @@ pub fn note(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.add(egui::Label::new(RichText::new(text.into()).size(12.0).color(HINT)).wrap());
 }
 
-/// Collapsible card with a title, open by default; holds rows.
+/// Standard section and card shared across all settings menus.
 pub fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) {
-    ui.add_space(6.0);
-    egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, CARD_LINE))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(10, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            egui::CollapsingHeader::new(RichText::new(title).size(13.0).color(TITLE))
-                .default_open(true)
-                .show_unindented(ui, add);
-        });
+    section(ui, title);
+    card(ui, |card| {
+        add(card.ui);
+    });
 }
 
 /// A collapsed Advanced section. Use a unique page id; existing capture and

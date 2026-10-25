@@ -134,7 +134,7 @@ Use **Attach files** or drag files onto the app to stage attachments beside the 
 
 ### Talk with several characters
 
-In **Scene & avatar**, add up to three companions beside the focused avatar, for **four visible characters total**, and adjust their placement. Open **Group chat** to select the recipients of a message. Replies run in sequence, with each character retaining their own history, voice, memory context and facial state.
+In **Group chat**, add up to three companions beside the focused avatar, for **four visible characters total**, and select the recipients of a message. Placement controls live in that page's Advanced section. Replies run in sequence, with each character retaining their own history, voice, memory context and facial state.
 
 Recipient selection can use local name matching or an explicit decision-model suggestion. This lets you direct a question to one character or hear several responses without merging their personalities. It does not create an unattended conversation in which the characters keep talking to each other indefinitely.
 
@@ -188,7 +188,9 @@ Fish **Voice design** accepts a voice description, a short preview script and a 
 
 ## Appearance, scenes and animation
 
-**Scene & avatar** keeps a live character preview beside the controls. Frame the full body, upper body or face, then rotate and zoom while editing.
+**Scene & avatar** groups related controls into **Appearance, Camera, Motion, Face & gaze, Behavior, World and Desktop**. Settings pages share section cards, row labels and right-aligned controls. Drag the live preview to orbit and scroll to zoom; its framing is independent of the main Studio camera.
+
+**Appearance** owns shading (authored MToon, cel, soft anime, PBR or unlit), independent anime outlines, material tuning, lighting, visible model parts and stackable post-processing. Outlines also work in PBR and unlit modes. **Camera** owns main-view framing and recentering. **Motion** owns playlists, response gestures, manual playback and spring-physics tuning.
 
 <table>
   <tr>
@@ -221,7 +223,7 @@ Import **BVH, VRMA or FBX** motions, find them by folder, category or search, th
 
 Idle and talking playlists give the character ambient motion without manually playing every clip. Manual playback takes priority; resume the automatic animator when you want playlists to continue. Bundled desktop idle, grabbed and sitting motions come from Desktop Homunculus.
 
-For a response-specific gesture, request a decision-model motion suggestion and review it before pressing Play, or choose per-reply **Suggest** or **Auto-play** with a cooldown. A separate optional emotion-mapped mode rotates through the playlists you assign to reply emotions; it uses that reply's metadata without another decision request. These features select existing motions, not newly generated animation. A general locomotion controller and arbitrary-rig compatibility are outside the current scope.
+Automatic decision-model gestures are enabled by default with an eight-second cooldown. Early emotion appraisal can start a matching gesture while the reply is still being generated; the decision model can choose from the full stationary motion catalog, including uncategorized reactions. When a gesture finishes, the automatic animator resumes a talking loop if speech is still playing, or an idle loop otherwise. Walking clips remain manual. You can instead request suggestions, disable response gestures, or assign per-emotion playlists. The emotion-mapped mode uses the appraisal or reply metadata without an additional motion-selection request. These features select existing motions, not newly generated animation. A general locomotion controller and arbitrary-rig compatibility are outside the current scope.
 
 ### Expressions, gaze and secondary motion
 
@@ -245,9 +247,9 @@ The evidence ledger can propose facts or preferences from conversation, optional
 
 ### Semantic lookup
 
-Enable **Semantic lookup** when you want to find related memories by meaning instead of only shared words. Configure an OpenAI-compatible embeddings endpoint and select **Explicit notes** or **Accepted evidence** as the source. After opt-in, that source is indexed; pending evidence is excluded. A remote endpoint receives the selected memory content and lookup queries.
+**Semantic recall is enabled by default** using Vercel AI Gateway (`https://ai-gateway.vercel.sh/v1`), `openai/text-embedding-3-small` and `AI_GATEWAY_API_KEY`. It indexes the selected character's explicit notes and accepted evidence together; pending suggestions are excluded. Choose either source separately or another OpenAI-compatible embeddings service under **Memory → Semantic recall**. Remote services receive the selected memory text and search queries.
 
-Use **Find memories for current draft** to search for context related to what you are about to send. Matching context attaches once when you send the same draft, after checking it is still valid for that character. The feature does not automatically embed every conversation or silently create new memories. Vector-cache controls let you clear and rebuild the derived index.
+With **Look up memories when sending** enabled, sending a message searches memories by meaning before assembling the chat request. Valid matches attach once and are not copied into conversation history. Lookup runs in a background worker with a ten-second send wait; failure falls back to ordinary lexical and pinned recall. Changing the draft or character cancels the pending send. **Find memories for current draft** remains available for manual lookup when automatic lookup is disabled. Clearing the vector cache rebuilds the derived index and preserves the original memories. Saved explicit settings take precedence over fresh-install defaults.
 
 ### Reflection drafts
 
@@ -305,7 +307,7 @@ Studio and the transparent companion can be used as sources in an external captu
 
 ## Assistant tools and coding agents
 
-These optional workflows let the companion search, use configured tools, or delegate bounded work. The automatic loop is **off by default**. Normal chat keeps its existing streaming path and does not make tool-discovery or extra model requests.
+These optional workflows let the companion search, use configured tools, or delegate bounded work. The automatic loop is **off by default**. Normal chat uses the streaming reply path without tool discovery or agent round trips. Semantic recall, emotion appraisal and automatic gestures have their own settings and requests.
 
 ### Let Hikari search and use tools
 
@@ -339,7 +341,7 @@ The runner, task board and reviewed coding loop are directly visible in **Agent 
 
 For sequential work, the experimental **Companion agentic loop** lets the companion propose tasks toward a goal and use their results to continue. Choose the worker, access, directory/SSH scope and limits, then **Review loop and fixed execution scope → Start reviewed loop**. Starting authorizes automatic execution of proposals within that reviewed scope, up to **8 worker tasks and 9 model calls**. Each successful worker result returns to the companion, including one final summary request after the last allowed task. Stop controls cancel the loop and its active jobs. It is explicitly started and bounded, not an always-running background supervisor.
 
-**Show intermediate text** and **Speak intermediate text** are separate per-character settings under Agent tasks. Showing progress is on by default; speaking it is off. They control brief companion text between tool calls in both the conversational and reviewed coding loops; final answers use the normal spoken-reply setting. Tool receipts are collapsible when progress is shown, and tool status remains visible when progress text is hidden. Extra model calls, tool execution and optional spoken progress add latency.
+**Show intermediate text** and **Speak intermediate text** are separate per-character settings under **Assistant tools → Progress updates**. Showing progress is on by default; speaking it is off. They control brief companion text between tool calls in both the conversational and reviewed coding loops; final answers use the normal spoken-reply setting. Tool receipts are collapsible when progress is shown, and tool status remains visible when progress text is hidden. Extra model calls, tool execution and optional spoken progress add latency.
 
 ## Saved data and credentials
 

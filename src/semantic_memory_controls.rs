@@ -10,10 +10,8 @@ pub fn ui(
     memory: &MemoryState,
     facts: &waifu_studio::facts_memory::FactsMemoryState,
 ) {
-    ui.separator();
-    kit::section(ui, "Semantic lookup");
-    ui.small("Find related notes or accepted evidence.")
-        .on_hover_text("Uses an OpenAI-compatible /embeddings endpoint. After opt-in, the selected source is indexed in the background. Find memories for current draft sends that draft as a query; matches attach once when you send the same draft. Chat does not add memories automatically.");
+    ui.small("Vercel embeddings recall related notes and accepted evidence when you send.")
+        .on_hover_text("Selected sources are indexed in the background. Automatic lookup sends your message as a query and attaches matching memories to that request. Pending suggestions still need review before recall.");
     if !state.settings_loaded() {
         ui.label("Loading settings…");
         return;
@@ -27,6 +25,12 @@ pub fn ui(
     }
     let s = &mut state.settings;
     kit::toggle_row(ui, "Use semantic lookup", "", &mut s.enabled);
+    kit::toggle_row(
+        ui,
+        "Look up memories when sending",
+        "Wait briefly for matching memories before the reply starts.",
+        &mut s.automatic_lookup,
+    );
     kit::row(
         ui,
         "Memory source",
@@ -36,8 +40,16 @@ pub fn ui(
                 .selected_text(match s.scope {
                     waifu_studio::semantic_memory::SemanticScope::Notes => "Explicit notes",
                     waifu_studio::semantic_memory::SemanticScope::Evidence => "Accepted evidence",
+                    waifu_studio::semantic_memory::SemanticScope::All => {
+                        "Notes + accepted evidence"
+                    }
                 })
                 .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut s.scope,
+                        waifu_studio::semantic_memory::SemanticScope::All,
+                        "Notes + accepted evidence",
+                    );
                     ui.selectable_value(
                         &mut s.scope,
                         waifu_studio::semantic_memory::SemanticScope::Notes,
@@ -114,13 +126,12 @@ pub fn ui(
             state.forget(id);
         }
     });
-    let source: &dyn waifu_studio::semantic_memory::SemanticSource =
-        if state.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
-            facts
-        } else {
-            memory
-        };
-    let ready = state.ready(character, source);
+    let source = waifu_studio::semantic_memory::MemorySources {
+        scope: state.scope(),
+        memory,
+        facts,
+    };
+    let ready = state.ready(character, &source);
     ui.label(if ready {
         format!("✔ {}", state.status)
     } else {

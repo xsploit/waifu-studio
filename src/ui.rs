@@ -372,16 +372,13 @@ pub fn studio_ui(
                     }
                 }
                 Tab::Scene => {
-                    settings_pages::scene(ui, &mut studio, &mut avatar_ui, &mut animation);
-                    settings_pages::advanced(ui, "scene", |ui| {
-                        scene(
-                            ui,
-                            &mut studio,
-                            &mut animation,
-                            &mut desktop,
-                            &mut avatar_ui,
-                        )
-                    });
+                    scene(
+                        ui,
+                        &mut studio,
+                        &mut animation,
+                        &mut desktop,
+                        &mut avatar_ui,
+                    );
                 }
                 Tab::SceneChat => {
                     settings_pages::group_chat(
@@ -390,20 +387,15 @@ pub fn studio_ui(
                         &mut avatar_ui.scene_chat,
                         &mut avatar_ui.roster,
                     );
+                    crate::scene_chat_controls::transcript(ui, &avatar_ui.scene_chat);
                     settings_pages::advanced(ui, "group_chat", |ui| {
                         crate::scene_chat_controls::ui(
                             ui,
                             &mut avatar_ui.scene_chat,
                             &studio.library,
-                            &avatar_ui.roster,
-                            &studio.library.decision,
                         );
                         ui.separator();
-                        crate::scene_roster_controls::ui(
-                            ui,
-                            &mut avatar_ui.roster,
-                            &studio.library,
-                        );
+                        crate::scene_roster_controls::ui(ui, &mut avatar_ui.roster);
                     });
                 }
                 Tab::Connections => {
@@ -989,6 +981,19 @@ const ILLUSTRATED_BACKGROUNDS: [(&str, &str); 3] = [
     ("Neon rooftop", "neon-rooftop.png"),
 ];
 
+fn scene_subnav(ui: &mut egui::Ui, id: &str, labels: &[&str]) -> usize {
+    let key = egui::Id::new(("settings-category", id));
+    let mut selected = ui.ctx().data(|d| d.get_temp::<usize>(key).unwrap_or(0));
+    ui.horizontal_wrapped(|ui| {
+        for (index, label) in labels.iter().enumerate() {
+            ui.selectable_value(&mut selected, index, *label);
+        }
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(key, selected));
+    ui.add_space(12.0);
+    selected
+}
+
 fn scene(
     ui: &mut egui::Ui,
     studio: &mut Studio,
@@ -996,297 +1001,361 @@ fn scene(
     desktop: &mut crate::desktop_settings::DesktopSettings,
     avatar: &mut AvatarUi,
 ) {
-    const KEY: &str = "Scene";
-    let facial = &mut avatar.facial;
-    let appearance = &mut avatar.appearance;
-
-    anchored_section(
+    let before = serde_json::to_string(&studio.library.scene).ok();
+    let category = scene_subnav(
         ui,
-        KEY,
-        "Motion",
-        "Pick a motion from your library, or import a BVH, VRMA or FBX file.",
+        "scene",
+        &[
+            "Appearance",
+            "Camera",
+            "Motion",
+            "Face & gaze",
+            "Behavior",
+            "World",
+            "Desktop",
+        ],
     );
-    kit::card(ui, |c| {
-        c.block(|ui| animation_controls(ui, studio, animation));
-    });
-
-    anchored_section(
-        ui,
-        KEY,
-        "Avatar",
-        "Shading, face, lip-sync and behavior for this character.",
-    );
-    kit::card(ui, |c| {
-        let ui = &mut *c.ui;
-        kit::row(ui, "Model shading", "", |ui| {
-            egui::ComboBox::from_id_salt("shader")
-                .truncate()
-                .selected_text(match studio.library.scene.shader {
-                    1 => "Lit / PBR",
-                    2 => "Unlit",
-                    _ => "MToon / Anime",
+    match category {
+        0 => {
+            kit::section(ui, "Appearance & post-processing");
+            kit::card(ui, |c| {
+                c.row(
+                    "Shading",
+                    "One base material style. Outlines and effects combine with any style.",
+                    |ui| {
+                        let material = &studio.library.scene.visuals.material;
+                        let current = match studio.library.scene.shader {
+                            1 => 3,
+                            2 => 4,
+                            _ if !material.mtoon => 0,
+                            _ if material.toony >= 0.99 => 1,
+                            _ => 2,
+                        };
+                        let mut selected = current;
+                        egui::ComboBox::from_id_salt("appearance-shading")
+                            .selected_text(
+                                [
+                                    "MToon · model original",
+                                    "Cel shading",
+                                    "Soft anime",
+                                    "PBR",
+                                    "Unlit",
+                                ][current],
+                            )
+                            .width(control_width(ui))
+                            .show_ui(ui, |ui| {
+                                for (i, label) in [
+                                    "MToon · model original",
+                                    "Cel shading",
+                                    "Soft anime",
+                                    "PBR",
+                                    "Unlit",
+                                ]
+                                .iter()
+                                .enumerate()
+                                {
+                                    ui.selectable_value(&mut selected, i, *label);
+                                }
+                            });
+                        if selected != current {
+                            studio.library.scene.shader = match selected {
+                                3 => 1,
+                                4 => 2,
+                                _ => 0,
+                            };
+                            if selected < 3 {
+                                use waifu_studio::anime_look::AnimeLook;
+                                let look = [AnimeLook::Authored, AnimeLook::Cel, AnimeLook::Soft]
+                                    [selected];
+                                studio.library.scene.visuals.material =
+                                    look.apply(&studio.library.scene.visuals.material);
+                            }
+                        }
+                    },
+                );
+                c.row(
+                    "Anime outlines",
+                    "Independent of MToon, cel, PBR and unlit shading.",
+                    |ui| kit::toggle(ui, &mut studio.library.scene.outlines),
+                );
+                if c.row("Key light", "Lighting for the companion.", |ui| {
+                    ui.add(egui::Slider::new(&mut desktop.light_intensity, 0.2..=2.0))
                 })
-                .width(control_width(ui))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut studio.library.scene.shader, 0, "MToon / Anime");
-                    ui.selectable_value(&mut studio.library.scene.shader, 1, "Lit / PBR");
-                    ui.selectable_value(&mut studio.library.scene.shader, 2, "Unlit");
-                });
-        });
-        kit::toggle_row(
-            ui,
-            "Character outlines",
-            "",
-            &mut studio.library.scene.outlines,
-        );
-        kit::toggle_row(
-            ui,
-            "Gentle idle movement",
-            "",
-            &mut studio.library.scene.idle_motion,
-        );
-    });
-    {
-        let selected = studio.library.selected;
-        if crate::behavior_controls::ui(
-            ui,
-            &mut avatar.behavior,
-            &mut studio.library.scene.behavior,
-            selected,
-            &facial.available,
-        ) {
-            studio.save();
-        }
-    }
-    group(ui, "Fictional routine", |ui| {
-        if crate::routine_controls::ui(ui, &mut studio.library.scene.routine) {
-            studio.save();
-        }
-    });
-    group(ui, "Reply emotion & mood", |ui| {
-        if let Some(id) = studio.library.selected {
-            let config = studio.library.scene.affect.clone();
-            let (previous, emotion, changed_config) = {
-                let state = studio.affect.entries.entry(id).or_default();
-                state.config = config;
-                let previous = state.emotion;
-                let changed = waifu_studio::reply_affect_controls::draw_affect_controls(ui, state);
-                (
-                    previous,
-                    state.emotion,
-                    changed.then(|| state.config.clone()),
-                )
+                .changed()
+                {
+                    desktop.mark_dirty();
+                }
+                c.row(
+                    "Restore model appearance",
+                    "Keep the background and camera; restore authored materials and visible parts.",
+                    |ui| {
+                        if ui.button("Restore").clicked() {
+                            studio.library.scene.shader = 0;
+                            studio.library.scene.outlines = true;
+                            studio.library.scene.visuals = Default::default();
+                            avatar.appearance.config = Default::default();
+                            studio.library.scene.appearance = Default::default();
+                        }
+                    },
+                );
+            });
+            let mut state = waifu_studio::visuals::VisualState {
+                settings: studio.library.scene.visuals.clone(),
+                suppressed: studio.mode == ViewMode::Desktop,
             };
-            if let Some(config) = changed_config {
-                studio.library.scene.affect = config;
-                if previous != emotion {
-                    studio.lifecycle.record(
-                        waifu_studio::extension_lifecycle::LifecycleEvent::EmotionChanged {
-                            character: id,
-                            owner: waifu_studio::extension_protocol::EmotionOwner::Studio,
+            if crate::visual_controls::ui(ui, &mut state) {
+                studio.library.scene.visuals = state.settings;
+            }
+            group(ui, "Avatar parts", |ui| {
+                if crate::appearance_controls::ui(ui, &mut avatar.appearance) {
+                    studio.library.scene.appearance = avatar.appearance.config.clone();
+                    studio.save();
+                }
+            });
+        }
+        1 => {
+            kit::section(ui, "Camera & framing");
+            kit::card(ui, |c| {
+                c.row("Framing", "Choose the main Studio camera view.", |ui| {
+                    for (value, label) in [(true, "Portrait"), (false, "Full body")] {
+                        if ui
+                            .selectable_value(&mut studio.library.scene.portrait, value, label)
+                            .changed()
+                        {
+                            studio.frame_requested = true;
+                        }
+                    }
+                });
+                c.row("Recenter", "Return to the current framing.", |ui| {
+                    if ui.button("Recenter").clicked() {
+                        studio.frame_requested = true;
+                    }
+                });
+                c.row("Settings preview", "Drag the preview to orbit; scroll to zoom. Its view is separate from the main Studio camera.", |ui| {ui.label("Drag / scroll preview");});
+            });
+            if kit::toggle_row(
+                ui,
+                "Wide room view",
+                "Frame the furnished room around the companion.",
+                &mut studio.library.scene.room_view,
+            )
+            .changed()
+            {
+                studio.frame_requested = true;
+                studio.save();
+            }
+        }
+        2 => {
+            kit::section(ui, "Automatic motion & gestures");
+            kit::card(ui, |c| {
+                c.row(
+                    "Breathing & sway",
+                    "Subtle movement layered with the motion library.",
+                    |ui| kit::toggle(ui, &mut studio.library.scene.idle_motion),
+                );
+            });
+            animation_controls(ui, studio, animation);
+            let mut physics = studio.library.scene.spring_physics.clone();
+            if crate::spring_physics_controls::ui(ui, &mut physics, &avatar.physics) {
+                studio.library.scene.spring_physics = physics;
+            }
+        }
+        3 => {
+            let facial = &mut avatar.facial;
+            {
+                if crate::expression_controls::ui(ui, facial) {
+                    studio.library.scene.facial = facial.config.clone();
+                    studio.save();
+                }
+            }
+            {
+                if crate::gaze_controls::ui(ui, &mut avatar.gaze) {
+                    studio.library.scene.gaze = avatar.gaze.config.clone();
+                    studio.save();
+                }
+            }
+            {
+                if crate::lipsync_controls::ui(ui, &mut avatar.visemes) {
+                    studio.library.scene.visemes = avatar.visemes.config.clone();
+                    studio.save();
+                }
+            }
+        }
+        4 => {
+            let facial = &mut avatar.facial;
+            {
+                let selected = studio.library.selected;
+                if crate::behavior_controls::ui(
+                    ui,
+                    &mut avatar.behavior,
+                    &mut studio.library.scene.behavior,
+                    selected,
+                    &facial.available,
+                ) {
+                    studio.save();
+                }
+            }
+            group(ui, "Fictional routine", |ui| {
+                if crate::routine_controls::ui(ui, &mut studio.library.scene.routine) {
+                    studio.save();
+                }
+            });
+            group(ui, "Reply emotion & mood", |ui| {
+                if let Some(id) = studio.library.selected {
+                    let config = studio.library.scene.affect.clone();
+                    let (previous, emotion, changed_config) = {
+                        let state = studio.affect.entries.entry(id).or_default();
+                        state.config = config;
+                        let previous = state.emotion;
+                        let changed =
+                            waifu_studio::reply_affect_controls::draw_affect_controls(ui, state);
+                        (
                             previous,
-                            emotion,
-                            reply_id: None,
+                            state.emotion,
+                            changed.then(|| state.config.clone()),
+                        )
+                    };
+                    if let Some(config) = changed_config {
+                        studio.library.scene.affect = config;
+                        if previous != emotion {
+                            studio.lifecycle.record(
+                                waifu_studio::extension_lifecycle::LifecycleEvent::EmotionChanged {
+                                    character: id,
+                                    owner: waifu_studio::extension_protocol::EmotionOwner::Studio,
+                                    previous,
+                                    emotion,
+                                    reply_id: None,
+                                },
+                            );
+                        }
+                        studio.cancel_appraisal();
+                        studio.save();
+                    }
+                    if studio.library.scene.affect.enabled && !studio.library.scene.behavior.enabled
+                    {
+                        ui.small("Enable Local behavior to show reply emotions on the avatar.");
+                    }
+                }
+            });
+            if !studio.appraisal_status.is_empty() {
+                ui.small(&studio.appraisal_status);
+            }
+
+            kit::note(
+                ui,
+                format!(
+                    "Reaction and motion decisions: {}",
+                    studio.library.decision.model
+                ),
+            );
+            if ui.button("Manage decision connection…").clicked() {
+                studio.tab = Tab::Connections;
+            }
+        }
+        5 => {
+            let mut environment = waifu_studio::environments::EnvironmentSettings {
+                kind: studio.library.scene.environment,
+                suppressed: false,
+            };
+            if crate::environment_controls::ui(ui, &mut environment) {
+                studio.library.scene.environment = environment.kind;
+                studio.library.scene.room_view = matches!(
+                    environment.kind,
+                    waifu_studio::environments::EnvironmentKind::RoseBedroom
+                        | waifu_studio::environments::EnvironmentKind::VioletStudio
+                        | waifu_studio::environments::EnvironmentKind::CyanLounge
+                );
+                if studio.library.scene.room_view && !studio.library.scene.visuals.enabled {
+                    use waifu_studio::visuals::{VisualPreset, VisualSettings};
+                    studio.library.scene.visuals = VisualSettings::preset(
+                        if environment.kind
+                            == waifu_studio::environments::EnvironmentKind::RoseBedroom
+                        {
+                            VisualPreset::SoftAnime
+                        } else {
+                            VisualPreset::Neon
                         },
                     );
                 }
-                studio.cancel_appraisal();
+                studio.frame_requested = true;
                 studio.save();
             }
-            if studio.library.scene.affect.source
-                == waifu_studio::reply_affect::AffectSource::UserMessageJev
-            {
-                let connection = studio.library.decision.clone();
-                let studio = &mut *studio;
-                if decision_model_picker(
-                    ui,
-                    "affect_decision_model",
-                    &mut studio.decision_models,
-                    &connection,
-                    &mut studio.library.decision.model,
-                ) {
-                    studio.cancel_appraisal();
-                    studio.save();
-                }
-            }
-            if studio.library.scene.affect.enabled && !studio.library.scene.behavior.enabled {
-                ui.small("Enable Local behavior to show reply emotions on the avatar.");
-            }
-        }
-    });
-    if !studio.appraisal_status.is_empty() {
-        ui.small(&studio.appraisal_status);
-    }
-    group(ui, "Avatar parts", |ui| {
-        if crate::appearance_controls::ui(ui, appearance) {
-            studio.library.scene.appearance = appearance.config.clone();
-            studio.save();
-        }
-    });
-    {
-        if crate::expression_controls::ui(ui, facial) {
-            studio.library.scene.facial = facial.config.clone();
-            studio.save();
-        }
-    }
-    {
-        if crate::gaze_controls::ui(ui, &mut avatar.gaze) {
-            studio.library.scene.gaze = avatar.gaze.config.clone();
-            studio.save();
-        }
-    }
-    {
-        if crate::lipsync_controls::ui(ui, &mut avatar.visemes) {
-            studio.library.scene.visemes = avatar.visemes.config.clone();
-            studio.save();
-        }
-    }
-
-    anchored_section(
-        ui,
-        KEY,
-        "World",
-        "Room, background, color grading, camera and scene companions.",
-    );
-    let mut environment = waifu_studio::environments::EnvironmentSettings {
-        kind: studio.library.scene.environment,
-        suppressed: false,
-    };
-    if crate::environment_controls::ui(ui, &mut environment) {
-        studio.library.scene.environment = environment.kind;
-        studio.library.scene.room_view = matches!(
-            environment.kind,
-            waifu_studio::environments::EnvironmentKind::RoseBedroom
-                | waifu_studio::environments::EnvironmentKind::VioletStudio
-                | waifu_studio::environments::EnvironmentKind::CyanLounge
-        );
-        if studio.library.scene.room_view && !studio.library.scene.visuals.enabled {
-            use waifu_studio::visuals::{VisualPreset, VisualSettings};
-            studio.library.scene.visuals = VisualSettings::preset(
-                if environment.kind == waifu_studio::environments::EnvironmentKind::RoseBedroom {
-                    VisualPreset::SoftAnime
-                } else {
-                    VisualPreset::Neon
+            let backgrounds = waifu_studio::bundled::assets_path().join("backgrounds");
+            let current = studio.library.scene.image.clone();
+            let current_label = match &current {
+                None => "None (studio color)".to_owned(),
+                Some(path) => ILLUSTRATED_BACKGROUNDS
+                    .iter()
+                    .find(|(_, file)| *path == backgrounds.join(file))
+                    .map(|(label, _)| (*label).to_owned())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Custom: {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        )
+                    }),
+            };
+            kit::row(ui, "Background image", "", |ui| {
+                egui::ComboBox::from_id_salt("background_image")
+                    .selected_text(current_label)
+                    .truncate()
+                    .width(control_width(ui))
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(current.is_none(), "None (studio color)")
+                            .clicked()
+                        {
+                            studio.library.scene.image = None;
+                            studio.save();
+                        }
+                        for (label, file) in ILLUSTRATED_BACKGROUNDS {
+                            let path = backgrounds.join(file);
+                            if ui
+                                .selectable_label(current.as_ref() == Some(&path), label)
+                                .clicked()
+                            {
+                                studio.library.scene.environment =
+                                    waifu_studio::environments::EnvironmentKind::Disabled;
+                                studio.library.scene.image = Some(path);
+                                studio.save();
+                            }
+                        }
+                        if ui
+                            .selectable_label(false, "Choose your own image…")
+                            .clicked()
+                        {
+                            studio.open_background();
+                        }
+                    });
+            });
+            kit::row(
+                ui,
+                "Studio color",
+                "Shown when no image or room is active.",
+                |ui| {
+                    ui.color_edit_button_rgb(&mut studio.library.scene.background);
                 },
             );
         }
-        studio.frame_requested = true;
-        studio.save();
-    }
-    if kit::toggle_row(
-        ui,
-        "Wide room view",
-        "Frame the furnished room around the companion.",
-        &mut studio.library.scene.room_view,
-    )
-    .changed()
-    {
-        studio.frame_requested = true;
-        studio.save();
-    }
-    let backgrounds = waifu_studio::bundled::assets_path().join("backgrounds");
-    let current = studio.library.scene.image.clone();
-    let current_label = match &current {
-        None => "None (studio color)".to_owned(),
-        Some(path) => ILLUSTRATED_BACKGROUNDS
-            .iter()
-            .find(|(_, file)| *path == backgrounds.join(file))
-            .map(|(label, _)| (*label).to_owned())
-            .unwrap_or_else(|| {
-                format!(
-                    "Custom: {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                )
-            }),
-    };
-    kit::row(ui, "Background image", "", |ui| {
-        egui::ComboBox::from_id_salt("background_image")
-            .selected_text(current_label)
-            .truncate()
-            .width(control_width(ui))
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(current.is_none(), "None (studio color)")
-                    .clicked()
-                {
-                    studio.library.scene.image = None;
-                    studio.save();
-                }
-                for (label, file) in ILLUSTRATED_BACKGROUNDS {
-                    let path = backgrounds.join(file);
-                    if ui
-                        .selectable_label(current.as_ref() == Some(&path), label)
-                        .clicked()
-                    {
-                        studio.library.scene.environment =
-                            waifu_studio::environments::EnvironmentKind::Disabled;
-                        studio.library.scene.image = Some(path);
-                        studio.save();
-                    }
-                }
-                if ui
-                    .selectable_label(false, "Choose your own image…")
-                    .clicked()
-                {
-                    studio.open_background();
-                }
+        _ => {
+            kit::section(ui, "Desktop companion");
+            kit::card(ui, |c| {
+                c.row(
+                    "Desktop mode",
+                    "Transparent companion with drag, taskbar seating and a radial menu.",
+                    |ui| {
+                        if ui.button("Open desktop").clicked() {
+                            studio.mode = ViewMode::Desktop;
+                        }
+                    },
+                );
             });
-    });
-    kit::row(
-        ui,
-        "Studio color",
-        "Shown when no image or room is active.",
-        |ui| {
-            ui.color_edit_button_rgb(&mut studio.library.scene.background);
-        },
-    );
-    caption(ui, "Camera");
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .selectable_value(&mut studio.library.scene.portrait, true, "Portrait")
-            .changed()
-        {
-            studio.frame_requested = true;
-        }
-        if ui
-            .selectable_value(&mut studio.library.scene.portrait, false, "Full body")
-            .changed()
-        {
-            studio.frame_requested = true;
-        }
-        if ui.button("Recenter").clicked() {
-            studio.frame_requested = true;
-        }
-    });
-    {
-        let mut state = waifu_studio::visuals::VisualState {
-            settings: studio.library.scene.visuals.clone(),
-            suppressed: false,
-        };
-        if crate::visual_controls::ui(ui, &mut state) {
-            studio.library.scene.visuals = state.settings;
-            studio.save();
+            desktop.ui(ui);
         }
     }
-    group(ui, "Scene companions", |ui| {
-        crate::scene_roster_controls::ui(ui, &mut avatar.roster, &studio.library);
-    });
-
-    anchored_section(
-        ui,
-        KEY,
-        "Desktop",
-        "A transparent companion window, with a separate control window to return here or manage click-through.",
-    );
-    if ui.button("Enter desktop mode").clicked() {
-        studio.mode = ViewMode::Desktop;
-    }
-    desktop.ui(ui);
-    ui.add_space(16.0);
-    if ui.button("Save scene settings").clicked() {
+    if before != serde_json::to_string(&studio.library.scene).ok() {
         studio.save();
     }
-    ui.add_space(24.0);
 }
 
 /// Cached scan of the local motion folders; rescanned on demand.
@@ -1481,13 +1550,27 @@ fn companion_motion_controls(
 ) {
     group(ui, "Idle & talking animator", |ui| {
         let config = &mut studio.library.scene.companion_motion;
+        let mut relocated = false;
+        for path in config
+            .idle_paths
+            .iter_mut()
+            .chain(config.talking_paths.iter_mut())
+        {
+            if let Some(entry) = motion_library::saved_motion(entries, path)
+                && entry.path != *path
+            {
+                *path = entry.path.clone();
+                relocated = true;
+            }
+        }
         let mut changed = kit::toggle_row(
             ui,
             "Automatic idle and talking motions",
             "Emotion gestures finish first; speech then resumes talking, or idle when quiet.",
             &mut config.enabled,
         )
-        .changed();
+        .changed()
+            || relocated;
         for (title, talking) in [("Idle playlist", false), ("Talking playlist", true)] {
             let paths = if talking {
                 &mut config.talking_paths
@@ -1541,8 +1624,8 @@ fn reply_motion_frame(
     motion_services::reply_motion_frame(&services, studio, animation, avatar, desktop_pose_owned);
 }
 
-/// Collapsible opt-in panel. Nothing is requested until "Suggest motion" and
-/// nothing plays until the reviewed suggestion's "Play" is pressed.
+/// Response-gesture mode plus manual suggestions. Merely viewing this panel
+/// never sends a request; reviewed manual suggestions require Play.
 #[allow(clippy::too_many_arguments)]
 fn motion_suggestion(
     ui: &mut egui::Ui,
@@ -1563,20 +1646,22 @@ fn motion_suggestion(
         .unwrap_or(false);
     let mut action = None;
     let mut changed = false;
-    egui::CollapsingHeader::new("Motion suggestion (optional)")
-        .id_salt("motion_suggest")
-        .show(ui, |ui| {
-            kit::note(ui, "A decision model picks one of up to 16 scanned motions, or none. Manual suggestions require Play.");
-            model_picker(ui);
-                    let mode_name = |mode| match mode {
-                ReplyMotionMode::Off => "Off",
-                ReplyMotionMode::Suggest => "Suggest after reply",
-                ReplyMotionMode::AutoPlay => "Auto-play after reply",
-                ReplyMotionMode::EmotionMapped => "Play bound motion for reply emotion",
-            };
-            kit::row(ui, "After each reply", "", |ui| {
-egui::ComboBox::from_id_salt("reply_motion_mode")
-                .width(control_width(ui)).truncate()
+    kit::group(ui, "Emotion-driven gestures", |ui| {
+        kit::note(
+            ui,
+            "Your decision model chooses from the scanned stationary motions, or none. Manual suggestions require Play.",
+        );
+        model_picker(ui);
+        let mode_name = |mode| match mode {
+            ReplyMotionMode::Off => "Off",
+            ReplyMotionMode::Suggest => "Suggest after reply",
+            ReplyMotionMode::AutoPlay => "Decision model · automatic",
+            ReplyMotionMode::EmotionMapped => "Play bound motion for reply emotion",
+        };
+        kit::row(ui, "Emotion gestures", "", |ui| {
+            egui::ComboBox::from_id_salt("reply_motion_mode")
+                .width(control_width(ui))
+                .truncate()
                 .selected_text(mode_name(config.mode))
                 .show_ui(ui, |ui| {
                     for mode in [
@@ -1590,107 +1675,132 @@ egui::ComboBox::from_id_salt("reply_motion_mode")
                             .changed();
                     }
                 });
-});
-            if config.mode != ReplyMotionMode::Off {
-                let mut seconds = config.cooldown_seconds.clamp(
-                    motion_decision::MIN_COOLDOWN_SECONDS,
-                    motion_decision::MAX_COOLDOWN_SECONDS,
-                );
-                if kit::slider_row(ui, "Cooldown", "Minimum time between automatic motion requests.", egui::Slider::new(&mut seconds, motion_decision::MIN_COOLDOWN_SECONDS..=motion_decision::MAX_COOLDOWN_SECONDS).suffix(" s"))
-                    .changed()
-                {
-                    config.cooldown_seconds = seconds;
-                    changed = true;
-                }
-                if config.mode == ReplyMotionMode::EmotionMapped {
-                    kit::note(ui, "No request is sent. Rotates through your selected motions for the emotion in the reply's own hidden affect block (enable Reply affect for the character). Replies without that block, or emotions without a binding, play nothing. Only non-locomotion motions from the current scan can be bound.");
-                    changed |= emotion_bindings(ui, config, entries);
-                } else {
-                    kit::note(ui, "Sends only the latest reply (up to 4 KB) once per completed reply of the selected character, at most one request per cooldown. Never delays speech. Auto-play uses only non-locomotion motions from the current scan; any manual motion action cancels it.");
-                }
-                if let Some(note) = &auto.note {
-                    ui.small(RichText::new(note).color(MUTED));
-                }
+        });
+        if config.mode != ReplyMotionMode::Off {
+            let mut seconds = config.cooldown_seconds.clamp(
+                motion_decision::MIN_COOLDOWN_SECONDS,
+                motion_decision::MAX_COOLDOWN_SECONDS,
+            );
+            if kit::slider_row(
+                ui,
+                "Cooldown",
+                "Minimum time between automatic motion requests.",
+                egui::Slider::new(
+                    &mut seconds,
+                    motion_decision::MIN_COOLDOWN_SECONDS..=motion_decision::MAX_COOLDOWN_SECONDS,
+                )
+                .suffix(" s"),
+            )
+            .changed()
+            {
+                config.cooldown_seconds = seconds;
+                changed = true;
             }
-                    kit::row(ui, "Suggestion context", "", |ui| {
-egui::ComboBox::from_id_salt("motion_suggest_source")
-                .width(control_width(ui)).truncate()
-                .selected_text(if use_reply { "Latest reply" } else { "Composer draft" })
+            if config.mode == ReplyMotionMode::EmotionMapped {
+                kit::note(
+                    ui,
+                    "Uses the incoming emotion appraisal or reply affect to rotate through your selected motions. No additional motion-selection request is sent. Emotions without a binding play nothing; walking remains manual.",
+                );
+                changed |= emotion_bindings(ui, config, entries);
+            } else {
+                kit::note(
+                    ui,
+                    "Chooses a gesture from the appraised emotion and current message while the reply starts, or from the completed reply when no appraisal is available. The gesture finishes, then talking or idle motion resumes. Does not delay speech. Walking remains manual.",
+                );
+            }
+            if let Some(note) = &auto.note {
+                ui.small(RichText::new(note).color(MUTED));
+            }
+        }
+        kit::row(ui, "Suggestion context", "", |ui| {
+            egui::ComboBox::from_id_salt("motion_suggest_source")
+                .width(control_width(ui))
+                .truncate()
+                .selected_text(if use_reply {
+                    "Latest reply"
+                } else {
+                    "Composer draft"
+                })
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut use_reply, false, "Composer draft");
                     ui.selectable_value(&mut use_reply, true, "Latest reply");
                 });
-});
-            let context = if use_reply { reply.unwrap_or("") } else { draft };
-            let context = motion_decision::bounded_context(context);
-            match suggester.status().clone() {
-                motion_decision::SuggestStatus::Running => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spinner();
-                        ui.label("Choosing a motion…");
-                        if ui.button("Cancel").clicked() {
-                            auto.manual_override(suggester);
-                            suggester.cancel();
-                        }
-                    });
-                }
-                motion_decision::SuggestStatus::Cancelling => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spinner();
-                        ui.label("Cancelling; the result will be ignored.");
-                    });
-                }
-                status => {
-                    let ready = character.is_some() && !context.is_empty();
-                    let button = ui
-                        .add_enabled(ready, egui::Button::new("Suggest motion"))
-                        .on_disabled_hover_text("Select a character and write a draft or get a reply first.");
-                    if button.clicked()
-                        && let Some((id, name)) = character
-                    {
-                        action = Some(SuggestAction::Start(motion_decision::SuggestRequest {
-                            character: id,
-                            character_name: name.to_owned(),
-                            context: context.to_owned(),
-                            catalog: motion_library::MotionCatalog::offer(
-                                entries,
-                                &SUGGESTED_CATEGORIES,
-                                motion_library::MAX_OFFERED,
-                            ),
-                        }));
+        });
+        let context = if use_reply {
+            reply.unwrap_or("")
+        } else {
+            draft
+        };
+        let context = motion_decision::bounded_context(context);
+        match suggester.status().clone() {
+            motion_decision::SuggestStatus::Running => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.label("Choosing a motion…");
+                    if ui.button("Cancel").clicked() {
+                        auto.manual_override(suggester);
+                        suggester.cancel();
                     }
-                    match status {
-                        motion_decision::SuggestStatus::Ready(suggestion) => {
-                            if let Some(label) = &suggestion.label {
-                                ui.label(format!("Suggested: {label}"));
-                                ui.horizontal_wrapped(|ui| {
-                                    if ui.button("Play suggestion").clicked() {
-                                        action = Some(
-                                            match suggester.resolve_play(
-                                                character.map(|(id, _)| id),
-                                                entries,
-                                            ) {
-                                                Ok(path) => SuggestAction::Play(path),
-                                                Err(error) => SuggestAction::Error(error),
-                                            },
-                                        );
-                                    }
-                                    if ui.button("Dismiss").clicked() {
-                                        suggester.dismiss();
-                                    }
-                                });
-                            } else {
-                                ui.label(RichText::new("No offered motion fits.").color(MUTED));
-                            }
+                });
+            }
+            motion_decision::SuggestStatus::Cancelling => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.label("Cancelling; the result will be ignored.");
+                });
+            }
+            status => {
+                let ready = character.is_some() && !context.is_empty();
+                let button = ui
+                    .add_enabled(ready, egui::Button::new("Suggest motion"))
+                    .on_disabled_hover_text(
+                        "Select a character and write a draft or get a reply first.",
+                    );
+                if button.clicked()
+                    && let Some((id, name)) = character
+                {
+                    action = Some(SuggestAction::Start(motion_decision::SuggestRequest {
+                        character: id,
+                        character_name: name.to_owned(),
+                        context: context.to_owned(),
+                        catalog: motion_library::MotionCatalog::offer(
+                            entries,
+                            &SUGGESTED_CATEGORIES,
+                            motion_library::MAX_OFFERED,
+                        ),
+                    }));
+                }
+                match status {
+                    motion_decision::SuggestStatus::Ready(suggestion) => {
+                        if let Some(label) = &suggestion.label {
+                            ui.label(format!("Suggested: {label}"));
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button("Play suggestion").clicked() {
+                                    action = Some(
+                                        match suggester
+                                            .resolve_play(character.map(|(id, _)| id), entries)
+                                        {
+                                            Ok(path) => SuggestAction::Play(path),
+                                            Err(error) => SuggestAction::Error(error),
+                                        },
+                                    );
+                                }
+                                if ui.button("Dismiss").clicked() {
+                                    suggester.dismiss();
+                                }
+                            });
+                        } else {
+                            ui.label(RichText::new("No offered motion fits.").color(MUTED));
                         }
-                        motion_decision::SuggestStatus::Failed(error) => {
-                            ui.colored_label(ACCENT, error);
-                        }
-                        _ => {}
                     }
+                    motion_decision::SuggestStatus::Failed(error) => {
+                        ui.colored_label(ACCENT, error);
+                    }
+                    _ => {}
                 }
             }
-        });
+        }
+    });
     ui.ctx().data_mut(|d| d.insert_temp(source_id, use_reply));
     (action, changed)
 }
@@ -1703,6 +1813,14 @@ fn emotion_bindings(
     entries: &[motion_library::MotionEntry],
 ) -> bool {
     let mut changed = false;
+    for binding in &mut config.emotion_bindings {
+        if let Some(entry) = motion_library::saved_motion(entries, &binding.path)
+            && entry.path != binding.path
+        {
+            binding.path = entry.path.clone();
+            changed = true;
+        }
+    }
     caption(ui, "Emotion playlists");
     kit::note(
         ui,
@@ -1819,7 +1937,6 @@ fn suggest_motion(
         .map(|turn| turn.content.as_str());
     let mut config = studio.library.scene.reply_motion.clone();
     let connection = studio.library.decision.clone();
-    let mut model = connection.model.clone();
     let (action, changed) = motion_suggestion(
         ui,
         &mut suggester,
@@ -1830,19 +1947,15 @@ fn suggest_motion(
         &studio.composer,
         reply,
         |ui| {
-            decision_model_picker(
+            kit::note(
                 ui,
-                "motion_decision_model",
-                &mut studio.decision_models,
-                &connection,
-                &mut model,
+                format!(
+                    "Decision model: {} · managed in Connections",
+                    connection.model
+                ),
             );
         },
     );
-    if model != studio.library.decision.model {
-        studio.library.decision.model = model;
-        studio.save();
-    }
     if changed {
         studio.library.scene.reply_motion = config;
         studio.save();
@@ -1871,6 +1984,12 @@ fn suggest_motion(
 }
 
 fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut AnimationState) {
+    let current_entries = motion_entries(ui.ctx(), false);
+    if !current_entries.is_empty() {
+        companion_motion_controls(ui, studio, animation, &current_entries);
+        suggest_motion(ui, studio, animation, &current_entries);
+    }
+    kit::section(ui, "Manual motion library");
     let rescan = ui
         .horizontal_wrapped(|ui| {
             if ui
@@ -1896,10 +2015,6 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
         if let Err(error) = animation.load_path(path) {
             studio.error = Some(error);
         }
-    }
-    if !entries.is_empty() {
-        companion_motion_controls(ui, studio, animation, &entries);
-        suggest_motion(ui, studio, animation, &entries);
     }
     if animation.loading {
         ui.horizontal(|ui| {
@@ -2010,29 +2125,16 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
 
 fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
     const KEY: &str = "Connections";
-    let index = studio.library.provider;
     anchored_section(
         ui,
         KEY,
         "Models",
-        "Exact model IDs and catalog refresh for the selected provider.",
+        "Refresh the catalog for the selected provider.",
     );
     group(ui, "Model selection", |ui| {
         studio.ensure_models();
         model_discovery_status(ui, studio);
         ui.add_space(8.0);
-        if let Some(provider) = studio.library.providers.get_mut(index) {
-            let before = provider.model.clone();
-            field(
-                ui,
-                "Exact model ID",
-                &mut provider.model,
-                "provider/model, including any routing suffix",
-            );
-            if before != provider.model {
-                provider.reasoning_effort = None;
-            }
-        }
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
@@ -2042,9 +2144,6 @@ fn connections(ui: &mut egui::Ui, studio: &mut Studio) {
                 .clicked()
             {
                 studio.refresh_models();
-            }
-            if ui.button("Save model").clicked() {
-                studio.save();
             }
         });
     });
@@ -2104,12 +2203,6 @@ fn voice_settings(
             &voice.api_key_env,
             &studio.voice_key,
             waifu_studio::model_catalog::CatalogKind::Speech,
-        );
-        field(
-            ui,
-            "Exact model ID",
-            &mut voice.model,
-            "Exact model served by your endpoint",
         );
         if ui.button("Refresh speech models").clicked() {
             catalog.retry(
@@ -2292,12 +2385,6 @@ fn voice_settings(
     );
 
     ui.horizontal_wrapped(|ui| {
-        if ui
-            .add_enabled(!studio.voice_busy, egui::Button::new("Preview voice"))
-            .clicked()
-        {
-            studio.preview_voice();
-        }
         if ui.button("Preview local WAV/MP3…").clicked() {
             studio.preview_audio_file();
         }
@@ -2516,7 +2603,7 @@ fn composer(
                     let enter = response.has_focus()
                         && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
                     ui.add_space(10.0);
-                    let busy = studio.job.is_some();
+                    let busy = studio.chat_busy();
                     let mut send_clicked = false;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
@@ -2826,30 +2913,6 @@ pub(crate) fn speech_model_picker(
     });
 }
 
-/// Searchable dropdown of the evaluation models the shared decision endpoint advertises.
-/// Returns true when the selection changed.
-fn decision_model_picker(
-    ui: &mut egui::Ui,
-    salt: &str,
-    catalog: &mut waifu_studio::model_catalog::ModelCatalog,
-    connection: &waifu_studio::recipient_decision::DecisionConfig,
-    model: &mut String,
-) -> bool {
-    use waifu_studio::model_catalog::CatalogKind::Decision;
-    let (endpoint, key_env, session) = (
-        &connection.endpoint,
-        &connection.key_env,
-        &connection.session_key,
-    );
-    catalog.sync(endpoint, key_env, session, Decision);
-    let before = model.clone();
-    speech_model_picker(ui, salt, catalog, model);
-    if catalog.models.is_empty() && !catalog.loading && ui.small_button("Retry").clicked() {
-        catalog.retry(endpoint, key_env, session, Decision);
-    }
-    *model != before
-}
-
 /// Full memory inspectors and connection settings, behind the Memory page's Advanced fold.
 fn memory_advanced(
     ui: &mut egui::Ui,
@@ -2888,7 +2951,6 @@ fn memory_advanced(
         let before = studio.library.scene.automatic_reflection.clone();
         let reflection_connection = studio.facts.reflection.config.clone();
         let automatic = &mut studio.library.scene.automatic_reflection;
-        kit::toggle_row(ui, "Automatic drafts", "", &mut automatic.enabled);
         kit::slider_row(
             ui,
             "New accepted records per draft",
@@ -2918,21 +2980,11 @@ fn memory_advanced(
         }
     });
     ui.separator();
-    group(ui, "Semantic lookup", |ui| {
-        crate::semantic_memory_controls::ui(
-            ui,
-            semantic,
-            studio.library.selected,
-            memory,
-            &studio.facts,
-        );
-    });
-    let semantic_source: &dyn waifu_studio::semantic_memory::SemanticSource =
-        if semantic.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
-            &studio.facts
-        } else {
-            memory
-        };
+    let semantic_source = waifu_studio::semantic_memory::MemorySources {
+        scope: semantic.scope(),
+        memory,
+        facts: &studio.facts,
+    };
     kit::note(
         ui,
         "Search the selected memory source for this draft. A matching result is attached only to the next request.",
@@ -2940,14 +2992,14 @@ fn memory_advanced(
     if ui
         .add_enabled(
             !studio.composer.trim().is_empty()
-                && semantic.ready(studio.library.selected, semantic_source),
+                && semantic.ready(studio.library.selected, &semantic_source),
             egui::Button::new("Find memories for current draft"),
         )
         .clicked()
     {
-        semantic.query(studio.library.selected, semantic_source, &studio.composer);
+        semantic.query(studio.library.selected, &semantic_source, &studio.composer);
     }
-    if semantic.has_result_for(studio.library.selected, semantic_source, &studio.composer) {
+    if semantic.has_result_for(studio.library.selected, &semantic_source, &studio.composer) {
         kit::note(
             ui,
             "Retrieved memories will be used once when this draft is sent; they are not saved in chat.",
@@ -3442,24 +3494,6 @@ fn agent_tasks(
     board: &mut waifu_studio::task_board::TaskBoard,
 ) {
     use waifu_studio::{agents::AgentProvider, delegation::Provider};
-    let mut save = false;
-    kit::card(ui, |card| {
-        let ui = &mut *card.ui;
-        if let Some(character) = studio.library.selected_character_mut() {
-            save = kit::toggle_row(
-                ui,
-                "Let this character propose agent tasks",
-                "Proposals still require review before running.",
-                &mut character.delegation.enabled,
-            )
-            .changed();
-            ui.small(character.delegation.opt_in_message());
-        }
-    });
-    if save {
-        studio.proposals.clear();
-        studio.save();
-    }
     let mut staged = None;
     for (index, proposal) in studio.proposals.iter().enumerate() {
         ui.group(|ui| {
@@ -4481,9 +4515,8 @@ mod composer_tests {
         };
         frame(vec![], &mut suggester);
         let (output, action) = frame(vec![], &mut suggester);
-        assert!(action.is_none(), "collapsed panel requests nothing");
-        let header = text_rect(&output, "Motion suggestion (optional)").center();
-        frame(click(header), &mut suggester);
+        assert!(action.is_none(), "viewing the panel requests nothing");
+        text_rect(&output, "Emotion-driven gestures");
         for _ in 0..30 {
             frame(vec![], &mut suggester);
         }

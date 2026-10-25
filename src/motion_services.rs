@@ -199,14 +199,16 @@ fn pack_motions(pack: &ResolvedPack) -> impl Iterator<Item = motion_library::Mot
     })
 }
 
-/// Categories a suggestion may pick from; locomotion and unnamed motions stay out.
-pub const SUGGESTED_CATEGORIES: [motion_library::MotionCategory; 6] = [
+/// Include named reactions which do not match a coarse category, too. Walking
+/// and other locomotion remain manual so a reply cannot move the companion away.
+pub const SUGGESTED_CATEGORIES: [motion_library::MotionCategory; 7] = [
     motion_library::MotionCategory::Greeting,
     motion_library::MotionCategory::Talking,
     motion_library::MotionCategory::Thinking,
     motion_library::MotionCategory::Celebration,
     motion_library::MotionCategory::Idle,
     motion_library::MotionCategory::Dance,
+    motion_library::MotionCategory::Unknown,
 ];
 
 /// Any manual motion action cancels or discards an automatic pick.
@@ -342,6 +344,21 @@ pub fn reply_motion_frame(
         suggester.poll(selected, &entries);
     }
     let character = studio.library.selected_character();
+    let reaction_context = studio
+        .appraised_affect
+        .map(|(_, _, emotion)| {
+            format!(
+                "The character feels {} in response to the user's message: {}",
+                motion_decision::emotion_name(emotion),
+                studio
+                    .turns
+                    .iter()
+                    .rev()
+                    .find(|turn| turn.role == "user")
+                    .map_or("", |turn| motion_decision::bounded_context(&turn.content))
+            )
+        })
+        .unwrap_or_default();
     let reply = match (&studio.completed_chat, character) {
         (Some((id, Ok(text))), Some(character)) => Some(motion_decision::CompletedReply {
             id: *id,
@@ -354,7 +371,11 @@ pub fn reply_motion_frame(
         // Appraisal arrives while the reply is still streaming: start the
         // emotion motion now so it plays before the talking loop takes over.
         // The same job ID is then ignored when the full reply completes.
-        _ if config.mode == ReplyMotionMode::EmotionMapped => {
+        _ if matches!(
+            config.mode,
+            ReplyMotionMode::EmotionMapped | ReplyMotionMode::AutoPlay
+        ) =>
+        {
             match (studio.appraised_affect, character) {
                 (Some((id, owner, emotion)), Some(character))
                     if owner == character.id
@@ -365,7 +386,7 @@ pub fn reply_motion_frame(
                         character: character.id,
                         character_name: &character.name,
                         avatar,
-                        text: "",
+                        text: &reaction_context,
                         affect: Some(emotion),
                     })
                 }

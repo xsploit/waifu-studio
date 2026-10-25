@@ -548,7 +548,7 @@ fn update_outlines(
                     outline.mode = toon.outline_mode;
                 }
             }
-            let desired = if settings.outlines && settings.mode == ShaderMode::Toon {
+            let desired = if settings.outlines {
                 Visibility::Inherited
             } else {
                 Visibility::Hidden
@@ -593,11 +593,14 @@ mod tests {
                 width: 99.,
                 mode: VrmOutlineMode::World,
             });
-        app.world_mut().spawn((
-            ChildOf(mesh),
-            Visibility::Inherited,
-            MeshMaterial3d(outline.clone()),
-        ));
+        let outline_entity = app
+            .world_mut()
+            .spawn((
+                ChildOf(mesh),
+                Visibility::Inherited,
+                MeshMaterial3d(outline.clone()),
+            ))
+            .id();
         app.update();
         let tick = app
             .world()
@@ -634,6 +637,21 @@ mod tests {
                 .last_changed(),
             tick
         );
+        for mode in [ShaderMode::Toon, ShaderMode::Lit, ShaderMode::Unlit] {
+            app.world_mut().resource_mut::<ShaderSettings>().mode = mode;
+            app.world_mut().resource_mut::<ShaderSettings>().outlines = true;
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(outline_entity).unwrap(),
+                Visibility::Inherited
+            );
+            app.world_mut().resource_mut::<ShaderSettings>().outlines = false;
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(outline_entity).unwrap(),
+                Visibility::Hidden
+            );
+        }
     }
     #[test]
     fn vrm0_authored_rim_is_seeded_and_restored_without_touching_imported_assets() {
@@ -1136,7 +1154,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_modes_restores_original_toon_and_toggles_only_its_outline() {
+    fn switching_modes_restores_original_toon_and_preserves_enabled_outlines() {
         let mut app = App::new();
         app.insert_resource(Assets::<MtoonMaterial>::default())
             .insert_resource(Assets::<StandardMaterial>::default())
@@ -1198,7 +1216,7 @@ mod tests {
             assert_eq!(asset.alpha_mode, AlphaMode::Blend);
             assert_eq!(
                 app.world().get::<Visibility>(outline),
-                Some(&Visibility::Hidden)
+                Some(&Visibility::Inherited)
             );
         }
         app.world_mut().resource_mut::<ShaderSettings>().mode = ShaderMode::Toon;

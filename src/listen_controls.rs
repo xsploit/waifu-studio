@@ -113,49 +113,10 @@ pub fn ui(
             egui::Slider::new(&mut state.config.vad_threshold, 0.001..=0.2).logarithmic(true),
         );
         });
-        kit::row(
-            ui,
-            "Silence preset",
-            "How long to wait after speech ends.",
-            |ui| {
-                egui::ComboBox::from_id_salt("microphone-endpoint-delay")
-                    .selected_text(match state.config.trailing_silence_ms {
-                        400 => "Fast · 400 ms silence",
-                        800 => "Balanced · 800 ms silence",
-                        1200 => "Short pause · 1.2 seconds",
-                        2000 => "Natural pause · 2 seconds",
-                        3000 => "Patient · 3 seconds",
-                        5000 => "Long pause · 5 seconds",
-                        _ => "Custom silence delay",
-                    })
-                    .show_ui(ui, |ui| {
-                        for (delay, label) in [
-                            (400, "Fast · 400 ms"),
-                            (800, "Balanced · 800 ms"),
-                            (1200, "Short pause · 1.2 seconds"),
-                            (2000, "Natural pause · 2 seconds"),
-                            (3000, "Patient · 3 seconds"),
-                            (5000, "Long pause · 5 seconds"),
-                        ] {
-                            ui.selectable_value(
-                                &mut state.config.trailing_silence_ms,
-                                delay,
-                                label,
-                            );
-                        }
-                    });
-            },
-        );
         egui::CollapsingHeader::new("Advanced · recording")
             .id_salt("microphone_recording")
             .default_open(false)
             .show(ui, |ui| {
-        kit::slider_row(
-            ui,
-            "Silence delay",
-            "Short delays can stop mid-sentence.",
-            egui::Slider::new(&mut state.config.trailing_silence_ms, 200..=5000).suffix(" ms"),
-        );
         kit::toggle_row(
             ui,
             "Trim silence",

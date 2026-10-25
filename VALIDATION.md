@@ -1,5 +1,15 @@
 # Validation receipt
 
+## Preview 3 settings, recall and motion — 2026-10-25
+
+Settings now share the same row/card layout. Scene controls have one owner for appearance, camera, motion, face/gaze, behavior, world and desktop placement. Base shading, independent outlines and image effects can combine; PBR with outlines was checked in the native Windows preview. Duplicate model IDs, silence timing, recall switches, task proposals and group-chat membership controls were removed. Progress display/narration lives under Assistant tools. Native Windows checks visited all top-level menus and all seven Scene sections; the corrected profile gallery and restored idle playlist were also checked in the running app.
+
+Default semantic recall uses Vercel `openai/text-embedding-3-small` over explicit notes and accepted evidence. Automatic send waits for the current query, with a bounded fallback; pending suggestions never enter recall. Evidence embeds its meaningful text while retaining provenance in the recalled context. An isolated live check returned both synthetic sources through the production Vercel worker in 904 ms. The configured decision model chose a greeting from 159 eligible stationary motions in 588 ms. These timings describe one run, not latency guarantees.
+
+Bundled playlist and emotion-binding paths now resolve across installation roots and Windows/Linux separators. The full stationary catalog is available to the decision model; automatic locomotion remains excluded. Appraisal can start a gesture while the reply streams, followed by talking during speech and idle afterward. The local authored-material/spring baseline was restored, but collision-free hair or clothing across every retargeted animation is not established.
+
+Release-mode tests passed 969 library and 226 application tests on Windows, and 1,106 library and 236 application tests on Linux/WSL. Subsequent menu-only checks passed the application suites again, and both preview-3 executables built. The conversational tool loop remains off by default. Live browser MCP, physical microphone/global-hotkey acceptance, native Linux compositor behavior and all-motion collision acceptance remain open.
+
 ## Preview 2 integration — 2026-10-25
 
 The native conversational tool loop is implemented separately from the reviewed coding-task loop and remains **off by default**, including the existing local Hikari profile. Disabled chat sends one normal streaming request with no tool definitions. Enabled requests freeze the selected tool grants, expose native function schemas, execute bounded sequential calls, return assistant/tool-role results, and request a final answer when the call budget ends. Unknown tools and malformed arguments produce results without process execution. Configured MCP grants bind the loaded server address; explicit tool selection and cancellation are covered by a loopback server test. Real browser MCP operation remains unverified.

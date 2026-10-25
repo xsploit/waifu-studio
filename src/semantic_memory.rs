@@ -1,5 +1,5 @@
-//! Opt-in embedding retrieval over explicit character notes. Never extracts chat content:
-//! `memory` notes stay the source of truth and this module only caches their vectors.
+//! Embedding retrieval over explicit notes and accepted character evidence.
+//! Source records stay authoritative; this module only caches their vectors.
 use crate::memory::{MemoryNote, MemoryState};
 use crate::provider::ProviderConfig;
 use bevy::prelude::Resource;
@@ -25,7 +25,7 @@ const MAX_FILE: u64 = 16 * 1024 * 1024;
 const MAX_SETTINGS: u64 = 64 * 1024;
 const MAX_RESPONSE: u64 = 8 * 1024 * 1024;
 const MAX_DIMS: usize = 4096;
-const MAX_NOTES: usize = 256;
+const MAX_NOTES: usize = 512;
 const BATCH: usize = 16;
 const MAX_QUERY_CHARS: usize = 2000;
 const CONTEXT_LIMIT: usize = 4000;
@@ -35,9 +35,73 @@ const BACKOFF: Duration = Duration::from_secs(60);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticScope {
-    #[default]
     Notes,
     Evidence,
+    #[default]
+    All,
+}
+
+/// One recall projection for the selected sources. Pending suggestions never enter it.
+pub struct MemorySources<'a> {
+    pub scope: SemanticScope,
+    pub memory: &'a MemoryState,
+    pub facts: &'a crate::facts_memory::FactsMemoryState,
+}
+impl SemanticSource for MemorySources<'_> {
+    fn selected_character(&self) -> Option<Uuid> {
+        match self.scope {
+            SemanticScope::Notes => self.memory.selected_character(),
+            SemanticScope::Evidence => self.facts.selected_character(),
+            SemanticScope::All => self
+                .memory
+                .selected_character()
+                .filter(|id| self.facts.selected_character() == Some(*id)),
+        }
+    }
+    fn enabled(&self) -> bool {
+        match self.scope {
+            SemanticScope::Notes => self.memory.enabled,
+            SemanticScope::Evidence => self.facts.enabled,
+            SemanticScope::All => self.memory.enabled || self.facts.enabled,
+        }
+    }
+    fn loaded(&self) -> bool {
+        match self.scope {
+            SemanticScope::Notes => self.memory.loaded,
+            SemanticScope::Evidence => self.facts.loaded,
+            SemanticScope::All => self.memory.loaded && self.facts.loaded,
+        }
+    }
+    fn busy(&self) -> bool {
+        match self.scope {
+            SemanticScope::Notes => self.memory.busy,
+            SemanticScope::Evidence => self.facts.busy,
+            SemanticScope::All => self.memory.busy || self.facts.busy,
+        }
+    }
+    fn notes(&self) -> Cow<'_, [MemoryNote]> {
+        let mut notes = Vec::new();
+        if self.scope != SemanticScope::Evidence && self.memory.enabled {
+            notes.extend_from_slice(self.memory.notes());
+        }
+        if self.scope != SemanticScope::Notes && self.facts.enabled {
+            notes.extend(self.facts.semantic_entries());
+        }
+        Cow::Owned(notes)
+    }
+    fn embedding_notes(&self) -> Cow<'_, [MemoryNote]> {
+        let mut notes = Vec::new();
+        if self.scope != SemanticScope::Evidence && self.memory.enabled {
+            notes.extend_from_slice(self.memory.notes());
+        }
+        if self.scope != SemanticScope::Notes && self.facts.enabled {
+            notes.extend(evidence_embeddings(self.facts));
+        }
+        Cow::Owned(notes)
+    }
+    fn scope(&self) -> SemanticScope {
+        self.scope
+    }
 }
 
 /// Read-only projection; source records remain authoritative at query consumption.
@@ -47,7 +111,25 @@ pub trait SemanticSource {
     fn loaded(&self) -> bool;
     fn busy(&self) -> bool;
     fn notes(&self) -> Cow<'_, [MemoryNote]>;
+    /// Embed the memory's meaning; retain provenance in the recalled context.
+    fn embedding_notes(&self) -> Cow<'_, [MemoryNote]> {
+        self.notes()
+    }
     fn scope(&self) -> SemanticScope;
+}
+fn evidence_embeddings(facts: &crate::facts_memory::FactsMemoryState) -> Vec<MemoryNote> {
+    facts
+        .semantic_entries()
+        .into_iter()
+        .map(|mut note| {
+            if let Ok(serde_json::Value::Object(record)) = serde_json::from_str(&note.text)
+                && let Some(serde_json::Value::String(text)) = record.get("text")
+            {
+                note.text = text.clone();
+            }
+            note
+        })
+        .collect()
 }
 impl SemanticSource for MemoryState {
     fn selected_character(&self) -> Option<Uuid> {
@@ -85,6 +167,9 @@ impl SemanticSource for crate::facts_memory::FactsMemoryState {
     fn notes(&self) -> Cow<'_, [MemoryNote]> {
         Cow::Owned(self.semantic_entries())
     }
+    fn embedding_notes(&self) -> Cow<'_, [MemoryNote]> {
+        Cow::Owned(evidence_embeddings(self))
+    }
     fn scope(&self) -> SemanticScope {
         SemanticScope::Evidence
     }
@@ -104,6 +189,9 @@ impl<T: bevy::prelude::Resource + SemanticSource> SemanticSource for bevy::prelu
     }
     fn notes(&self) -> Cow<'_, [MemoryNote]> {
         (**self).notes()
+    }
+    fn embedding_notes(&self) -> Cow<'_, [MemoryNote]> {
+        (**self).embedding_notes()
     }
     fn scope(&self) -> SemanticScope {
         (**self).scope()
@@ -128,6 +216,9 @@ where
     fn notes(&self) -> Cow<'_, [MemoryNote]> {
         (**self).notes()
     }
+    fn embedding_notes(&self) -> Cow<'_, [MemoryNote]> {
+        (**self).embedding_notes()
+    }
     fn scope(&self) -> SemanticScope {
         (**self).scope()
     }
@@ -138,6 +229,7 @@ where
 pub struct EmbeddingSettings {
     pub scope: SemanticScope,
     pub enabled: bool,
+    pub automatic_lookup: bool,
     pub base_url: String,
     pub model: String,
     /// Environment variable holding an optional bearer key; keys are never stored.
@@ -150,12 +242,13 @@ pub struct EmbeddingSettings {
 impl Default for EmbeddingSettings {
     fn default() -> Self {
         Self {
-            scope: SemanticScope::Notes,
-            enabled: false,
-            base_url: "http://127.0.0.1:11434/v1".into(),
-            model: "nomic-embed-text".into(),
-            key_env: String::new(),
-            allow_remote: false,
+            scope: SemanticScope::All,
+            enabled: true,
+            automatic_lookup: true,
+            base_url: "https://ai-gateway.vercel.sh/v1".into(),
+            model: "openai/text-embedding-3-small".into(),
+            key_env: "AI_GATEWAY_API_KEY".into(),
+            allow_remote: true,
             top_k: 4,
             min_score: 0.35,
         }
@@ -403,6 +496,23 @@ impl SemanticMemory {
     pub fn scope(&self) -> SemanticScope {
         self.active.scope
     }
+    /// Automatic chat recall runs only with an enabled, loaded source containing records.
+    /// Missing credentials and endpoint failures leave ordinary lexical recall available.
+    pub fn automatic_lookup_for(
+        &self,
+        character: Option<Uuid>,
+        source: &dyn SemanticSource,
+    ) -> bool {
+        self.active.automatic_lookup
+            && self
+                .key(character, source)
+                .is_some_and(|key| !self.backing_off(key))
+            && !source.notes().is_empty()
+            && self
+                .active
+                .endpoint()
+                .is_ok_and(|url| is_loopback(&url) || !self.active.key().is_empty())
+    }
     fn key(&self, character: Option<Uuid>, memory: &dyn SemanticSource) -> Option<Key> {
         if !self.settings_loaded
             || memory.scope() != self.active.scope
@@ -512,7 +622,7 @@ impl SemanticMemory {
             return;
         }
         let notes = memory
-            .notes()
+            .embedding_notes()
             .iter()
             .take(MAX_NOTES)
             .map(|n| (n.id, n.text.clone()))
@@ -1058,6 +1168,7 @@ mod tests {
             s.settings_loaded()
         });
         s.settings = EmbeddingSettings {
+            scope: SemanticScope::Notes,
             enabled: true,
             base_url: base_url.into(),
             model: "fake-embed".into(),
@@ -1076,10 +1187,90 @@ mod tests {
     }
 
     #[test]
-    fn legacy_settings_keep_notes_as_the_source() {
+    fn defaults_use_vercel_and_all_accepted_memory_but_saved_choices_survive() {
         let settings: EmbeddingSettings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings.scope, SemanticScope::Notes);
-        assert!(!settings.enabled);
+        assert_eq!(settings.scope, SemanticScope::All);
+        assert!(settings.enabled && settings.automatic_lookup && settings.allow_remote);
+        assert_eq!(settings.model, "openai/text-embedding-3-small");
+        assert_eq!(settings.key_env, "AI_GATEWAY_API_KEY");
+        let saved: EmbeddingSettings = serde_json::from_str(r#"{"scope":"notes","enabled":false,"base_url":"http://localhost:11434/v1","model":"my-embed","allow_remote":false}"#).unwrap();
+        assert_eq!(saved.scope, SemanticScope::Notes);
+        assert!(!saved.enabled && !saved.allow_remote);
+        assert_eq!(saved.model, "my-embed");
+    }
+
+    #[test]
+    fn combined_sources_exclude_pending_and_disabled_sources_and_reject_wrong_character() {
+        use crate::facts_memory::{FactsMemoryState, RecordKind};
+        let root = temp("combined");
+        let character = Some(Uuid::new_v4());
+        let mut memory = MemoryState::load(root.join("notes"));
+        let mut facts = FactsMemoryState::load(root.join("facts"));
+        memory.select_character(character);
+        facts.select_character(character);
+        wait(|| {
+            memory.poll();
+            facts.poll();
+            memory.loaded && facts.loaded && !memory.busy && !facts.busy
+        });
+        memory.set_enabled(true).unwrap();
+        memory_ready(&mut memory);
+        memory.add_note("Explicit tea note".into()).unwrap();
+        facts
+            .add_record(
+                RecordKind::Preference,
+                "Accepted tea preference".into(),
+                "Synthetic user quote".into(),
+            )
+            .unwrap();
+        wait(|| {
+            memory.poll();
+            facts.poll();
+            !memory.busy && !facts.busy
+        });
+        facts.observe_user_turn(character.unwrap(), Uuid::new_v4(), "I like jasmine tea");
+        let source = MemorySources {
+            scope: SemanticScope::All,
+            memory: &memory,
+            facts: &facts,
+        };
+        assert_eq!(source.selected_character(), character);
+        assert_eq!(source.notes().len(), 2);
+        assert_eq!(source.embedding_notes().len(), 2);
+        assert!(
+            source
+                .embedding_notes()
+                .iter()
+                .any(|n| n.text == "Accepted tea preference")
+        );
+        assert!(
+            source
+                .notes()
+                .iter()
+                .any(|n| n.text.contains("Synthetic user quote"))
+        );
+        assert!(!source.notes().iter().any(|n| n.text.contains("jasmine")));
+        facts.set_enabled(false).unwrap();
+        wait(|| {
+            facts.poll();
+            !facts.busy
+        });
+        let source = MemorySources {
+            scope: SemanticScope::All,
+            memory: &memory,
+            facts: &facts,
+        };
+        assert_eq!(source.notes().len(), 1);
+        facts.select_character(Some(Uuid::new_v4()));
+        let source = MemorySources {
+            scope: SemanticScope::All,
+            memory: &memory,
+            facts: &facts,
+        };
+        assert!(source.selected_character().is_none());
+        drop(memory);
+        drop(facts);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1335,6 +1526,7 @@ mod tests {
         });
         // Inject a completed ranking; this regression never calls an endpoint.
         state.active.enabled = true;
+        state.active.scope = SemanticScope::Notes;
         let note = memory.notes()[0].id;
         let seed = |state: &mut SemanticMemory, text: &str| {
             let (key, hash) = state.lookup(character, &memory, text).unwrap();
@@ -1423,6 +1615,7 @@ mod tests {
             state.settings_loaded()
         });
         state.active.enabled = true;
+        state.active.scope = SemanticScope::Notes;
         state.active.top_k = 1;
         let (key, hash) = state.lookup(character, &memory, "preferences").unwrap();
         state.result = Some((key, hash, vec![(pinned, 1.0), (other, 0.9)]));
@@ -1482,6 +1675,7 @@ mod tests {
         let mut settings = EmbeddingSettings {
             enabled: true,
             base_url: "https://api.example.com/v1".into(),
+            allow_remote: false,
             ..Default::default()
         };
         assert!(settings.validate().is_err());

@@ -215,7 +215,9 @@ pub(crate) fn gallery(ui: &mut egui::Ui, studio: &mut Studio) {
     let mut chosen = None;
     egui::ScrollArea::vertical()
         .id_salt("profile_gallery")
+        .min_scrolled_height(182.0)
         .max_height(370.0)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
             egui::Grid::new("profile_card_grid")
                 .spacing(Vec2::splat(8.0))

@@ -1,8 +1,7 @@
-//! Opt-in "Suggest motion": asks a Vercel evaluation model (Jev) to pick one of
-//! the opaque IDs a [`MotionCatalog`] offers, or `none`. Runs only when the user
-//! asks, on one background worker, never on the render, audio or speech path.
-//! The answer is only a suggestion; playing it is a separate explicit action
-//! that re-resolves the ID against the current scan.
+//! Motion selection through the configured Vercel decision model. Picks an opaque
+//! ID from the current catalog, or `none`, for manual suggestions and automatic
+//! emotion-driven gestures. A background worker keeps requests off the render,
+//! audio and speech paths; playback revalidates IDs against the current scan.
 use super::motion_library::{MotionCatalog, MotionEntry, NONE_CHOICE};
 use serde_json::json;
 use std::{
@@ -357,7 +356,7 @@ impl MotionSuggester {
 }
 
 /// Cooldown bounds applied at runtime, whatever the saved profile says.
-pub const MIN_COOLDOWN_SECONDS: u32 = 10;
+pub const MIN_COOLDOWN_SECONDS: u32 = 2;
 pub const MAX_COOLDOWN_SECONDS: u32 = 600;
 
 pub fn cooldown(seconds: u32) -> Duration {
@@ -520,12 +519,11 @@ pub fn bound_motions(
         .iter()
         .filter(|binding| binding.emotion == emotion)
     {
-        if !paths.contains(&binding.path)
-            && entries
-                .iter()
-                .any(|entry| entry.path == binding.path && entry.auto_playable())
+        if let Some(entry) = super::motion_library::saved_motion(entries, &binding.path)
+            && entry.auto_playable()
+            && !paths.contains(&entry.path)
         {
-            paths.push(binding.path.clone());
+            paths.push(entry.path.clone());
         }
     }
     paths
@@ -826,7 +824,14 @@ impl ReplyMotion {
             return;
         }
         let text = reply.text.split("```waifu_tasks").next().unwrap_or("");
-        let context = bounded_context(text);
+        let with_emotion = reply.affect.map(|emotion| {
+            format!(
+                "Character emotion: {}.\n{}",
+                emotion_name(emotion),
+                bounded_context(text)
+            )
+        });
+        let context = bounded_context(with_emotion.as_deref().unwrap_or(text));
         let catalog = catalog(entries);
         if context.is_empty() || catalog.is_empty() {
             self.note = Some("No reply text or eligible motions to pick from".into());

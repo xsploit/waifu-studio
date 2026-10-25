@@ -318,7 +318,7 @@ impl DesktopSettings {
                         },
                     );
                 });
-                kit::group(ui, "Alignment & light", |ui| {
+                kit::group(ui, "Alignment", |ui| {
                     changed |= kit::slider_row(
                         ui,
                         "Horizontal offset",
@@ -333,27 +333,14 @@ impl DesktopSettings {
                         egui::Slider::new(&mut self.avatar_y, -1.0..=1.0),
                     )
                     .changed();
-                    changed |= kit::slider_row(
-                        ui,
-                        "Key light",
-                        "",
-                        egui::Slider::new(&mut self.light_intensity, 0.2..=2.0),
-                    )
-                    .changed();
-                    kit::row(
-                        ui,
-                        "Reset placement",
-                        "Restore size, offsets and lighting.",
-                        |ui| {
-                            if ui.button("Reset").clicked() {
-                                self.avatar_zoom = 1.0;
-                                self.avatar_x = 0.0;
-                                self.avatar_y = 0.0;
-                                self.light_intensity = 1.0;
-                                changed = true;
-                            }
-                        },
-                    );
+                    kit::row(ui, "Reset placement", "Restore size and offsets.", |ui| {
+                        if ui.button("Reset").clicked() {
+                            self.avatar_zoom = 1.0;
+                            self.avatar_x = 0.0;
+                            self.avatar_y = 0.0;
+                            changed = true;
+                        }
+                    });
                 });
             });
         self.dirty |= changed;

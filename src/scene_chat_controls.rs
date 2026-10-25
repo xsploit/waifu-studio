@@ -1,67 +1,7 @@
 use bevy_egui::egui;
 use waifu_studio::settings_kit as kit;
-use waifu_studio::{data::Library, scene_chat::SceneChat, scene_roster::SceneRoster};
-pub fn ui(
-    ui: &mut egui::Ui,
-    chat: &mut SceneChat,
-    library: &Library,
-    roster: &SceneRoster,
-    decision: &waifu_studio::recipient_decision::DecisionConfig,
-) {
-    kit::section(ui, "Talk to the scene");
-    ui.small("Choose recipients; each character replies in order.")
-        .on_hover_text("Scene conversations are saved separately per character. Private chat histories and other characters’ notes are never shared. Selected recipients override @names. With none selected, exact @names route locally; a sole scene character is selected automatically. Jev runs only when you click its button.");
-    let busy = chat.is_busy();
-    ui.add_enabled_ui(!busy, |ui| {
-        for c in &library.characters {
-            if library.selected == Some(c.id) || roster.contains(c.id) {
-                let mut checked = chat.recipients.contains(&c.id);
-                let provider = if library.selected == Some(c.id) {
-                    library.provider
-                } else {
-                    c.provider.unwrap_or(library.provider)
-                };
-                let model = library
-                    .providers
-                    .get(provider)
-                    .map(|p| p.effective_model())
-                    .unwrap_or_else(|| "Missing connection".into());
-                if kit::toggle_row(ui, &c.name, &model, &mut checked).changed() {
-                    if checked {
-                        chat.recipients.push(c.id);
-                    } else {
-                        chat.recipients.retain(|id| *id != c.id);
-                    }
-                }
-            }
-        }
-        ui.label("Message");
-        ui.add(
-            egui::TextEdit::multiline(&mut chat.draft)
-                .desired_rows(3)
-                .hint_text("Message the selected characters…"),
-        );
-        ui.horizontal_wrapped(|ui| {
-            if chat.recipients.is_empty()
-                && ui
-                    .button("Choose recipient · Jev")
-                    .on_hover_text("Ask the configured decision model to route this draft.")
-                    .clicked()
-                && let Err(error) = chat.route_draft(decision, library, roster)
-            {
-                chat.status = error;
-            }
-            if ui.button("Send to scene").clicked()
-                && let Err(error) = chat.submit(library, roster)
-            {
-                chat.status = error;
-            }
-        });
-    });
-    if busy && ui.button("Cancel scene replies").clicked() {
-        chat.cancel();
-    }
-    ui.label(&chat.status);
+use waifu_studio::{data::Library, scene_chat::SceneChat};
+pub fn ui(ui: &mut egui::Ui, chat: &mut SceneChat, library: &Library) {
     egui::CollapsingHeader::new("Advanced · scene emotions").id_salt("scene_emotions").default_open(false).show(ui, |ui| {
         kit::note(ui, "Uses each recipient’s saved automatic-emotion opt-in. Local behavior is required for facial output. Reply metadata costs no extra call; Jev appraisal adds a separate bounded request. Neither guarantees speech-onset synchronization.");
         for receipt in chat.affect_receipts() {
@@ -70,9 +10,6 @@ pub fn ui(
             else if let Some(state) = chat.affect.entries.get(&receipt.character) { ui.label(format!("{name}: {:?} · V {:+.2} A {:+.2} D {:+.2}", state.emotion, state.mood.valence, state.mood.arousal, state.mood.dominance)); }
         }
     });
-    if !chat.partial.is_empty() {
-        ui.label(&chat.partial);
-    }
     egui::CollapsingHeader::new("Advanced · scene recall")
         .id_salt("scene_recall")
         .default_open(false)
@@ -110,6 +47,13 @@ pub fn ui(
                 });
             }
         });
+}
+
+pub fn transcript(ui: &mut egui::Ui, chat: &SceneChat) {
+    if chat.transcript.is_empty() {
+        return;
+    }
+    kit::section(ui, "Conversation");
     egui::ScrollArea::vertical()
         .id_salt("scene_transcript")
         .max_height(260.0)

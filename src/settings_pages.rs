@@ -1,8 +1,6 @@
 //! Simple first screens for Voice & mic, Scene & avatar and Connections. Each keeps the
 //! full original controls under an Advanced fold drawn by the caller.
-use super::{
-    AvatarUi, Studio, ViewMode, decision_model_compact, model_dropdown, settings_kit as kit,
-};
+use super::{Studio, decision_model_compact, model_dropdown, settings_kit as kit};
 use bevy_egui::egui::{self, Color32, RichText};
 use waifu_studio::{
     listen::{ListeningState, SttBackend},
@@ -378,190 +376,6 @@ pub(super) fn voice(
     });
 }
 
-pub(super) fn scene(
-    ui: &mut egui::Ui,
-    studio: &mut Studio,
-    avatar: &mut AvatarUi,
-    animation: &mut waifu_studio::animation::AnimationState,
-) {
-    kit::section(ui, "Look");
-    kit::card(ui, |c| {
-        let scene = &mut studio.library.scene;
-        let mut changed = false;
-        let shader = c.row("Shading", "", |ui| {
-            dropdown(
-                ui,
-                "simple_shader",
-                scene.shader.min(2) as usize,
-                &["Anime (MToon)", "Realistic (PBR)", "Flat (unlit)"],
-            )
-        });
-        if shader != scene.shader as usize {
-            scene.shader = shader as u8;
-            changed = true;
-        }
-        let framing = c.row("Camera", "", |ui| {
-            dropdown(
-                ui,
-                "simple_framing",
-                usize::from(!scene.portrait),
-                &["Portrait", "Full body"],
-            )
-        });
-        if framing != usize::from(!scene.portrait) {
-            scene.portrait = framing == 0;
-            studio.frame_requested = true;
-            changed = true;
-        }
-        changed |= c
-            .row(
-                "Outlines",
-                "Anime-style ink lines around the character.",
-                |ui| kit::toggle(ui, &mut scene.outlines),
-            )
-            .changed();
-        changed |= c
-            .row("Idle movement", "Gentle breathing and sway.", |ui| {
-                kit::toggle(ui, &mut scene.idle_motion)
-            })
-            .changed();
-        if changed {
-            studio.save();
-        }
-    });
-
-    let mut physics = studio.library.scene.spring_physics.clone();
-    if crate::spring_physics_controls::ui(ui, &mut physics, &avatar.physics) {
-        studio.library.scene.spring_physics = physics;
-        studio.save();
-    }
-
-    kit::section(ui, "Behavior");
-    kit::card(ui, |c| {
-        let mut changed = false;
-        let scene = &mut studio.library.scene;
-        changed |= c
-            .row("Expressions", "Reacts while thinking and speaking.", |ui| {
-                kit::toggle(ui, &mut scene.behavior.enabled)
-            })
-            .changed();
-        let mut emotions = scene.affect.enabled;
-        if c.row(
-            "Emotions from chat",
-            "Matches expressions to the conversation.",
-            |ui| kit::toggle(ui, &mut emotions),
-        )
-        .changed()
-        {
-            scene.affect.enabled = emotions;
-            studio.cancel_appraisal();
-            changed = true;
-        }
-        let scene = &mut studio.library.scene;
-        changed |= c
-            .row(
-                "Head & eye movement",
-                "Looks around naturally, or follows your pointer.",
-                |ui| kit::toggle(ui, &mut avatar.gaze.config.enabled),
-            )
-            .changed();
-        changed |= c
-            .row("Blinking", "", |ui| {
-                kit::toggle(ui, &mut avatar.facial.config.auto_blink)
-            })
-            .changed();
-        changed |= c
-            .row("Lip sync", "Moves the mouth with speech.", |ui| {
-                kit::toggle(ui, &mut avatar.facial.config.lip_sync)
-            })
-            .changed();
-        changed |= c
-            .row(
-                "Daily routine",
-                "Imagined activities that can come up in chat.",
-                |ui| kit::toggle(ui, &mut scene.routine.enabled),
-            )
-            .changed();
-        use waifu_studio::data::ReplyMotionMode;
-        let modes = [
-            ReplyMotionMode::Off,
-            ReplyMotionMode::Suggest,
-            ReplyMotionMode::AutoPlay,
-            ReplyMotionMode::EmotionMapped,
-        ];
-        let current = modes
-            .iter()
-            .position(|m| *m == scene.reply_motion.mode)
-            .unwrap_or(0);
-        let picked = c.row(
-            "Motion after replies",
-            "Uses animations from your motion library.",
-            |ui| {
-                dropdown(
-                    ui,
-                    "simple_reply_motion",
-                    current,
-                    &["Off", "Suggest", "Play automatically", "Match emotion"],
-                )
-            },
-        );
-        if picked != current {
-            scene.reply_motion.mode = modes[picked];
-            changed = true;
-        }
-        if changed {
-            studio.library.scene.gaze = avatar.gaze.config.clone();
-            studio.library.scene.facial = avatar.facial.config.clone();
-            studio.save();
-        }
-        let shared = super::companion_shared(c.ui.ctx());
-        let paused = super::lock(&shared).paused || animation.manual_controlled();
-        if paused {
-            c.row(
-                "Manual motion control",
-                "Reply gestures and playlists wait until you resume.",
-                |ui| {
-                    if ui.button("Resume automatic motion").clicked() {
-                        animation.resume_automatic_control();
-                        super::lock(&shared).resume();
-                    }
-                },
-            );
-        }
-        let connection = studio.library.decision.clone();
-        let mut model = connection.model.clone();
-        c.row(
-            "Decision model",
-            "Picks emotions and motions when those need a choice.",
-            |ui| {
-                decision_model_compact(
-                    ui,
-                    "scene_decision_model",
-                    &mut studio.decision_models,
-                    &connection,
-                    &mut model,
-                )
-            },
-        );
-        if model != studio.library.decision.model {
-            studio.library.decision.model = model;
-            studio.cancel_appraisal();
-            studio.save();
-        }
-    });
-
-    kit::section(ui, "Desktop");
-    kit::card(ui, |c| {
-        if c.row(
-            "Desktop companion",
-            "Puts the character on your desktop in a transparent window.",
-            |ui| ui.button("Open").clicked(),
-        ) {
-            studio.mode = ViewMode::Desktop;
-        }
-    });
-}
-
 fn session_input(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
@@ -932,9 +746,32 @@ pub(super) fn tools(ui: &mut egui::Ui, mcp: &mut waifu_studio::mcp::McpState, st
                     |ui| ui.add(egui::Slider::new(&mut settings.max_calls, 1..=16)),
                 )
                 .changed();
-            c.block(|ui| { ui.label("Off by default. Tool use adds service and model round trips. Your selected model must support OpenAI-compatible function calls; unsupported models report an error. Browser capabilities can be supplied by an MCP browser server. Load its tools below and enable the specific tools Hikari may call. Progress display and narration are under Agent tasks."); });
+            c.block(|ui| { ui.label("Off by default. Tool use adds service and model round trips. Your selected model must support OpenAI-compatible function calls; unsupported models report an error. Browser capabilities can be supplied by an MCP browser server. Load its tools below and enable the specific tools Hikari may call. Progress display and narration are configured below."); });
         });
     }
+    kit::section(ui, "Progress updates");
+    kit::card(ui, |c| {
+        let mut changed = false;
+        if let Some(character) = studio.library.selected_character_mut() {
+            changed |= c
+                .row(
+                    "Show intermediate text",
+                    "Display progress between companion tool calls and delegated tasks.",
+                    |ui| kit::toggle(ui, &mut character.delegation.show_intermediate_text),
+                )
+                .changed();
+            changed |= c
+                .row(
+                    "Speak intermediate text",
+                    "Read progress aloud; final answers still follow your voice setting.",
+                    |ui| kit::toggle(ui, &mut character.delegation.speak_intermediate_text),
+                )
+                .changed();
+        }
+        if changed {
+            studio.save();
+        }
+    });
     let busy = mcp.is_busy();
     kit::section(ui, "Tool server");
     kit::card(ui, |c| {
@@ -1028,26 +865,6 @@ pub(super) fn tasks(ui: &mut egui::Ui, studio: &mut Studio) {
                 studio.proposals.clear();
                 studio.save();
             }
-        }
-        let mut changed = false;
-        if let Some(character) = studio.library.selected_character_mut() {
-            changed |= c
-                .row(
-                    "Show intermediate text",
-                    "Display the companion's progress between tool calls.",
-                    |ui| kit::toggle(ui, &mut character.delegation.show_intermediate_text),
-                )
-                .changed();
-            changed |= c
-                .row(
-                    "Speak intermediate text",
-                    "Read progress aloud; final answers still follow your voice setting.",
-                    |ui| kit::toggle(ui, &mut character.delegation.speak_intermediate_text),
-                )
-                .changed();
-        }
-        if changed {
-            studio.save();
         }
         c.row(
             "Suggested tasks",

@@ -24,12 +24,6 @@ fn main() -> Result<(), String> {
         println!("Explicit paid synthesis: --run --storyboard FILE.json --output-dir EMPTY_DIR");
         return Ok(());
     }
-    if !["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
-        .iter()
-        .any(|k| std::env::var(k).is_ok_and(|s| !s.trim().is_empty()))
-    {
-        return Err("No proxy route configured".into());
-    }
     let directory = directories::ProjectDirs::from("", "", "waifu-studio")
         .ok_or("No app directory")?
         .data_local_dir()

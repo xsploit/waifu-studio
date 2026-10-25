@@ -16,13 +16,6 @@ pub fn ui(ui: &mut egui::Ui, state: &mut MemoryState) {
         ui.colored_label(egui::Color32::RED, error);
     }
     ui.add_enabled_ui(state.loaded && !state.busy, |ui| {
-        let mut enabled = state.enabled;
-        if kit::toggle_row(ui, "Include local notes in chat", "", &mut enabled)
-            .changed()
-            && let Err(e) = state.set_enabled(enabled)
-        {
-            state.error = Some(e);
-        }
         ui.label("New note");
         ui.add(
             egui::TextEdit::multiline(&mut state.draft)

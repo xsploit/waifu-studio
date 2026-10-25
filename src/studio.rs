@@ -99,6 +99,12 @@ struct PendingAppraisal {
     job: waifu_studio::appraisal::AppraisalJob,
 }
 
+struct PendingMemorySend {
+    character: Uuid,
+    draft: String,
+    started: std::time::Instant,
+}
+
 #[derive(Resource)]
 pub struct Studio {
     pub lifecycle: LifecycleJournal,
@@ -113,6 +119,7 @@ pub struct Studio {
     reply_affect_requested: bool,
     reply_affect_config: Option<waifu_studio::reply_affect::AffectConfig>,
     appraisal: Option<PendingAppraisal>,
+    pending_memory_send: Option<PendingMemorySend>,
     /// Incoming-message appraisal for (chat job, character), known before the reply ends.
     pub appraised_affect: Option<(Uuid, Uuid, waifu_studio::reply_affect::AffectEmotion)>,
     pub appraisal_status: String,
@@ -206,6 +213,7 @@ impl Studio {
             reply_affect_requested: false,
             reply_affect_config: None,
             appraisal: None,
+            pending_memory_send: None,
             appraised_affect: None,
             appraisal_status: String::new(),
             completed_chat: None,
@@ -1220,6 +1228,7 @@ impl Studio {
         }
     }
     pub fn cancel_chat(&mut self) {
+        self.pending_memory_send = None;
         if let Some(timing) = &self.reply_timing {
             timing.cancel();
         }
@@ -1248,7 +1257,10 @@ impl Studio {
     /// The host adapter separately authenticates the current target generation
     /// and rejects concurrent scene work before calling this focused sink.
     pub(crate) fn has_external_response_work(&self) -> bool {
-        self.job.is_some() || self.appraisal.is_some()
+        self.chat_busy() || self.appraisal.is_some()
+    }
+    pub fn chat_busy(&self) -> bool {
+        self.job.is_some() || self.pending_memory_send.is_some()
     }
     pub fn deliver_external(
         &mut self,
@@ -1344,8 +1356,15 @@ impl Studio {
     pub fn send_chat_with_semantic(
         &mut self,
         memory: &mut waifu_studio::memory::MemoryState,
-        semantic: Option<&mut waifu_studio::semantic_memory::SemanticMemory>,
+        mut semantic: Option<&mut waifu_studio::semantic_memory::SemanticMemory>,
     ) {
+        if self.chat_busy() {
+            return;
+        }
+        if self.external_history_unconfirmed {
+            self.notice = Some("Reload the conversation to reconcile the previous external delivery before sending.".into());
+            return;
+        }
         if self.preparing_image() {
             self.notice = Some("Preparing attachments. Send when they are ready.".into());
             return;
@@ -1353,7 +1372,69 @@ impl Studio {
         if self.composer.trim().is_empty() && self.has_attachments() {
             self.composer = "Please review the attached files.".into();
         }
+        memory.select_character(self.library.selected);
+        memory.poll();
+        self.facts.select_character(self.library.selected);
+        self.facts.poll();
+        if let (Some(state), Some(character)) = (semantic.as_deref_mut(), self.library.selected) {
+            let source = waifu_studio::semantic_memory::MemorySources {
+                scope: state.scope(),
+                memory,
+                facts: &self.facts,
+            };
+            state.sync(Some(character), &source);
+            if !self.composer.trim().is_empty()
+                && self.composer.len() <= 32_000
+                && !self.next_loop_turn
+                && state.automatic_lookup_for(Some(character), &source)
+                && !state.has_result_for(Some(character), &source, &self.composer)
+            {
+                state.query(Some(character), &source, &self.composer);
+                self.pending_memory_send = Some(PendingMemorySend {
+                    character,
+                    draft: self.composer.clone(),
+                    started: std::time::Instant::now(),
+                });
+                self.notice = Some("Finding related memories…".into());
+                return;
+            }
+        }
         self.start_chat_with_semantic(memory, semantic, None);
+    }
+
+    fn poll_memory_send(
+        &mut self,
+        memory: &mut waifu_studio::memory::MemoryState,
+        semantic: &mut waifu_studio::semantic_memory::SemanticMemory,
+    ) {
+        let Some(pending) = &self.pending_memory_send else {
+            return;
+        };
+        if self.library.selected != Some(pending.character)
+            || self.composer != pending.draft
+            || self.job.is_some()
+        {
+            self.pending_memory_send = None;
+            self.notice =
+                Some("Memory lookup send cancelled because the draft or character changed.".into());
+            return;
+        }
+        let source = waifu_studio::semantic_memory::MemorySources {
+            scope: semantic.scope(),
+            memory,
+            facts: &self.facts,
+        };
+        let ready = semantic.has_result_for(Some(pending.character), &source, &pending.draft);
+        if !ready
+            && semantic.automatic_lookup_for(Some(pending.character), &source)
+            && pending.started.elapsed() < std::time::Duration::from_secs(10)
+        {
+            return;
+        }
+        self.pending_memory_send = None;
+        self.notice = (!ready)
+            .then(|| "Semantic lookup unavailable; using local recall for this reply.".into());
+        self.start_chat_with_semantic(memory, Some(semantic), None);
     }
 
     /// Called by the host only after delivery and current-incarnation checks.
@@ -1464,20 +1545,20 @@ impl Studio {
             self.error = Some(error);
             return;
         }
-        let semantic_evidence = semantic.as_ref().is_some_and(|state| {
-            state.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence
-        });
+        let semantic_scope = semantic.as_ref().map(|state| state.scope());
         let semantic_notes = semantic.and_then(|state| {
-            let source: &dyn waifu_studio::semantic_memory::SemanticSource = if semantic_evidence {
-                &self.facts
-            } else {
-                memory
+            let source = waifu_studio::semantic_memory::MemorySources {
+                scope: state.scope(),
+                memory,
+                facts: &self.facts,
             };
-            state.take_context_for(self.library.selected, source, &query)
+            state.take_context_for(self.library.selected, &source, &query)
         });
         // Semantic retrieval excludes pinned notes. Use only pins alongside it,
         // so the same unpinned note cannot also appear via lexical retrieval.
-        let notes = if semantic_notes.is_some() && !semantic_evidence {
+        let notes = if semantic_notes.is_some()
+            && semantic_scope != Some(waifu_studio::semantic_memory::SemanticScope::Evidence)
+        {
             memory.context_pins_only()
         } else {
             memory.context(&query)
@@ -1504,7 +1585,10 @@ impl Studio {
         });
         self.cancel_appraisal();
         self.facts.select_character(Some(id));
-        let facts_context = if semantic_evidence && semantic_notes.is_some() {
+        let facts_context = if semantic_scope
+            != Some(waifu_studio::semantic_memory::SemanticScope::Notes)
+            && semantic_notes.is_some()
+        {
             None
         } else {
             self.facts.context(&query)
@@ -2523,7 +2607,7 @@ fn apply_transcript(
         // Uses the normal send path, including memory readiness, model/route
         // validation, semantic freshness and production streamed reply speech.
         studio.send_chat_with_semantic(memory, Some(semantic));
-        if studio.job.is_some() {
+        if studio.chat_busy() {
             studio.notice = Some("Transcript sent automatically.".into());
             return true;
         }
@@ -2541,13 +2625,13 @@ pub fn poll_assistant(
 ) {
     memory.select_character(studio.library.selected);
     memory.poll();
-    let source: &dyn waifu_studio::semantic_memory::SemanticSource =
-        if semantic.scope() == waifu_studio::semantic_memory::SemanticScope::Evidence {
-            &studio.facts
-        } else {
-            &*memory
-        };
-    semantic.sync(studio.library.selected, source);
+    let source = waifu_studio::semantic_memory::MemorySources {
+        scope: semantic.scope(),
+        memory: &memory,
+        facts: &studio.facts,
+    };
+    semantic.sync(studio.library.selected, &source);
+    studio.poll_memory_send(&mut memory, &mut semantic);
     board.poll();
     mcp.poll();
     agents.poll();
@@ -3034,6 +3118,7 @@ mod tests {
             semantic.settings_loaded()
         });
         semantic.settings.enabled = true;
+        semantic.settings.scope = waifu_studio::semantic_memory::SemanticScope::Notes;
         semantic.settings.base_url = url.clone();
         semantic.settings.model = "offline-embedding".into();
         semantic.save_settings().unwrap();
@@ -3042,11 +3127,6 @@ mod tests {
             semantic.ready(character, &memory)
         });
         studio.composer = "Which tea do I like?".into();
-        semantic.query(character, &memory, &studio.composer);
-        wait(|| {
-            semantic.sync(character, &memory);
-            semantic.has_result_for(character, &memory, &studio.composer)
-        });
         let provider = &mut studio.library.providers[studio.library.provider];
         provider.route = None;
         provider.base_url = url;
@@ -3074,6 +3154,12 @@ mod tests {
             }],
         };
         studio.send_chat_with_semantic(&mut memory, Some(&mut semantic));
+        assert!(studio.pending_memory_send.is_some() && studio.job.is_none());
+        wait(|| {
+            semantic.sync(character, &memory);
+            studio.poll_memory_send(&mut memory, &mut semantic);
+            studio.job.is_some()
+        });
         let (stages, history_save, cancelled) =
             studio.reply_timing.as_ref().unwrap().snapshot().unwrap();
         assert!(stages[Stage::Prepared as usize].is_some());

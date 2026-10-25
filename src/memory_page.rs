@@ -49,21 +49,27 @@ pub(super) fn ui(
     kit::section(ui, "Learning");
     ui.add_enabled_ui(ready, |ui| {
         kit::card(ui, |c| {
-            let mut in_chat = studio.facts.enabled && memory.enabled;
+            let mut notes = memory.enabled;
             if c.row(
-                "Use memories in chat",
-                &format!("Let {name} recall relevant memories."),
-                |ui| kit::toggle(ui, &mut in_chat),
+                "Recall explicit notes",
+                "Include relevant and pinned notes in chat.",
+                |ui| kit::toggle(ui, &mut notes),
             )
             .changed()
+                && let Err(e) = memory.set_enabled(notes)
             {
-                let result = studio
-                    .facts
-                    .set_enabled(in_chat)
-                    .and(memory.set_enabled(in_chat));
-                if let Err(e) = result {
-                    studio.error = Some(e);
-                }
+                studio.error = Some(e);
+            }
+            let mut evidence = studio.facts.enabled;
+            if c.row(
+                "Recall accepted evidence",
+                &format!("Let {name} recall reviewed facts, preferences and reflections."),
+                |ui| kit::toggle(ui, &mut evidence),
+            )
+            .changed()
+                && let Err(e) = studio.facts.set_enabled(evidence)
+            {
+                studio.error = Some(e);
             }
             let mut learn =
                 studio.facts.candidates_enabled && studio.library.scene.memory_triage.enabled;
@@ -121,6 +127,16 @@ pub(super) fn ui(
     if !studio.facts.triage_status.is_empty() {
         ui.label(RichText::new(&studio.facts.triage_status).size(12.0).weak());
     }
+
+    kit::group(ui, "Semantic recall", |ui| {
+        crate::semantic_memory_controls::ui(
+            ui,
+            semantic,
+            studio.library.selected,
+            memory,
+            &studio.facts,
+        );
+    });
 
     let candidates = studio.facts.candidates().to_vec();
     if !candidates.is_empty() {

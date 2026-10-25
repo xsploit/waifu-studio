@@ -25,14 +25,14 @@ fn rgb(ui: &mut egui::Ui, label: &str, color: &mut [f32; 3]) {
 pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
     let before = state.settings.clone();
     if state.suppressed {
-        ui.small("Camera effects pause in transparent desktop mode.")
+        ui.small("Post-processing pauses in transparent desktop mode.")
             .on_hover_text("Saved settings are retained. Material tuning still applies.");
     }
 
-    kit::group(ui, "Look preset", |ui| {
-        kit::row(ui, "Camera preset", "", |ui| {
+    kit::group(ui, "Post-processing preset", |ui| {
+        kit::row(ui, "Effects preset", "", |ui| {
             egui::ComboBox::from_id_salt("visual_preset")
-                .selected_text("Apply a camera preset…")
+                .selected_text("Apply an effects preset…")
                 .width(220.0)
                 .show_ui(ui, |ui| {
                     for (label, preset) in PRESETS {
@@ -42,10 +42,10 @@ pub fn ui(ui: &mut egui::Ui, state: &mut VisualState) -> bool {
                     }
                 });
         });
-        ui.small("Presets adjust camera effects.")
-            .on_hover_text("Neutral restores the original studio look. WebWaifu4 uses ACES, exposure 0.85, and its PBR material values.");
+        ui.small("Presets adjust image effects; shading and outlines are preserved.")
+            .on_hover_text("Neutral resets image effects. WebWaifu4 applies ACES and exposure 0.85; your material tuning stays unchanged.");
     });
-    kit::group(ui, "Camera effects", |ui| {
+    kit::group(ui, "Post-processing", |ui| {
         kit::toggle_row(ui, "Enable postprocessing", "", &mut state.settings.enabled);
         ui.add_enabled_ui(state.settings.enabled, |ui| {
         kit::row(ui, "Tone mapping", "", |ui| {
@@ -70,7 +70,7 @@ egui::ComboBox::from_id_salt("tone_mapping")
             state.settings.exposure
         ));
         kit::slider_row(ui, "Saturation", "", egui::Slider::new(&mut state.settings.saturation, 0.0..=2.0));
-        egui::CollapsingHeader::new("Advanced · camera")
+        egui::CollapsingHeader::new("Advanced · image effects")
             .id_salt("visual_camera_advanced")
             .default_open(false)
             .show(ui, |ui| {
@@ -93,20 +93,6 @@ egui::ComboBox::from_id_salt("tone_mapping")
     });
     let m = &mut state.settings.material;
     kit::group(ui, "Toon shading (MToon)", |ui| {
-        kit::row(ui, "Anime shading look", "", |ui| {
-            egui::ComboBox::from_id_salt("anime_material_look")
-                .selected_text("Apply an anime shading look…")
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    for look in waifu_studio::anime_look::AnimeLook::ALL {
-                        if ui.selectable_label(false, look.label()).clicked() {
-                            *m = look.apply(m);
-                        }
-                    }
-                });
-        });
-        ui.small("Applies in Toon shading mode.")
-            .on_hover_text("Crisp cel shading sharpens the light/shadow boundary. Original restores authored MToon values. Textures are preserved.");
         kit::toggle_row(
             ui,
             "Tune toon materials",
@@ -209,13 +195,13 @@ egui::ComboBox::from_id_salt("tone_mapping")
         });
     });
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Reset camera effects").clicked() {
+        if ui.button("Reset image effects").clicked() {
             state.settings = state.settings.with_preset(VisualPreset::Neutral);
         }
         if ui.button("Reset material tuning").clicked() {
             state.settings.material = MaterialTuning::default();
         }
-        if ui.button("Reset everything").clicked() {
+        if ui.button("Reset effects & material tuning").clicked() {
             state.settings = VisualSettings::default();
         }
     });

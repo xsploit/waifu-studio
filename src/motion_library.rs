@@ -19,6 +19,37 @@ pub struct MotionEntry {
     pub format: &'static str,
 }
 
+/// Preserve bundled selections across installations and operating systems.
+/// External files require an exact path; a basename alone is never sufficient.
+pub fn saved_motion<'a>(entries: &'a [MotionEntry], path: &Path) -> Option<&'a MotionEntry> {
+    if let Some(entry) = entries.iter().find(|entry| entry.path == path) {
+        return Some(entry);
+    }
+    fn bundled_key(path: &Path) -> Option<String> {
+        let normalized = path.to_string_lossy().replace('\\', "/");
+        let normalized = normalized
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        let (_, relative) = normalized.rsplit_once("assets/animations/")?;
+        if !["waifumations/", "companion/"]
+            .iter()
+            .any(|prefix| relative.starts_with(prefix))
+            || relative.split('/').any(|part| matches!(part, "." | ".."))
+        {
+            return None;
+        }
+        Some(relative.to_owned())
+    }
+    let key = bundled_key(path)?;
+    let mut matches = entries
+        .iter()
+        .filter(|entry| bundled_key(&entry.path).as_ref() == Some(&key));
+    let entry = matches.next()?;
+    matches.next().is_none().then_some(entry)
+}
+
 pub fn roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = std::env::var_os("WAIFU_MOTION_LIBRARY")
         .map(|value| std::env::split_paths(&value).collect())
@@ -242,7 +273,7 @@ impl MotionEntry {
 }
 
 /// Most options ever offered to a chooser in one catalog.
-pub const MAX_OFFERED: usize = 16;
+pub const MAX_OFFERED: usize = 256;
 /// Answer that declines every offered motion.
 pub const NONE_CHOICE: &str = "none";
 const MAX_LABEL_CHARS: usize = 48;
@@ -511,6 +542,29 @@ mod tests {
     }
 
     #[test]
+    fn restored_library_offers_every_stationary_motion_including_uncategorized_reactions() {
+        let entries = scan(&[
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/animations/waifumations")
+        ]);
+        assert_eq!(entries.len(), 167);
+        let categories = MotionCategory::ALL
+            .into_iter()
+            .filter(|c| *c != MotionCategory::Locomotion)
+            .collect::<Vec<_>>();
+        let catalog = MotionCatalog::offer(&entries, &categories, MAX_OFFERED);
+        assert_eq!(
+            catalog.options().count(),
+            entries.iter().filter(|entry| entry.auto_playable()).count()
+        );
+        assert!(catalog.options().count() > 16);
+        assert!(
+            catalog
+                .options()
+                .any(|entry| entry.category == MotionCategory::Unknown)
+        );
+    }
+
+    #[test]
     fn catalog_offers_a_bounded_round_robin_without_paths() {
         let entries: Vec<_> = [
             "Idle.fbx",
@@ -549,7 +603,7 @@ mod tests {
             MotionCatalog::offer(&entries, &[MotionCategory::Idle], 1000)
                 .options()
                 .count(),
-            MAX_OFFERED
+            43
         );
         assert!(MotionCatalog::offer(&entries, &[], 8).is_empty());
     }

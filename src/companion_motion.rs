@@ -52,8 +52,9 @@ pub fn playlist(entries: &[MotionEntry], configured: &[PathBuf], talking: bool) 
     if !configured.is_empty() {
         return configured
             .iter()
-            .filter(|path| entries.iter().any(|e| e.path == **path && eligible(e)))
-            .cloned()
+            .filter_map(|path| super::motion_library::saved_motion(entries, path))
+            .filter(|entry| eligible(entry))
+            .map(|entry| entry.path.clone())
             .collect();
     }
     let category = if talking {
@@ -398,6 +399,29 @@ mod tests {
         assert_eq!(
             playlist(&entries, &["idle-two.bvh".into()], true),
             [PathBuf::from("idle-two.bvh")]
+        );
+    }
+    #[test]
+    fn relocated_bundled_playlists_work_across_windows_and_linux_without_basename_fallback() {
+        let mut entries = entries();
+        entries[0].path = "/new/app/assets/animations/waifumations/idle.bvh".into();
+        let target = entries[0].path.clone();
+        for saved in [
+            r"D:\old\app\assets\animations\waifumations\idle.bvh",
+            "/home/old/app/assets/animations/waifumations/idle.bvh",
+        ] {
+            assert_eq!(playlist(&entries, &[saved.into()], false), [target.clone()]);
+        }
+        assert!(playlist(&entries, &["/custom/idle.bvh".into()], false).is_empty());
+        let duplicate = entries[0].clone();
+        entries.push(duplicate);
+        assert!(
+            playlist(
+                &entries,
+                &["/old/assets/animations/waifumations/idle.bvh".into()],
+                false
+            )
+            .is_empty()
         );
     }
     #[test]

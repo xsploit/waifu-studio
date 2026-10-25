@@ -1948,7 +1948,7 @@ mod tests {
             assert_eq!(standard.uv_transform.matrix2.x_axis.x, 3.);
             assert_eq!(
                 app.world().get::<Visibility>(outline),
-                Some(&Visibility::Hidden)
+                Some(&Visibility::Inherited)
             );
             assert!((standard.uv_transform.translation.x - 0.2).abs() < 1e-5);
         }

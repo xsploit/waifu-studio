@@ -19,20 +19,6 @@ pub fn ui(ui: &mut egui::Ui, state: &mut FactsMemoryState) {
         ui.colored_label(egui::Color32::RED, e);
     }
     ui.add_enabled_ui(state.loaded && !state.busy, |ui| {
-        let mut enabled = state.enabled;
-        if kit::toggle_row(ui, "Include relevant evidence in chat", "Opt in for this character.", &mut enabled)
-            .changed()
-            && let Err(e) = state.set_enabled(enabled)
-        {
-            state.error = Some(e);
-        }
-        let mut candidates = state.candidates_enabled;
-        if kit::toggle_row(ui, "Suggest memory candidates", "From ‘remember’, ‘I like’ and ‘I dislike’ user turns.", &mut candidates)
-            .changed()
-            && let Err(e) = state.set_candidates_enabled(candidates)
-        {
-            state.error = Some(e);
-        }
         pending_retention(ui, state);
         reflection_drafts(ui, state);
         ui.label("New record");
