@@ -1,6 +1,6 @@
 [package]
 name = "waifu-studio"
-version = "0.1.0-preview.4"
+version = "0.1.0-preview.5"
 edition = "2024"
 rust-version = "1.95"
 description = "A native Rust character companion studio with VRM, chat, desktop overlay and configurable speech"

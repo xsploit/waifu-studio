@@ -38,7 +38,7 @@ impl Switcher {
     pub fn close(&mut self) {
         self.open = false;
     }
-    pub fn ui(&mut self, ctx: &egui::Context, studio: &mut Studio) -> bool {
+    pub fn ui(&mut self, ctx: &egui::Context, studio: &mut Studio, screen: egui::Rect) -> bool {
         if !self.open {
             return false;
         }
@@ -48,22 +48,22 @@ impl Switcher {
         let mut chosen_persona = None;
         let mut touched = false;
         let mut edit = false;
-        let width = (ctx.content_rect().width() - 32.0).clamp(140.0, 352.0);
+        let width = (screen.width() - 32.0).clamp(140.0, 352.0);
         egui::Window::new("Companion profiles")
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .vscroll(true)
-            .max_height((ctx.content_rect().height() - 56.0).max(80.0))
+            .max_height((screen.height() - 56.0).max(80.0))
             .default_height(360.0)
             .default_width(width)
             .max_width(width)
-            .constrain_to(ctx.content_rect())
+            .constrain_to(screen)
             .show(ctx, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                 if let Some(current) = studio.library.selected_character() {
                     ui.label(egui::RichText::new(&current.name).strong());
-                    if ctx.content_rect().height() >= 400.0 {
+                    if screen.height() >= 400.0 {
                         ui.label(
                             egui::RichText::new(format!(
                                 "{} · {}",
@@ -75,7 +75,7 @@ impl Switcher {
                         );
                     }
                 }
-                if ctx.content_rect().width() < 300.0 {
+                if screen.width() < 300.0 {
                     egui::ComboBox::from_id_salt("desktop_profile_page")
                         .selected_text(match self.page {
                             Page::Profiles => "Profiles",
@@ -410,7 +410,7 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        assert!(!switcher.ui(ui.ctx(), &mut studio));
+                        assert!(!switcher.ui(ui.ctx(), &mut studio, screen));
                     },
                 );
                 textures.append(std::mem::take(&mut output.textures_delta));

@@ -193,11 +193,20 @@ pub(crate) struct DesktopGrab {
 }
 
 #[derive(Resource, Default)]
-struct DesktopPlatform {
+pub(crate) struct DesktopPlatform {
     bridge: Option<Arc<DesktopBridge>>,
     pending: Option<Mutex<mpsc::Receiver<Result<DesktopBridge, String>>>>,
     attempted: bool,
     above_panels: Option<bool>,
+}
+impl DesktopPlatform {
+    /// Current compositor geometry, including Wayland's otherwise unavailable
+    /// client origin. The bridge rejects expired samples itself.
+    pub(crate) fn snapshot(&self) -> Option<DesktopSnapshot> {
+        self.bridge
+            .as_ref()
+            .and_then(|bridge| bridge.snapshot().ok())
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

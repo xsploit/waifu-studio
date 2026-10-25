@@ -1,7 +1,7 @@
 //! Desktop radial actions; right-click, hover and release, or click a wedge.
 use crate::voice_hotkeys::{Action as VoiceAction, VoiceHotkeys};
 use crate::{
-    desktop_behavior::DesktopGrab,
+    desktop_behavior::{DesktopGrab, DesktopPlatform},
     desktop_settings::DesktopSettings,
     studio::{Studio, Tab, ViewMode},
 };
@@ -87,6 +87,90 @@ fn center_inside(pointer: Pos2, screen: egui::Rect) -> Pos2 {
         ),
     )
 }
+/// A seated companion can extend below the monitor so its feet hang over the
+/// taskbar. Fit menus to the visible part, not the full backing window. Geometry
+/// may be physical native pixels or logical compositor pixels; convert it to
+/// egui points using the client-size ratio, so DPI and UI scaling stay separate.
+fn visible_screen(
+    screen: egui::Rect,
+    window: egui::Rect,
+    monitors: impl Iterator<Item = egui::Rect>,
+    pointer: Option<Pos2>,
+) -> egui::Rect {
+    if !window.is_finite() || window.width() <= 0.0 || window.height() <= 0.0 {
+        return screen;
+    }
+    let scale = screen.size() / window.size();
+    monitors
+        .filter(|monitor| monitor.is_finite())
+        .filter_map(|monitor| {
+            let visible = window.intersect(monitor);
+            if !visible.is_positive() {
+                return None;
+            }
+            Some(egui::Rect::from_min_max(
+                screen.min + (visible.min - window.min) * scale,
+                screen.min + (visible.max - window.min) * scale,
+            ))
+        })
+        .max_by(|a, b| {
+            let under_pointer = |rect: &egui::Rect| pointer.is_some_and(|p| rect.contains(p));
+            under_pointer(a)
+                .cmp(&under_pointer(b))
+                .then_with(|| a.area().total_cmp(&b.area()))
+        })
+        .unwrap_or(screen)
+}
+fn menu_screen(
+    ctx: &egui::Context,
+    window: Option<&Window>,
+    platform: &DesktopPlatform,
+    monitors: &Query<&bevy::window::Monitor>,
+) -> egui::Rect {
+    let screen = ctx.content_rect();
+    let pointer = ctx.pointer_latest_pos();
+    let rect = |origin: Vec2, size: Vec2| {
+        egui::Rect::from_min_size(Pos2::new(origin.x, origin.y), V2::new(size.x, size.y))
+    };
+    if let Some(snapshot) = platform.snapshot()
+        && let Some(client) = snapshot.own_window_rect
+    {
+        return visible_screen(
+            screen,
+            rect(client.origin, client.size),
+            snapshot.surfaces.iter().filter_map(|surface| {
+                matches!(
+                    surface.id,
+                    waifu_studio::desktop_interaction::SurfaceId::Monitor(_)
+                )
+                .then(|| rect(surface.rect.origin, surface.rect.size))
+            }),
+            pointer,
+        );
+    }
+    if let Some(window) = window
+        && let bevy::window::WindowPosition::At(origin) = window.position
+    {
+        return visible_screen(
+            screen,
+            rect(
+                origin.as_vec2(),
+                window.resolution.physical_size().as_vec2(),
+            ),
+            monitors.iter().map(|monitor| {
+                rect(
+                    monitor.physical_position.as_vec2(),
+                    Vec2::new(
+                        monitor.physical_width as f32,
+                        monitor.physical_height as f32,
+                    ),
+                )
+            }),
+            pointer,
+        );
+    }
+    screen
+}
 const ACTIONS: [Action; 9] = [
     Action::Settings,
     Action::Character,
@@ -111,7 +195,9 @@ pub(crate) fn ui(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     grab: Res<DesktopGrab>,
+    platform: Res<DesktopPlatform>,
     primary: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    monitors: Query<&bevy::window::Monitor>,
     mut menu: ResMut<DesktopMenu>,
     mut studio: ResMut<Studio>,
     mut settings: ResMut<DesktopSettings>,
@@ -131,6 +217,7 @@ pub(crate) fn ui(
         return;
     };
     crate::ui::ensure_style(ctx);
+    let screen = menu_screen(ctx, primary.single().ok(), &platform, &monitors);
     if keys.just_pressed(KeyCode::Escape) {
         menu.center = None;
         menu.picker.close();
@@ -144,13 +231,15 @@ pub(crate) fn ui(
             .is_some()
         && let Some(pointer) = ctx.pointer_latest_pos()
     {
-        menu.center = Some(center_inside(pointer, ctx.content_rect()));
+        menu.center = Some(center_inside(pointer, screen));
         menu.voice_page = false;
         menu.opened_at = ctx.input(|i| i.time);
         menu.picker.close();
     }
     if let Some(center) = menu.center {
-        let radius = radial_radius(ctx.content_rect());
+        let center = center_inside(center, screen);
+        menu.center = Some(center);
+        let radius = radial_radius(screen);
         let items: &[Action] = if menu.voice_page {
             &VOICE_ACTIONS
         } else {
@@ -238,16 +327,17 @@ pub(crate) fn ui(
             }
         }
     }
-    if menu.picker.ui(ctx, &mut studio) {
+    if menu.picker.ui(ctx, &mut studio, screen) {
         menu.suppress_left = true;
     }
     if listening.is_busy() {
         let response = egui::Area::new("desktop_voice_status".into())
-            .anchor(egui::Align2::CENTER_BOTTOM, V2::new(0.0, -8.0))
+            .fixed_pos(screen.left_bottom() + V2::new(8.0, -80.0))
+            .constrain_to(screen)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.set_max_width((ctx.content_rect().width() - 24.0).max(140.0));
+                    ui.set_max_width((screen.width() - 24.0).max(140.0));
                     ui.horizontal_wrapped(|ui| {
                         ui.label(if listening.is_recording() {
                             "● Recording"
@@ -313,5 +403,52 @@ mod tests {
                 assert!(screen.contains(center + V2::splat(radius)));
             }
         }
+    }
+    #[test]
+    fn seated_menu_fits_the_visible_monitor_at_both_dpi_scales() {
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, V2::new(420.0, 640.0));
+        for dpi in [1.0, 2.0] {
+            let window = egui::Rect::from_min_size(
+                Pos2::new(1500.0 * dpi, 715.0 * dpi),
+                screen.size() * dpi,
+            );
+            let monitor = egui::Rect::from_min_size(Pos2::ZERO, V2::new(1920.0, 1080.0) * dpi);
+            let visible = visible_screen(screen, window, [monitor].into_iter(), None);
+            assert_eq!(visible.size(), V2::new(420.0, 365.0));
+            for pointer in [screen.min, screen.center(), screen.max] {
+                let center = center_inside(pointer, visible);
+                let padding = V2::splat(radial_radius(visible) + 4.0);
+                assert!(visible.contains(center - padding));
+                assert!(visible.contains(center + padding));
+            }
+        }
+    }
+    #[test]
+    fn visible_menu_region_handles_negative_outputs_and_pointer_monitor() {
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, V2::new(420.0, 640.0));
+        let window = egui::Rect::from_min_size(Pos2::new(-210.0, 900.0), screen.size());
+        let left = egui::Rect::from_min_size(Pos2::new(-1920.0, 0.0), V2::new(1920.0, 1080.0));
+        let right = egui::Rect::from_min_size(Pos2::ZERO, V2::new(1920.0, 1080.0));
+        let visible = visible_screen(
+            screen,
+            window,
+            [left, right].into_iter(),
+            Some(Pos2::new(315.0, 80.0)),
+        );
+        assert_eq!(visible.min, Pos2::new(210.0, 0.0));
+        assert_eq!(visible.size(), V2::new(210.0, 180.0));
+        let center = center_inside(screen.max, visible);
+        let padding = V2::splat(radial_radius(visible) + 4.0);
+        assert!(visible.contains(center - padding));
+        assert!(visible.contains(center + padding));
+    }
+    #[test]
+    fn unknown_monitor_geometry_keeps_the_existing_viewport() {
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, V2::new(420.0, 640.0));
+        assert_eq!(visible_screen(screen, screen, [].into_iter(), None), screen);
+        assert_eq!(
+            visible_screen(screen, egui::Rect::NOTHING, [screen].into_iter(), None),
+            screen
+        );
     }
 }
