@@ -1,5 +1,9 @@
 # Validation receipt
 
+## Preview 4 desktop transition — 2026-10-25
+
+Native demo acceptance found that leaving a maximized Studio window could make the transparent companion invisible while its radial menu still rendered. Desktop mode now explicitly leaves the native maximized state, reapplies companion dimensions after the OS restores the old window size, and restores maximization when returning to Studio. The corrected maximized-to-Desktop transition was checked in the actual Windows window. Release application suites passed again: 226 Windows and 236 Linux/WSL tests. This is a separate correction discovered after preview 3 was packaged.
+
 ## Preview 3 settings, recall and motion — 2026-10-25
 
 Settings now share the same row/card layout. Scene controls have one owner for appearance, camera, motion, face/gaze, behavior, world and desktop placement. Base shading, independent outlines and image effects can combine; PBR with outlines was checked in the native Windows preview. Duplicate model IDs, silence timing, recall switches, task proposals and group-chat membership controls were removed. Progress display/narration lives under Assistant tools. Native Windows checks visited all top-level menus and all seven Scene sections; the corrected profile gallery and restored idle playlist were also checked in the running app.

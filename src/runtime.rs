@@ -445,6 +445,7 @@ struct DesktopState {
         bool,
         bevy::window::WindowResolution,
         bevy::window::WindowPosition,
+        bool,
     )>,
 }
 
@@ -541,6 +542,7 @@ fn desktop_windows(
     mut desktop: ResMut<DesktopSettings>,
     mut primary: Query<
         (
+            Entity,
             &mut Window,
             &mut CursorOptions,
             Option<&bevy::window::OnMonitor>,
@@ -555,8 +557,9 @@ fn desktop_windows(
     control_windows: Query<(), With<DesktopControlWindow>>,
     control_contexts: Query<(), (With<DesktopControlCamera>, With<EguiContext>)>,
     mut close_requests: MessageReader<WindowCloseRequested>,
+    native_windows: Option<NonSend<bevy::winit::WinitWindows>>,
 ) {
-    let Ok((mut window, mut cursor, current_monitor)) = primary.single_mut() else {
+    let Ok((entity, mut window, mut cursor, current_monitor)) = primary.single_mut() else {
         return;
     };
     if let Some((width, height)) = desktop.resize_requested.take() {
@@ -587,7 +590,15 @@ fn desktop_windows(
                 window.has_shadow,
                 window.resolution.clone(),
                 window.position,
+                native_windows
+                    .as_ref()
+                    .and_then(|windows| windows.get_window(entity))
+                    .is_some_and(|window| window.is_maximized()),
             ));
+            // A maximized transparent HWND can keep its old presentation
+            // surface after the borderless resize, leaving only egui visible.
+            // Leave maximized mode explicitly before using companion geometry.
+            window.set_maximized(false);
             studio.frame_requested = true;
         }
         let monitor = current_monitor
@@ -606,7 +617,7 @@ fn desktop_windows(
             ) / monitor.scale_factor as f32
         });
         let size = companion_window_size(desktop.avatar_zoom, limit);
-        if state.companion_size != Some(size) {
+        if state.companion_size != Some(size) || window.resolution.size() != size {
             // Grow the render surface with the avatar instead of pushing her
             // head out of a fixed rectangle by moving the lens closer.
             window.resolution.set(size.x, size.y);
@@ -677,7 +688,7 @@ fn desktop_windows(
         if studio.click_through {
             studio.click_through = false;
         }
-        if let Some((decorations, level, shadow, resolution, position)) =
+        if let Some((decorations, level, shadow, resolution, position, maximized)) =
             state.original_window.take()
         {
             window.decorations = decorations;
@@ -685,6 +696,9 @@ fn desktop_windows(
             window.has_shadow = shadow;
             window.resolution = resolution;
             window.position = position;
+            if maximized {
+                window.set_maximized(true);
+            }
             studio.frame_requested = true;
         }
         if let Some((controls, camera)) = state.controls.take() {
@@ -2203,6 +2217,29 @@ mod tests {
         assert!(!window.decorations);
         assert!(!window.has_shadow);
         assert_eq!(window.resolution.size(), Vec2::new(420.0, 640.0));
+        assert_eq!(
+            app.world_mut()
+                .get_mut::<Window>(primary)
+                .unwrap()
+                .internal
+                .take_maximize_request(),
+            Some(false)
+        );
+        // Native un-maximizing may first report the restored Studio size.
+        app.world_mut()
+            .get_mut::<Window>(primary)
+            .unwrap()
+            .resolution
+            .set(1280.0, 900.0);
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Window>(primary)
+                .unwrap()
+                .resolution
+                .size(),
+            Vec2::new(420.0, 640.0)
+        );
         assert!(
             app.world().resource::<DesktopState>().controls.is_none(),
             "Entering companion mode must not open settings or recovery controls"
