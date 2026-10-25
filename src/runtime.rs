@@ -557,7 +557,7 @@ fn desktop_windows(
     control_windows: Query<(), With<DesktopControlWindow>>,
     control_contexts: Query<(), (With<DesktopControlCamera>, With<EguiContext>)>,
     mut close_requests: MessageReader<WindowCloseRequested>,
-    native_windows: Option<NonSend<bevy::winit::WinitWindows>>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
 ) {
     let Ok((entity, mut window, mut cursor, current_monitor)) = primary.single_mut() else {
         return;
@@ -590,10 +590,11 @@ fn desktop_windows(
                 window.has_shadow,
                 window.resolution.clone(),
                 window.position,
-                native_windows
-                    .as_ref()
-                    .and_then(|windows| windows.get_window(entity))
-                    .is_some_and(|window| window.is_maximized()),
+                bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+                    windows
+                        .get_window(entity)
+                        .is_some_and(|window| window.is_maximized())
+                }),
             ));
             // A maximized transparent HWND can keep its old presentation
             // surface after the borderless resize, leaving only egui visible.
