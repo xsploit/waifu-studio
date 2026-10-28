@@ -95,6 +95,29 @@ impl DesktopSettings {
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
+    pub fn save(&mut self) -> Result<(), String> {
+        let Some(path) = self.path.as_ref() else {
+            return Err("Desktop settings have no storage path".into());
+        };
+        let result = (|| -> Result<(), String> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(
+                &temporary,
+                serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            std::fs::rename(temporary, path).map_err(|e| e.to_string())
+        })();
+        self.dirty = result.is_err();
+        self.error = result
+            .as_ref()
+            .err()
+            .map(|e| format!("Could not save desktop settings: {e}"));
+        result
+    }
     pub fn load(path: PathBuf) -> Self {
         let read = || -> std::io::Result<Vec<u8>> {
             use std::io::Read;
@@ -347,22 +370,8 @@ impl DesktopSettings {
         if ui
             .add_enabled(self.dirty, egui::Button::new("Save window settings"))
             .clicked()
-            && let Some(path) = &self.path
         {
-            let save = || -> Result<(), Box<dyn std::error::Error>> {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-                std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
-                std::fs::rename(temporary, path)?;
-                Ok(())
-            };
-            let result = save();
-            self.dirty = result.is_err();
-            self.error = result
-                .err()
-                .map(|err| format!("Could not save desktop settings: {err}"));
+            let _ = self.save();
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);

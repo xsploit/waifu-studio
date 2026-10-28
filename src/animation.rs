@@ -1666,6 +1666,13 @@ fn animate_humanoid(
     // arm relaxation or any other procedural pose, including on inactive avatars.
     if cache.bones.is_empty() && state.is_posing() {
         for (entity, name) in &bones {
+            // Body clips often contain dummy SOMA/BVH eye channels. Eyes belong
+            // to the face/gaze runtime, including during blends, stop and reload.
+            // Exclude them from the cache entirely so fallback/rest writes cannot
+            // undo that ownership even when the incoming clip omits the eyes.
+            if matches!(name, HumanBoneName::LeftEye | HumanBoneName::RightEye) {
+                continue;
+            }
             if let Some((rotation, depth)) =
                 relative_rotation(entity, root, &parents, &transforms, &rests)
                 && let Some(position) =
@@ -1931,6 +1938,69 @@ mod lifecycle_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_playback_blends_stop_and_switch_leave_both_eyes_untouched() {
+        use bevy::time::TimeUpdateStrategy;
+        let text = "HIERARCHY\nROOT hips\n{\nOFFSET 0 1 0\nCHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\nJOINT leftEye\n{\nOFFSET 0.03 0.6 0\nCHANNELS 3 Zrotation Xrotation Yrotation\nEnd Site\n{\nOFFSET 0 0.01 0\n}\n}\nJOINT rightEye\n{\nOFFSET -0.03 0.6 0\nCHANNELS 3 Zrotation Xrotation Yrotation\nEnd Site\n{\nOFFSET 0 0.01 0\n}\n}\n}\nMOTION\nFrames: 2\nFrame Time: 0.1\n0 0 0 0 0 0 0 90 0 0 90 0\n0 0 0 0 0 0 0 -90 0 0 -90 0\n";
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let root = app.world_mut().spawn(Transform::default()).id();
+        let hips = app
+            .world_mut()
+            .spawn((
+                HumanBoneName::Hips,
+                Transform::from_xyz(0., 1., 0.),
+                ChildOf(root),
+            ))
+            .id();
+        let eyes = [HumanBoneName::LeftEye, HumanBoneName::RightEye].map(|bone| {
+            app.world_mut()
+                .spawn((bone, Transform::from_xyz(0., 0.6, 0.), ChildOf(hips)))
+                .id()
+        });
+        app.world_mut().resource_mut::<AvatarLoadState>().active = Some(root);
+        app.update();
+        let owned = Quat::from_rotation_x(0.13);
+        for eye in eyes {
+            app.world_mut().get_mut::<Transform>(eye).unwrap().rotation = owned;
+        }
+        let clip = Arc::new(parse_bvh(text).unwrap());
+        assert_eq!(clip.mapped_bones(), 3, "fixture really contains eye tracks");
+        for path in ["first.bvh", "second.bvh"] {
+            app.world_mut()
+                .resource_mut::<AnimationState>()
+                .select_clip(clip.clone(), Some(path.into()));
+            for _ in 0..15 {
+                app.update();
+                for eye in eyes {
+                    assert!(
+                        app.world()
+                            .get::<Transform>(eye)
+                            .unwrap()
+                            .rotation
+                            .abs_diff_eq(owned, 1e-6)
+                    );
+                }
+            }
+        }
+        app.world_mut().resource_mut::<AnimationState>().stop();
+        app.update();
+        for eye in eyes {
+            assert!(
+                app.world()
+                    .get::<Transform>(eye)
+                    .unwrap()
+                    .rotation
+                    .abs_diff_eq(owned, 1e-6)
+            );
+        }
+    }
     const SAMPLE: &str = "HIERARCHY ROOT hips { OFFSET 0 0 0 CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation JOINT leftUpperArm { OFFSET 1 1 0 CHANNELS 3 Zrotation Xrotation Yrotation End Site { OFFSET 1 0 0 } } } MOTION Frames: 2 Frame Time: 0.1 0 0 0 0 0 0 0 0 0 100 200 300 90 0 0 0 0 0";
 
     // Control worker completion deterministically while exercising the real

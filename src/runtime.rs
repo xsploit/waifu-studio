@@ -484,6 +484,23 @@ impl Default for Orbit {
     }
 }
 
+/// Local developer control changes only this app's camera, without pointer input.
+pub(crate) fn control_camera_view(world: &mut World, view: &str) -> Result<(), String> {
+    let yaw = match view {
+        "front" => 0.,
+        "side" => std::f32::consts::FRAC_PI_2,
+        "rear" => std::f32::consts::PI,
+        "other-side" => -std::f32::consts::FRAC_PI_2,
+        _ => return Err("Unknown camera view".into()),
+    };
+    let mut cameras = world.query_filtered::<&mut Orbit, With<StudioCamera>>();
+    for mut orbit in cameras.iter_mut(world) {
+        orbit.yaw = yaw;
+        orbit.pitch = 0.;
+    }
+    Ok(())
+}
+
 fn setup(
     mut commands: Commands,
     mut egui_settings: ResMut<EguiGlobalSettings>,

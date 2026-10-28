@@ -1,5 +1,36 @@
 # Validation receipt
 
+## Eye isolation and Hikari motion review — 2026-10-28
+
+The complete release test suites passed with `cargo test --offline --release
+--locked --all-targets -- --test-threads=1`: **1,266 Windows tests** and **1,454
+Linux/WSL tests**. This includes an integration regression with explicit eye
+tracks that verifies body playback, clip switches, crossfades and stopping leave
+both eye rotations untouched. The opt-in local-control capture/path validation
+test passed on both platforms. A real stdio MCP initialize, tools/list and status
+call succeeded against the running Windows app.
+
+All 167 Kimodo BVHs contain eye channels. Inventory covered all 27,330 source
+frames. Native Windows Hikari captures now cover those same frames at 30 FPS,
+with front, side, rear and other-side cameras, spring simulation active and
+experimental arm correction off. Locomotion captures follow horizontal hips to
+retain framing; their receipts record this. The review page was rendered in an
+isolated headless browser, and its frame stepping, exact PNG decoding, rejection
+notes and side-view control passed a browser check.
+
+Six-frame visual triage confirmed failures in `idle_hands_behind_back_01`,
+`idle_breathing_01`, `idle_arms_crossed_01` and `talking_thinking_01`. These clips
+show hands/forearms entering the jacket or chest. **The library is not visually
+accepted, and arm/clothing collision is not fixed.** Full-motion inspection,
+loop seams and gesture/talking/idle transitions remain open. No native Linux
+Hikari visual pass is claimed. The diagnostic images are 1280x960 with four
+640x480 views; they are not high-resolution product footage.
+
+On the personal Windows test profile, changing the saved unfocused frame cap
+from 15 to 60 increased measured app cadence from about 14.9 to 59 FPS at the
+same 2560x1600 window size. This is an idle measurement after batch rendering,
+not a general performance guarantee or a change to shipped defaults.
+
 ## Preview 4 desktop transition — 2026-10-25
 
 Native demo acceptance found that leaving a maximized Studio window could make the transparent companion invisible while its radial menu still rendered. Desktop mode now explicitly leaves the native maximized state, reapplies companion dimensions after the OS restores the old window size, and restores maximization when returning to Studio. The corrected maximized-to-Desktop transition was checked in the actual Windows window. Release application suites passed again: 226 Windows and 236 Linux/WSL tests. This is a separate correction discovered after preview 3 was packaged.

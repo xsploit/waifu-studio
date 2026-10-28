@@ -383,6 +383,7 @@ Waifu Studio is built with **Rust, Bevy and egui**. The repository pins its Rust
 - [Character and scene customization notes](CUSTOMIZATION.md)
 - [Content packs](docs/content-packs.md) and [extension authoring](docs/extension-authoring.md)
 - [Connection settings](docs/connection-settings.md)
+- [Opt-in local app control, MCP bridge and motion review](docs/LOCAL-CONTROL.md)
 - [Streaming capture](docs/streaming-capture.md), [Twitch setup](docs/twitch-setup.md) and [Discord development](docs/discord-adapter.md)
 - [Pipeline measurements](benchmarks/RESULTS.md)
 

@@ -2,6 +2,8 @@
 
 This is a substantial native foundation, **not a complete WebWaifu4 port or full implementation of every researched idea**. The main table is updated for the Windows/Linux preview on 2026-10-25; dated sections below retain their original implementation checkpoints. “Implemented” means a code path and controls exist; it does not mean a live provider, microphone, headset, coding agent or every avatar has passed acceptance.
 
+**Animation review update, 2026-10-28:** body playback, blending and stop/idle restoration now leave both eye joints to face/gaze controls. All 167 BVHs were captured for Hikari (27,330 source frames, four views); capture is not visual acceptance. Breathing, hands-behind-back, crossed-arms and thinking samples show arm/jacket penetration. The complete library and automatic transitions remain unapproved. The optional [local app control and MCP bridge](docs/LOCAL-CONTROL.md) supports repeatable inspection without global input; it does not add mesh or cloth collision.
+
 | Requested capability | Implementation status | Scope and acceptance boundary |
 | --- | --- | --- |
 | Native desktop companion | Implemented on Windows and Linux | Native Windows Studio/transparent companion and Linux offscreen rendering verified on 2026-10-24. Windows uses Win32/DWM geometry and Job Objects; Linux retains KWin/Hyprland and process groups. See `docs/CROSS-PLATFORM.md` and `VALIDATION.md` for platform and hardware boundaries. |

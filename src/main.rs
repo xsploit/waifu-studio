@@ -17,6 +17,7 @@ mod gaze_controls;
 mod incoming_chat;
 mod lipsync_controls;
 mod listen_controls;
+mod local_control;
 mod mcp_controls;
 mod memory_controls;
 mod motion_services;
@@ -130,6 +131,7 @@ fn run() -> Result<(), String> {
         .map(|p| p.data_local_dir().to_path_buf())
         .ok_or("Cannot locate application data directory")?;
     let mut animation_path = None;
+    let mut control_directory = None;
     let default_directory = directory.clone();
     let mut explicit_directory = false;
     let mut showcase_path = None;
@@ -157,6 +159,11 @@ fn run() -> Result<(), String> {
             Some("--data-dir") => {
                 explicit_directory = true;
                 directory = PathBuf::from(args.next().ok_or("--data-dir requires a folder")?)
+            }
+            Some("--control-dir") => {
+                control_directory = Some(PathBuf::from(
+                    args.next().ok_or("--control-dir requires a folder")?,
+                ));
             }
             Some("--offscreen-showcase") => {
                 offscreen = true;
@@ -462,6 +469,10 @@ fn run() -> Result<(), String> {
         .init_resource::<waifu_studio::extension_speech_output::SpeechOutputs>()
         .init_resource::<waifu_studio::speech_pcm_routing::SpeechPcmRouting>();
     app.add_systems(Last, extension_host::quiesce_on_exit);
+    if let Some(directory) = control_directory {
+        app.insert_resource(local_control::LocalControl::new(directory)?)
+            .add_systems(Last, local_control::frame);
+    }
     let result = app.run();
     if !extension_runtime.shutdown(std::time::Duration::from_secs(2)) {
         warn!("Extension cleanup exceeded the shutdown deadline");

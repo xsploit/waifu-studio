@@ -66,6 +66,8 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 960;
 
 struct Options {
+    batch_dir: Option<PathBuf>,
+    follow_hips: bool,
     motion: PathBuf,
     output: PathBuf,
     avatar: PathBuf,
@@ -106,6 +108,8 @@ impl Options {
             return Err("Output must have a .png extension".into());
         }
         let mut options = Self {
+            batch_dir: None,
+            follow_hips: false,
             motion,
             output,
             avatar: root.join("assets/characters/models/4e5c5188c39e-neuro-sama.vrm"),
@@ -124,6 +128,11 @@ impl Options {
         };
         while let Some(option) = args.next() {
             match option.as_str() {
+                "--batch-dir" => {
+                    options.batch_dir = Some(PathBuf::from(
+                        args.next().ok_or("--batch-dir needs a directory")?,
+                    ));
+                }
                 "--time" => {
                     options.seconds = args
                         .next()
@@ -152,12 +161,13 @@ impl Options {
                         .filter(|view| {
                             matches!(
                                 view.as_str(),
-                                "front" | "side" | "rear" | "other-side" | "three-quarter"
+                                "front" | "side" | "rear" | "other-side" | "three-quarter" | "quad"
                             )
                         })
                         .ok_or("--view requires front, side, rear, other-side or three-quarter")?;
                 }
                 "--rig-overlay" => options.rig_overlay = true,
+                "--follow-hips" => options.follow_hips = true,
                 "--continuous" => options.continuous = true,
                 "--rest-pose" => options.rest_pose = true,
                 "--arm-pose-probe" => options.arm_pose_probe = true,
@@ -280,6 +290,8 @@ impl Options {
 
 #[derive(Resource)]
 struct Capture {
+    remaining: std::collections::VecDeque<PathBuf>,
+    batch_root: PathBuf,
     options: Options,
     ready_frames: u32,
     frames: u32,
@@ -365,13 +377,41 @@ type DiagnosticSkins<'w, 's> = Query<
 >;
 
 fn main() -> AppExit {
-    let options = match Options::parse() {
+    let mut options = match Options::parse() {
         Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
             return AppExit::error();
         }
     };
+    let mut remaining = std::collections::VecDeque::new();
+    let batch_root = options.output.parent().unwrap_or(Path::new(".")).to_owned();
+    if let Some(directory) = &options.batch_dir {
+        if !options.continuous
+            || options.rest_pose
+            || options.seconds != 0.
+            || options.end.is_some()
+        {
+            eprintln!("Batch review needs continuous playback from zero to the full clip end");
+            return AppExit::error();
+        }
+        let mut paths: Vec<_> = std::fs::read_dir(directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "bvh"))
+            .collect();
+        paths.sort();
+        remaining = paths.into();
+        let Some(first) = remaining.pop_front() else {
+            return AppExit::error();
+        };
+        options.motion = first;
+        options.output = batch_root
+            .join(options.motion.file_stem().unwrap())
+            .join("frame.png");
+    }
     let clip = match options.clip() {
         Ok(clip) => clip,
         Err(error) => {
@@ -421,6 +461,8 @@ fn main() -> AppExit {
     let continuous_start_seconds = options.seconds;
     App::new()
         .insert_resource(Capture {
+            remaining,
+            batch_root,
             options,
             ready_frames: 0,
             frames: 0,
@@ -483,7 +525,10 @@ fn main() -> AppExit {
         )
         // Sample after all PostUpdate pose writers, including VRM springs.
         // The JSON and overlay therefore describe the same final avatar pose.
-        .add_systems(Last, (update_rig_overlay, prepare_and_capture).chain())
+        .add_systems(
+            Last,
+            (follow_review_hips, update_rig_overlay, prepare_and_capture).chain(),
+        )
         .run()
 }
 
@@ -507,30 +552,48 @@ fn setup(
         },
         Transform::from_xyz(3., 6., 4.).looking_at(Vec3::new(0., 1., 0.), Vec3::Y),
     ));
-    commands.spawn((
-        Camera3d::default(),
-        ShadowLodOrigin,
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        RenderTarget::Image(state.target.clone().into()),
-        Projection::Perspective(PerspectiveProjection {
-            fov: 45_f32.to_radians(),
-            ..default()
-        }),
-        Transform::from_translation(match state.options.view.as_str() {
-            "side" => Vec3::new(3.2, 1., 0.),
-            "rear" => Vec3::new(0., 1., -3.2),
-            "other-side" => Vec3::new(-3.2, 1., 0.),
-            "three-quarter" => {
-                let diagonal = 3.2 * std::f32::consts::FRAC_1_SQRT_2;
-                Vec3::new(diagonal, 1., diagonal)
-            }
-            _ => Vec3::new(0., 1., 3.2),
-        })
-        .looking_at(Vec3::new(0., 0.9, 0.), Vec3::Y),
-    ));
+    let quad = state.options.view == "quad";
+    let views: Vec<&str> = if quad {
+        vec!["front", "side", "rear", "other-side"]
+    } else {
+        vec![state.options.view.as_str()]
+    };
+    for (index, view) in views.into_iter().enumerate() {
+        commands.spawn((
+            ReviewCamera,
+            Camera3d::default(),
+            ShadowLodOrigin,
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                order: index as isize,
+                viewport: quad.then(|| bevy::camera::Viewport {
+                    physical_position: UVec2::new(
+                        (index as u32 % 2) * (WIDTH / 2),
+                        (index as u32 / 2) * (HEIGHT / 2),
+                    ),
+                    physical_size: UVec2::new(WIDTH / 2, HEIGHT / 2),
+                    ..default()
+                }),
+                ..default()
+            },
+            RenderTarget::Image(state.target.clone().into()),
+            Projection::Perspective(PerspectiveProjection {
+                fov: 45_f32.to_radians(),
+                ..default()
+            }),
+            Transform::from_translation(match view {
+                "side" => Vec3::new(3.2, 1., 0.),
+                "rear" => Vec3::new(0., 1., -3.2),
+                "other-side" => Vec3::new(-3.2, 1., 0.),
+                "three-quarter" => {
+                    let diagonal = 3.2 * std::f32::consts::FRAC_1_SQRT_2;
+                    Vec3::new(diagonal, 1., diagonal)
+                }
+                _ => Vec3::new(0., 1., 3.2),
+            })
+            .looking_at(Vec3::new(0., 0.9, 0.), Vec3::Y),
+        ));
+    }
     if state.options.rig_overlay {
         use HumanBoneName::*;
         // Allocate one mesh, three materials and a fixed set of entities once.
@@ -582,6 +645,48 @@ fn setup(
     requests.write(LoadAvatar(
         AssetPath::from_path(&state.options.avatar).into_owned(),
     ));
+}
+
+#[derive(Component)]
+struct ReviewCamera;
+
+// Diagnostic framing only: preserve the complete locomotion pose by following
+// horizontal hips translation. The avatar and all animation tracks are unchanged.
+// Write the camera global as well because this runs after transform propagation.
+fn follow_review_hips(
+    state: Res<Capture>,
+    hips: Query<(&HumanBoneName, &GlobalTransform), Without<ReviewCamera>>,
+    mut cameras: Query<(&Camera, &mut Transform, &mut GlobalTransform), With<ReviewCamera>>,
+) {
+    if !state.options.follow_hips {
+        return;
+    }
+    let Some((_, hips)) = hips.iter().find(|(bone, _)| **bone == HumanBoneName::Hips) else {
+        return;
+    };
+    let position = hips.translation();
+    let center = Vec3::new(position.x, 0., position.z);
+    for (camera, mut local, mut global) in &mut cameras {
+        let view = if state.options.view == "quad" {
+            ["front", "side", "rear", "other-side"][camera.order as usize]
+        } else {
+            state.options.view.as_str()
+        };
+        let offset = match view {
+            "side" => Vec3::new(3.2, 1., 0.),
+            "rear" => Vec3::new(0., 1., -3.2),
+            "other-side" => Vec3::new(-3.2, 1., 0.),
+            "three-quarter" => Vec3::new(
+                3.2 * std::f32::consts::FRAC_1_SQRT_2,
+                1.,
+                3.2 * std::f32::consts::FRAC_1_SQRT_2,
+            ),
+            _ => Vec3::new(0., 1., 3.2),
+        };
+        *local = Transform::from_translation(center + offset)
+            .looking_at(center + Vec3::new(0., 0.9, 0.), Vec3::Y);
+        *global = GlobalTransform::from(*local);
+    }
 }
 
 /// The same root-relative FK chain is used by both JSON and overlay endpoints.
@@ -1027,6 +1132,60 @@ fn prepare_and_capture(
                 "Saved {} continuous frames with active spring simulation",
                 state.index
             );
+            if state.options.batch_dir.is_some() {
+                let receipt = serde_json::json!({"clip":state.options.motion.file_name().map(|n|n.to_string_lossy()),"captured_frames":state.index,"fps":state.options.sequence,"source_frames":animation.clip.as_ref().map(|c|c.frame_count),"view":state.options.view,"avatar":state.options.avatar,"arm_clearance":state.options.arm_clearance,"camera_follows_horizontal_hips":state.options.follow_hips,"visual_status":"needs_review"});
+                let _ = std::fs::write(
+                    state.options.output.parent().unwrap().join("receipt.json"),
+                    receipt.to_string(),
+                );
+                if let Some(path) = state.remaining.pop_front() {
+                    state.options.motion = path;
+                    state.options.seconds = 0.;
+                    let next_output = state
+                        .batch_root
+                        .join(state.options.motion.file_stem().unwrap())
+                        .join("frame.png");
+                    state.options.output = next_output;
+                    if let Err(error) =
+                        std::fs::create_dir_all(state.options.output.parent().unwrap())
+                    {
+                        eprintln!("{error}");
+                        exit.write(AppExit::error());
+                        return;
+                    }
+                    let clip = match state.options.clip() {
+                        Ok(clip) => clip,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            exit.write(AppExit::error());
+                            return;
+                        }
+                    };
+                    state.duration = clip.duration();
+                    state.last_pose = clip.last_sample_time();
+                    animation.clip = Some(Arc::new(clip));
+                    animation.path = Some(state.options.motion.clone());
+                    animation.position = 0.;
+                    animation.play();
+                    animation.pause();
+                    state.options.seconds = 0.;
+                    state.ready_frames = 0;
+                    state.frames = 0;
+                    state.index = 0;
+                    state.started = Instant::now();
+                    state.continuous_started = false;
+                    state.continuous_done = false;
+                    state.continuous_start_seconds = 0.;
+                    state.completed = default();
+                    state.failed = default();
+                    println!(
+                        "BATCH_NEXT {} remaining={}",
+                        state.options.motion.display(),
+                        state.remaining.len()
+                    );
+                    return;
+                }
+            }
             exit.write(AppExit::Success);
         } else if state.started.elapsed() > Duration::from_secs(600) {
             eprintln!("Continuous capture readback timed out");
