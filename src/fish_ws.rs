@@ -39,7 +39,31 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else {
 /// address (often IPv6) cannot consume the whole connect deadline.
 const ADDRESS_TIMEOUT: Duration = Duration::from_millis(1500);
 type Mailbox = Arc<Mutex<VecDeque<(u64, LiveEvent)>>>;
-type SocketControl = Arc<Mutex<Option<(u64, TcpStream)>>>;
+type SocketControl = Arc<Mutex<Option<(u64, SharedTcpStream)>>>;
+
+/// Cancellation and I/O must use the same socket handle. On Windows a cloned
+/// handle from a timed connect can reject shutdown while the original is live.
+#[derive(Clone, Debug)]
+struct SharedTcpStream(Arc<TcpStream>);
+impl std::ops::Deref for SharedTcpStream {
+    type Target = TcpStream;
+    fn deref(&self) -> &TcpStream {
+        &self.0
+    }
+}
+impl Read for SharedTcpStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        (&*self.0).read(bytes)
+    }
+}
+impl Write for SharedTcpStream {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        (&*self.0).write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self.0).flush()
+    }
+}
 
 #[derive(Clone)]
 enum Command {
@@ -751,7 +775,7 @@ fn connect_tcp(
     Err("Could not connect Fish WebSocket socket".into())
 }
 fn tunnel(
-    socket: &mut TcpStream,
+    socket: &mut (impl Read + Write),
     target: &str,
     authorization: Option<&str>,
     active: &AtomicU64,
@@ -798,7 +822,7 @@ fn connect(
     active: &AtomicU64,
     control: &SocketControl,
     budget: &StreamBudget,
-) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+) -> Result<WebSocket<MaybeTlsStream<SharedTcpStream>>, String> {
     let host = request
         .url
         .host_str()
@@ -812,12 +836,12 @@ fn connect(
         } else {
             80
         });
-    let mut socket = match &request.route {
+    let mut socket = SharedTcpStream(Arc::new(match &request.route {
         Route::Direct => connect_tcp(host, port, active, request.generation, budget)?,
         Route::HttpConnect { host, port, .. } => {
             connect_tcp(host, *port, active, request.generation, budget)?
         }
-    };
+    }));
     socket
         .set_nodelay(true)
         .map_err(|_| "Could not configure Fish WebSocket socket")?;
@@ -827,9 +851,7 @@ fn connect(
     socket
         .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|_| "Could not configure Fish WebSocket socket")?;
-    let cancel_handle = socket
-        .try_clone()
-        .map_err(|_| "Could not prepare Fish WebSocket cancellation")?;
+    let cancel_handle = socket.clone();
     {
         let mut stored = control.lock().map_err(|_| "Fish socket control failed")?;
         check(active, request.generation, budget)?;
@@ -990,7 +1012,7 @@ pub(crate) fn observation_socket_fixture_tls(
 }
 
 struct WsReader {
-    ws: WebSocket<MaybeTlsStream<TcpStream>>,
+    ws: WebSocket<MaybeTlsStream<SharedTcpStream>>,
     /// Session key, used only to mask provider error text.
     key: String,
     input: Arc<Mutex<TextQueue>>,
@@ -2521,44 +2543,47 @@ mod tests {
     }
     #[test]
     fn cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass() {
-        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
-        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
-        let direct = TcpListener::bind("127.0.0.1:0").unwrap();
-        direct.set_nonblocking(true).unwrap();
-        let (requested, seen_request) = mpsc::channel();
-        let (closed, seen_close) = mpsc::channel();
-        let task = std::thread::spawn(move || {
-            let mut socket = socket(proxy);
-            let mut header = Vec::new();
-            let mut byte = [0];
-            while !header.ends_with(b"\r\n\r\n") {
-                socket.read_exact(&mut byte).unwrap();
-                header.push(byte[0]);
-            }
-            requested.send(()).unwrap();
-            // Never answer CONNECT; wait for the client to drop the tunnel.
-            assert!(matches!(socket.read(&mut byte), Ok(0) | Err(_)));
-            closed.send(()).unwrap();
-        });
-        let mut state = FishWsState::default();
-        let target = config(endpoint(&direct));
-        state
-            .open_with_env(1, &target, Some("test-key".into()), |name| {
-                (name == "http_proxy").then(|| proxy_url.clone())
-            })
-            .unwrap();
-        seen_request.recv_timeout(Duration::from_secs(2)).unwrap();
-        let started = Instant::now();
-        state.cancel();
-        seen_close.recv_timeout(Duration::from_secs(1)).unwrap();
-        workers_drain(&state, Duration::from_secs(1));
-        assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(state.poll().is_empty());
-        assert_eq!(
-            direct.accept().unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-        task.join().unwrap();
+        // Exercise the timed-connect cancellation race repeatedly on Windows.
+        for _ in 0..64 {
+            let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+            let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+            let direct = TcpListener::bind("127.0.0.1:0").unwrap();
+            direct.set_nonblocking(true).unwrap();
+            let (requested, seen_request) = mpsc::channel();
+            let (closed, seen_close) = mpsc::channel();
+            let task = std::thread::spawn(move || {
+                let mut socket = socket(proxy);
+                let mut header = Vec::new();
+                let mut byte = [0];
+                while !header.ends_with(b"\r\n\r\n") {
+                    socket.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                requested.send(()).unwrap();
+                // Never answer CONNECT; wait for the client to drop the tunnel.
+                assert!(matches!(socket.read(&mut byte), Ok(0) | Err(_)));
+                closed.send(()).unwrap();
+            });
+            let mut state = FishWsState::default();
+            let target = config(endpoint(&direct));
+            state
+                .open_with_env(1, &target, Some("test-key".into()), |name| {
+                    (name == "http_proxy").then(|| proxy_url.clone())
+                })
+                .unwrap();
+            seen_request.recv_timeout(Duration::from_secs(2)).unwrap();
+            let started = Instant::now();
+            state.cancel();
+            seen_close.recv_timeout(Duration::from_secs(1)).unwrap();
+            workers_drain(&state, Duration::from_secs(1));
+            assert!(started.elapsed() < Duration::from_millis(500));
+            assert!(state.poll().is_empty());
+            assert_eq!(
+                direct.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            task.join().unwrap();
+        }
     }
 
     #[test]
