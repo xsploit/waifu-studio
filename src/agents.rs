@@ -366,9 +366,8 @@ impl AgentState {
         let Some(path) = &self.preferences_path else {
             return;
         };
-        let result = (|| -> Result<(), String> {
-            crate::durable_file::write_json(path, &AgentPreferences::from(&*self), 64 * 1024)
-        })();
+        let result =
+            crate::durable_file::write_json(path, &AgentPreferences::from(&*self), 64 * 1024);
         if let Err(error) = result {
             self.error = Some(format!("Could not save agent settings: {error}"));
         }

@@ -1,5 +1,5 @@
-//! Commit an already flushed temporary file without treating Windows directories
-//! as ordinary files (opening a directory with File::open fails there).
+//! Bounded serialization and durable file replacement for profiles and memory.
+//! Callers retain payload validation and parent-directory ownership.
 use serde::Serialize;
 use std::{io, io::Write, path::Path};
 
@@ -38,7 +38,12 @@ pub(crate) fn replace(temporary: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(not(windows))]
     {
         std::fs::rename(temporary, destination)?;
-        sync_directory(destination.parent().unwrap_or_else(|| Path::new(".")))
+        sync_directory(
+            destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new(".")),
+        )
     }
 }
 
@@ -59,7 +64,6 @@ pub(crate) fn sync_directory(directory: &Path) -> io::Result<()> {
 /// Replace a file using a private sibling, flushing contents before commit.
 /// The caller owns parent-directory creation, payload validation and size bounds.
 pub fn write(path: &Path, data: &[u8]) -> io::Result<()> {
-    use std::io::Write;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| {
         let mut options = std::fs::OpenOptions::new();
@@ -121,6 +125,37 @@ mod tests {
         let path = std::env::temp_dir().join(format!("waifu-durable-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).unwrap();
         path
+    }
+    #[test]
+    fn relative_filenames_commit_without_changing_the_callers_cwd() {
+        const CHILD: &str = "WAIFU_DURABLE_RELATIVE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            write(Path::new("profile.json"), b"relative").unwrap();
+            write_json(Path::new("settings.json"), &"settings", 32).unwrap();
+            return;
+        }
+        let root = root();
+        let cwd = std::env::current_dir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "durable_file::tests::relative_filenames_commit_without_changing_the_callers_cwd",
+            ])
+            .current_dir(&root)
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(root.join("profile.json")).unwrap(),
+            b"relative"
+        );
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn replacement_is_complete_and_leaves_no_temporary_files() {

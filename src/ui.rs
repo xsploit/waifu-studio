@@ -388,7 +388,7 @@ pub fn studio_ui(
                         &mut avatar_ui.roster,
                     );
                     crate::scene_chat_controls::transcript(ui, &avatar_ui.scene_chat);
-                    settings_pages::advanced(ui, "group_chat", |ui| {
+                    settings_kit::advanced(ui, "group_chat", |ui| {
                         crate::scene_chat_controls::ui(
                             ui,
                             &mut avatar_ui.scene_chat,
@@ -400,7 +400,7 @@ pub fn studio_ui(
                 }
                 Tab::Connections => {
                     settings_pages::connections(ui, &mut studio, &listening);
-                    settings_pages::advanced(ui, "connections", |ui| {
+                    settings_kit::advanced(ui, "connections", |ui| {
                         settings_pages::session_keys(ui, &mut studio, &mut listening);
                         connections(ui, &mut studio);
                         anchored_section(ui, "Connections", "Decision model connection", "");
@@ -438,7 +438,7 @@ pub fn studio_ui(
                     if let Some(hotkeys) = avatar_ui.hotkeys.as_deref_mut() {
                         crate::voice_hotkeys::settings_ui(ui, hotkeys);
                     }
-                    settings_pages::advanced(ui, "voice", |ui| {
+                    settings_kit::advanced(ui, "voice", |ui| {
                         anchored_section(
                             ui,
                             &tab_key,

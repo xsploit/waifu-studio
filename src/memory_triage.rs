@@ -5,14 +5,13 @@ use super::{CANDIDATE_TTL_SECS, FactsMemoryState, MAX_CANDIDATES, MemoryRecord, 
 use crate::evaluation::{DecisionConfig, EvaluationPolicy, evaluate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::Duration,
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
 };
+#[cfg(test)]
+use std::time::Duration;
 use uuid::Uuid;
 
 pub const CHOICES: &[&str] = &[

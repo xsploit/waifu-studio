@@ -265,7 +265,7 @@ pub(super) fn ui(
     });
     ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
 
-    super::settings_pages::advanced(ui, "memory", |ui| {
+    super::settings_kit::advanced(ui, "memory", |ui| {
         super::memory_advanced(ui, studio, memory, semantic)
     });
 }

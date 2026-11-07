@@ -47,7 +47,7 @@ fn decision_client() -> Result<&'static reqwest::blocking::Client, String> {
                 .pool_idle_timeout(Duration::from_secs(90))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .map_err(|_| "Cannot create recipient selection client".into())
+                .map_err(|_| "Cannot create decision evaluation client".into())
         })
         .as_ref()
         .map_err(Clone::clone)

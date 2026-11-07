@@ -8,11 +8,6 @@ use waifu_studio::{
     voice::{VoiceAdapter, VoiceConfig},
 };
 
-/// Closed fold holding a page's complete original controls.
-pub(super) fn advanced(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
-    kit::advanced(ui, id, add);
-}
-
 fn dropdown(ui: &mut egui::Ui, id: &str, current: usize, labels: &[&str]) -> usize {
     let mut selected = current;
     egui::ComboBox::from_id_salt(id)
