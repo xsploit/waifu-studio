@@ -80,6 +80,7 @@ pub mod viseme_audio;
 
 pub mod bundled;
 pub mod credentials;
+pub mod evaluation;
 pub mod facts_memory;
 pub mod recipient_decision;
 pub mod reply_affect;

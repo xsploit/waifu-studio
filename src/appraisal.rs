@@ -1,11 +1,13 @@
 //! Optional Jev appraisal of the character's reaction to a user message.
 //! Discrete VAD levels are authored categories, not calibrated measurements.
-use crate::{recipient_decision::DecisionConfig, reply_affect::ReplyAffect};
+use crate::{
+    evaluation::{DecisionConfig, EvaluationPolicy, evaluate},
+    reply_affect::ReplyAffect,
+};
 use serde_json::{Value, json};
 use std::{
-    io::Read,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -13,8 +15,7 @@ use std::{
 };
 
 pub const MAX_MESSAGE_BYTES: usize = 4000;
-const MAX_RESPONSE: usize = 16 * 1024;
-const DEADLINE: Duration = Duration::from_millis(1500);
+const DEADLINE: Duration = EvaluationPolicy::APPRAISAL.deadline;
 static WORKERS: AtomicUsize = AtomicUsize::new(0);
 const EMOTIONS: &[&str] = &[
     "neutral",
@@ -46,21 +47,6 @@ pub fn bounded(text: &str, limit: usize) -> &str {
         end -= 1;
     }
     &text[..end]
-}
-fn client() -> Result<&'static reqwest::blocking::Client, String> {
-    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .timeout(DEADLINE)
-                .connect_timeout(DEADLINE)
-                .pool_idle_timeout(Duration::from_secs(90))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|_| "Cannot create appraisal client".into())
-        })
-        .as_ref()
-        .map_err(Clone::clone)
 }
 fn question(criteria: Value, instructions: &str) -> Value {
     json!({"type":"choice", "criteria":criteria, "instructions":instructions})
@@ -120,70 +106,12 @@ pub fn choose(
     {
         return Err("Appraisal input exceeds its limits or is empty".into());
     }
-    let url = reqwest::Url::parse(&config.endpoint).map_err(|_| "Invalid appraisal endpoint")?;
-    let local = matches!(
-        url.host_str(),
-        Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-    );
-    if !(url.scheme() == "https" || (url.scheme() == "http" && local))
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || config.model.trim().is_empty()
-        || config.model.len() > 200
-    {
-        return Err("Use an HTTPS appraisal endpoint and evaluation model ID".into());
-    }
-    let env = std::env::var(config.key_env.trim()).unwrap_or_default();
-    let oidc = if env.is_empty() && config.key_env == "AI_GATEWAY_API_KEY" {
-        std::env::var("VERCEL_OIDC_TOKEN").unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let key = [&config.session_key, &env, &oidc]
-        .into_iter()
-        .find(|k| !k.is_empty());
-    if key.is_none() && !local {
-        return Err("Set the decision key for appraisal".into());
-    }
-    if cancelled() {
-        return Err("Appraisal cancelled".into());
-    }
-    let mut request = client()?
-        .post(url)
-        // Blocking Client::timeout restarts on each Read; request timeout also
-        // reaches the async body and bounds slow-drip responses in total.
-        .timeout(DEADLINE)
-        .header("ai-gateway-protocol-version", "0.0.1")
-        .header("ai-evaluation-model-specification-version", "4")
-        .header("ai-model-id", &config.model)
-        .json(&body(name, persona, message));
-    if let Some(key) = key {
-        request = request.bearer_auth(key);
-    }
-    let response = request
-        .send()
-        .map_err(|_| "Appraisal connection failed or timed out")?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Appraisal returned HTTP {}",
-            response.status().as_u16()
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read appraisal response")?;
-    if cancelled() {
-        return Err("Appraisal cancelled".into());
-    }
-    if bytes.len() > MAX_RESPONSE {
-        return Err("Appraisal response exceeds limit".into());
-    }
-    let data = serde_json::from_slice(&bytes).map_err(|_| "Invalid appraisal response")?;
+    let data = evaluate(
+        config,
+        EvaluationPolicy::APPRAISAL,
+        &body(name, persona, message),
+        cancelled,
+    )?;
     parse(&data)
 }
 
@@ -267,7 +195,7 @@ pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader, Write},
+        io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
     };
     fn answer(emotion: &str) -> Value {

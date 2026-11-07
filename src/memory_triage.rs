@@ -2,11 +2,10 @@
 //! The model only picks an offered label. Rust keeps the verbatim quote, turn id and
 //! correction link, and every suggestion still requires explicit acceptance.
 use super::{CANDIDATE_TTL_SECS, FactsMemoryState, MAX_CANDIDATES, MemoryRecord, RecordKind};
-use crate::recipient_decision::DecisionConfig;
+use crate::evaluation::{DecisionConfig, EvaluationPolicy, evaluate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    io::Read,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -26,8 +25,6 @@ pub const CHOICES: &[&str] = &[
 ];
 pub const SOURCE: &str = "decision-model candidate (review required before recall)";
 const MAX_MESSAGE_BYTES: usize = 4000;
-const MAX_RESPONSE: u64 = 16 * 1024;
-const DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -82,63 +79,14 @@ fn classify(
     message: &str,
     existing: Option<&str>,
 ) -> Result<String, String> {
-    let url = reqwest::Url::parse(&config.endpoint).map_err(|_| "Invalid decision endpoint")?;
-    let local = matches!(
-        url.host_str(),
-        Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
-    );
-    if !(url.scheme() == "https" || (url.scheme() == "http" && local))
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || model.trim().is_empty()
-        || model.len() > 200
-    {
-        return Err("Use an HTTPS decision endpoint and evaluation model ID".into());
-    }
-    let env = std::env::var(config.key_env.trim()).unwrap_or_default();
-    let key = [&config.session_key, &env]
-        .into_iter()
-        .find(|k| !k.is_empty());
-    if key.is_none() && !local {
-        return Err("Set the decision key for memory suggestions".into());
-    }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(DEADLINE)
-        .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "Cannot create memory triage client")?;
-    let mut request = client
-        .post(url)
-        .header("ai-gateway-protocol-version", "0.0.1")
-        .header("ai-evaluation-model-specification-version", "4")
-        .header("ai-model-id", model.trim())
-        .json(&body(message, existing));
-    if let Some(key) = key {
-        request = request.bearer_auth(key);
-    }
-    let response = request
-        .send()
-        .map_err(|_| "Memory triage connection failed or timed out")?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Memory triage returned HTTP {}",
-            response.status().as_u16()
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX_RESPONSE + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read memory triage response")?;
-    if bytes.len() as u64 > MAX_RESPONSE {
-        return Err("Memory triage response exceeds limit".into());
-    }
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| "Invalid memory triage response")?;
+    let mut config = config.clone();
+    config.model = model.trim().to_owned();
+    let value = evaluate(
+        &config,
+        EvaluationPolicy::MEMORY,
+        &body(message, existing),
+        &|| false,
+    )?;
     parse(&value)
         .map(str::to_owned)
         .map_err(|e| format!("Memory triage rejected: {e}"))

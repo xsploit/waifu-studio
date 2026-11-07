@@ -1,7 +1,7 @@
 //! Bounded selection of original external messages; no generated quotes or summaries.
 use crate::{
+    evaluation::{DecisionConfig, EvaluationPolicy, evaluate},
     extension_protocol::ChatMessage,
-    recipient_decision::{DecisionConfig, evaluate},
 };
 use serde_json::{Value, json};
 use std::{
@@ -78,7 +78,7 @@ pub fn choose(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<String>, String> {
     let body = body(messages)?;
-    let data = evaluate(config, &body, cancelled)?;
+    let data = evaluate(config, EvaluationPolicy::DECISION, &body, cancelled)?;
     parse(&data, messages)
 }
 struct Permit;
