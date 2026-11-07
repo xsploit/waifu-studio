@@ -1,34 +1,39 @@
-# Architecture cleanup, 2026-11-06
+# Waifu Studio architecture cleanup, completed
 
-Two refactors were retained. Two subsequent attempts failed their validation gate and were restored from file checkpoints. No push or merge was performed.
+All four original findings are fixed. Follow-up investigation also fixed the real Windows speech-cancellation defect that had caused the earlier validation failures. Work is on `refactor/architecture-knots-2026-11-06`; nothing was pushed or merged.
 
-The final unmodified-source verification passed **1,275 tests across 52 Windows targets**, the release executable build, formatting and whitespace checks. Two checks of the exact retained file writer passed under Linux. An earlier retained-state suite also hit the Fish fixture timeout before this successful final run; that failed result is preserved in `validation.json`. The intermittent failure's cause remains unresolved.
+- [Starting wiring map](wiring-before.html), with numbered red findings and original file/line locations.
+- [Final wiring map](wiring-after.html), with all five retained fixes in green.
+- [Before/after comparison image](comparison.png) and [HTML version](comparison.html).
+- [Validation receipt](validation.json) and [initial checkpoint history](INITIAL-CHECKPOINT.md).
 
-Branch: `refactor/architecture-knots-2026-11-06`, starting at `4381d91`.
+The maps fit 1366 by 768 and 1920 by 1080 viewports. They group all source Rust files by feature and infer direct module references from source; they are wiring sketches, not compiler or runtime call graphs. Assets, tools, examples and vendored crates are outside the map. The starting source is reconstructed from `4381d91` plus the preserved original local edits. Finding 5 was discovered during follow-up. File/line locations refer to that starting source. Conditional test imports do not truncate the production source being traced.
 
-- [Starting wiring diagram](wiring-before.html): four red numbered knots, original file/line references and proposed fixes.
-- [Retained wiring diagram](wiring-after.html): green means retained; red means rolled back.
-- [Comparison image](comparison.png), with before on the left and after on the right; [HTML version](comparison.html).
+## Changes retained
 
-The diagrams fit a 1366 by 768 screen. Feature isolation and reset were checked in headless Chrome, and the rendered images were visually inspected. The source map covers `src/**/*.rs`, grouping files by feature and tracing direct source module references. It is an inferred source map, not a runtime call graph. Vendor code, tools, examples and assets are outside this map. Line references describe the starting working tree, including existing local edits.
+| Finding | Result | Validation after this change |
+|---|---|---|
+| 1. Decision evaluation | Four transport implementations now use `evaluation.rs`; feature schemas remain at their callers. Credentials, OIDC fallback, HTTP, deadlines and size limits have one owner. | 1,273 tests + release build passed |
+| 2. Profile and memory writes | Eight writers use bounded serialization, private temporary files, flush, replacement and cleanup in `durable_file.rs`. Callers keep validation and directory ownership. Extension transactions remain separate. | 1,232 library, binary and integration tests + release build passed |
+| 3. Emotion vocabulary | `AffectEmotion::ALL` and `as_str` supply appraisal, motion and settings. Picker order and serialized names are preserved. `abstain` remains an appraisal-only choice. | 1,276 tests across 52 targets + release build passed |
+| 4. Settings forwarding | All four menus call `settings_kit::advanced` directly. Removed the redundant agent-save closure and stale helper wording. Fixed Unix directory sync for bare relative filenames. | 1,277 tests across 52 targets + release build passed |
+| 5. Windows cancellation | Worker I/O and cancellation share `Arc<TcpStream>` through `SharedTcpStream`, avoiding a duplicated socket handle. The original cancellation test now runs 64 cycles with the same latency assertions. | 1,275 tests across 52 targets + release build passed |
 
-## Retained changes
+Final verification: **1,277 Windows tests across 52 targets and the release executable build passed**. Formatting and whitespace checks passed. Linux acceptance covers three tests against the exact writer source, including relative filenames, permissions and failed replacement, plus 5,000 standalone shared-socket cancellation cycles. This is not a full Linux application build or a live provider acceptance test.
 
-1. **Decision evaluation transport**, commit `93b07a4`. Four copies of credential selection, HTTP transport, cancellation checks and response handling now use `src/evaluation.rs`. Each feature retains its question schema and answer validation. Explicit policies preserve appraisal's 1.5-second deadline and the other decisions' 10-second deadline; request deadlines also cover the body. Memory triage now shares the gateway OIDC fallback. The old `recipient_decision::DecisionConfig` import remains compatible through a re-export. Validation: 1,273 tests across all targets and the release executable build passed.
-2. **Durable profile and memory writes**, commit `3076f09`. Eight callers share bounded JSON serialization, private sibling temporary files, content flushing, platform-specific replacement and failure cleanup in `src/durable_file.rs`. Callers retain payload validation, limits and directory ownership. Extension index/credential transactions remain separate because their multi-step recovery differs. Validation: 1,232 library, executable and integration tests plus the release executable build passed. Two tests against the exact retained writer source also passed under Linux, including Unix permissions, overwrite, failure retention and temporary-file cleanup.
+## What caused the earlier failure
 
-The source commits change 16 files, adding 435 lines and removing 555, including five new regression tests. All validation used the same working tree with the user's existing changes preserved; this was not a clean isolated checkout.
+The failure was at the peer-close wait after cancellation, not at connection setup. Instrumentation captured Winsock error `10057` (`NotConnected`) from shutdown while the worker was still blocked. The original result was reproduced outside Waifu Studio with just the standard library: timed connect, `try_clone`, then shutdown through the cloned handle. One recorded run failed on trial 15; an earlier run failed on trial 6. A blocking-connect control passed 500 cycles. Sharing the same socket handle passed 5,000 cycles on Windows and 5,000 on Linux. These results identify the failing handle-duplication path on this Windows runtime; they do not establish which upstream component is responsible.
 
-## Rolled-back attempts
+The production fix uses shared ownership instead of socket duplication. `tunnel` accepts a read/write stream, so the same HTTP CONNECT implementation still serves native speech and observation connections. TLS verification, proxy routing, cancellation generations, connection budgets and worker limits are preserved. No timeout or cancellation assertion was relaxed.
 
-3. **Emotion vocabulary**: the proposed shared `AffectEmotion` catalog was restored in full. Its validation failed at `src/fish_ws.rs:2553`, in `cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass`, waiting for the fixture's CONNECT request. The release build passed. Three isolated reruns of that fixture passed, which does not establish a full-suite pass.
-4. **Advanced settings forwarding**: direct calls to `settings_kit::advanced` were restored to the original wrapper. Accompanying cleanup and a Unix relative-filename directory-sync correction were also restored. The same unchanged Fish fixture timed out during this full-suite validation; the release build passed. All 19 Fish WebSocket tests subsequently passed together in isolation, but the failure was also reproduced in the complete compiled library suite. No root cause was established, and no test was skipped or weakened to accept a refactor.
+The distinction between socket duplication and shared ownership is described in the [Rust `TcpStream` documentation](https://doc.rust-lang.org/stable/std/net/struct.TcpStream.html#method.try_clone); Microsoft's [shutdown documentation](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-shutdown) describes the error and shutdown semantics. The evidence here comes from local reproduction, not an assumption that every Windows installation behaves identically.
 
-The relative-filename Unix issue remains open: `Path::parent()` can return an empty path for a bare filename, so directory sync may report an error after replacement. The attempted correction passed a separate three-test Linux writer harness before rollback; only the two-test retained-source Linux run is acceptance evidence for this branch.
+Evidence: [failing reproducer](evidence/duplicated_shutdown_repro.rs), [shared-handle reproducer](evidence/shared_shutdown_repro.rs), [captured application failure](evidence/cancellation-failure.txt), [Windows original result](evidence/duplicated-windows.txt), [Windows shared result](evidence/shared-windows.txt), [Linux shared result](evidence/shared-linux.txt).
 
-## Reproduction
+## Reproduction and scope
 
-Use the repository's pinned Rust 1.95 toolchain. On this machine, prepend `%USERPROFILE%\.cargo\bin` to PATH; the other installed Cargo selects an older compiler. Set `CARGO_TARGET_DIR` to `D:\Waifu Studio\target\windows`.
+Use the pinned Rust 1.95 toolchain. On this machine, prepend `%USERPROFILE%\.cargo\bin` to PATH and set `CARGO_TARGET_DIR` to `D:\Waifu Studio\target\windows`.
 
 ```text
 cargo test --offline --release --locked --all-targets -- --test-threads=1
@@ -37,4 +42,6 @@ cargo fmt --package waifu-studio -- --check
 git diff --check
 ```
 
-Per-attempt logs and rollback checkpoints are in the ignored `work/architecture-review` directory. `validation.json` records the final retained-state results. The original 13-file tracked patch was compared byte-for-byte after the cleanup, and the original untracked files were left in place. The `main` branch remains at the starting commit.
+Each failed initial attempt was restored before continuing. The complete retries passed after the cancellation fix. Original logs and immutable rollback checkpoints remain in ignored `work/architecture-review`, including `followup-2026-11-06`. `validation.json` retains the initial failed outcomes alongside the successful follow-up gates.
+
+The original 13-file tracked patch is still byte-identical, and original untracked files remain in place. Validation used that working tree, not a clean isolated checkout. The `main` branch remains at `4381d91`. All source and report commits are local.

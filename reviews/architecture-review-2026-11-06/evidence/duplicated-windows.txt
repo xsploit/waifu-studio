@@ -1,0 +1,1 @@
+FAIL trial=15 shutdown=Err(Os { code: 10057, kind: NotConnected, message: "A request to send or receive data was disallowed because the socket is not connected and (when sending on a datagram socket using a sendto call) no address was supplied." }) result=Err(Timeout) later=Ok(Err(TimedOut))

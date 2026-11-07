@@ -1,0 +1,11 @@
+---- fish_ws::tests::cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass stdout ----
+Fish cancellation shutdown: Err(Os { code: 10057, kind: NotConnected, message: "A request to send or receive data was disallowed because the socket is not connected and (when sending on a datagram socket using a sendto call) no address was supplied." })
+
+thread 'fish_ws::tests::cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass' (2588) panicked at src\fish_ws.rs:2574:13:
+Proxy close Timeout; workers_at_timeout=1; socket_at_timeout=false; late_close=Ok(()); elapsed=4.0037975s
+
+
+failures:
+    fish_ws::tests::cancel_during_stalled_proxy_connect_closes_tunnel_without_direct_bypass
+
+test result: FAILED. 976 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.84s

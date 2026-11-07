@@ -1,94 +1,159 @@
 {
-  "created_at": "2026-11-07T00:45:13.797502+00:00",
+  "updated_at": "2026-11-07T01:33:52.158575+00:00",
   "branch": "refactor/architecture-knots-2026-11-06",
-  "validated_source_head": "3076f093970d08749de32dc1419c70a8f63996b5",
   "base": "4381d916b97461c245c5ad9954c169a509436e86",
-  "retained_commits": [
-    "93b07a4",
-    "3076f09"
+  "code_head": "99683cf0518e0261e017dc21848074e66de17815",
+  "commits": [
+    "99683cf Remove settings forwarding and complete durable write edge handling",
+    "8b828b9 Use one canonical emotion catalog across reactions and motion",
+    "edbce52 Share live speech socket ownership with cancellation",
+    "a7b949f Record architecture audit and refactor validation",
+    "3076f09 Consolidate durable profile and memory writes",
+    "93b07a4 Centralize bounded decision evaluation transport"
   ],
-  "knots": [
-    {
-      "number": 1,
-      "status": "retained",
-      "tests": 0,
+  "initial_attempts": {
+    "created_at": "2026-11-07T00:45:13.797502+00:00",
+    "branch": "refactor/architecture-knots-2026-11-06",
+    "validated_source_head": "3076f093970d08749de32dc1419c70a8f63996b5",
+    "base": "4381d916b97461c245c5ad9954c169a509436e86",
+    "retained_commits": [
+      "93b07a4",
+      "3076f09"
+    ],
+    "knots": [
+      {
+        "number": 1,
+        "status": "retained",
+        "tests": 0,
+        "build": 0,
+        "passed": 1273,
+        "failed": 0,
+        "completed_targets": 52,
+        "log": "work/architecture-review/knot-1-tests.log"
+      },
+      {
+        "number": 2,
+        "status": "retained",
+        "seconds": 210.0,
+        "tests": 0,
+        "build": 0,
+        "allTargets": false,
+        "passed": 1232,
+        "failed": 0,
+        "completed_targets": 34,
+        "log": "work/architecture-review/knot-2-tests.log"
+      },
+      {
+        "number": 3,
+        "status": "rolled_back",
+        "seconds": 196.0,
+        "tests": 101,
+        "build": 0,
+        "allTargets": false,
+        "passed": 977,
+        "failed": 1,
+        "completed_targets": 1,
+        "log": "work/architecture-review/knot-3-tests.log"
+      },
+      {
+        "number": 4,
+        "status": "rolled_back",
+        "tests": 101,
+        "seconds": 204.0,
+        "allTargets": true,
+        "build": 0,
+        "passed": 977,
+        "failed": 1,
+        "completed_targets": 1,
+        "log": "work/architecture-review/knot-4-tests.log"
+      }
+    ],
+    "first_retained_state_verification": {
       "build": 0,
-      "passed": 1273,
-      "failed": 0,
-      "completed_targets": 52,
-      "log": "work/architecture-review/knot-1-tests.log"
-    },
-    {
-      "number": 2,
-      "status": "retained",
-      "seconds": 210.0,
-      "tests": 0,
-      "build": 0,
-      "allTargets": false,
-      "passed": 1232,
-      "failed": 0,
-      "completed_targets": 34,
-      "log": "work/architecture-review/knot-2-tests.log"
-    },
-    {
-      "number": 3,
-      "status": "rolled_back",
-      "seconds": 196.0,
       "tests": 101,
-      "build": 0,
-      "allTargets": false,
-      "passed": 977,
+      "allTargets": true,
+      "passed": 976,
       "failed": 1,
       "completed_targets": 1,
-      "log": "work/architecture-review/knot-3-tests.log"
+      "log": "work/architecture-review/final-tests.log"
     },
-    {
-      "number": 4,
-      "status": "rolled_back",
-      "tests": 101,
-      "seconds": 204.0,
+    "final_verification": {
       "allTargets": true,
       "build": 0,
-      "passed": 977,
-      "failed": 1,
-      "completed_targets": 1,
-      "log": "work/architecture-review/knot-4-tests.log"
+      "tests": 0,
+      "passed": 1275,
+      "failed": 0,
+      "completed_targets": 52,
+      "log": "work/architecture-review/final-verified-tests.log"
+    },
+    "linux": {
+      "tests": 2,
+      "passed": true,
+      "scope": "Exact retained durable_file.rs source in a minimal harness; not the full Linux app build",
+      "log": "work/architecture-review/linux-retained-persistence-tests.log"
+    },
+    "preservation": {
+      "original_tracked_files": 13,
+      "patch_sha256": "6e4d16429b339bc229bbeffeab530f6c110877723d94f004e4bef9cb275c2666",
+      "byte_identical": true,
+      "untracked_files_present": true,
+      "rollback_checkpoints_match": true,
+      "diagnostic_restored": true
+    },
+    "validation_scope": "Working tree including pre-existing user edits; serial release tests, offline locked dependencies",
+    "pushed": false,
+    "merged": false,
+    "known_issue": "Fish CONNECT cancellation fixture timed out in multiple complete suites and passed isolated runs; root cause not established. Unix bare relative-filename directory sync correction was rolled back with knot 4."
+  },
+  "followup_gates": {
+    "socket-cancellation": {
+      "seconds": 229,
+      "build": 0,
+      "tests": 0,
+      "rolledBack": false,
+      "passed": 1275,
+      "failed": 0,
+      "targets": 52
+    },
+    "emotion-catalog": {
+      "seconds": 229,
+      "build": 0,
+      "tests": 0,
+      "rolledBack": false,
+      "passed": 1276,
+      "failed": 0,
+      "targets": 52
+    },
+    "settings-writes": {
+      "seconds": 227,
+      "build": 0,
+      "tests": 0,
+      "rolledBack": false,
+      "passed": 1277,
+      "failed": 0,
+      "targets": 52
     }
-  ],
-  "first_retained_state_verification": {
-    "build": 0,
-    "tests": 101,
-    "allTargets": true,
-    "passed": 976,
-    "failed": 1,
-    "completed_targets": 1,
-    "log": "work/architecture-review/final-tests.log"
   },
   "final_verification": {
-    "allTargets": true,
+    "seconds": 227,
     "build": 0,
     "tests": 0,
-    "passed": 1275,
+    "rolledBack": false,
+    "passed": 1277,
     "failed": 0,
-    "completed_targets": 52,
-    "log": "work/architecture-review/final-verified-tests.log"
+    "targets": 52
   },
   "linux": {
-    "tests": 2,
-    "passed": true,
-    "scope": "Exact retained durable_file.rs source in a minimal harness; not the full Linux app build",
-    "log": "work/architecture-review/linux-retained-persistence-tests.log"
+    "writer_tests": 3,
+    "shared_socket_cycles": 5000,
+    "scope": "Exact writer source in a small harness and standalone socket reproducer; not a full Linux application build"
   },
   "preservation": {
     "original_tracked_files": 13,
     "patch_sha256": "6e4d16429b339bc229bbeffeab530f6c110877723d94f004e4bef9cb275c2666",
-    "byte_identical": true,
-    "untracked_files_present": true,
-    "rollback_checkpoints_match": true,
-    "diagnostic_restored": true
+    "byte_identical": true
   },
-  "validation_scope": "Working tree including pre-existing user edits; serial release tests, offline locked dependencies",
   "pushed": false,
   "merged": false,
-  "known_issue": "Fish CONNECT cancellation fixture timed out in multiple complete suites and passed isolated runs; root cause not established. Unix bare relative-filename directory sync correction was rolled back with knot 4."
+  "diagnosis": "Original failure was peer-close wait after cancellation. Timed connect plus try_clone reproduced shutdown error 10057 with the worker still blocked. Sharing the same TcpStream handle through Arc passed the stressed application test and standalone Windows/Linux checks."
 }
