@@ -158,9 +158,8 @@ impl VoiceHotkeys {
     }
     fn save(&mut self) {
         if let Some(path) = &self.path
-            && let Err(error) = serde_json::to_vec_pretty(&self.preferences)
-                .map_err(std::io::Error::other)
-                .and_then(|bytes| std::fs::write(path, bytes))
+            && let Err(error) =
+                waifu_studio::durable_file::write_json(path, &self.preferences, 4096)
         {
             self.status = format!("Could not save shortcut preferences: {error}");
         }

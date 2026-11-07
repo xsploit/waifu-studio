@@ -367,31 +367,7 @@ impl AgentState {
             return;
         };
         let result = (|| -> Result<(), String> {
-            use std::io::Write;
-            let bytes = serde_json::to_vec_pretty(&AgentPreferences::from(&*self))
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 64 * 1024 {
-                return Err("Agent settings exceed 64 KiB".into());
-            }
-            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let result = (|| -> std::io::Result<()> {
-                let mut file = options.open(&temporary)?;
-                file.write_all(&bytes)?;
-                file.sync_all()?;
-                drop(file);
-                crate::durable_file::replace(&temporary, path)
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(&temporary);
-            }
-            result.map_err(|e| e.to_string())
+            crate::durable_file::write_json(path, &AgentPreferences::from(&*self), 64 * 1024)
         })();
         if let Err(error) = result {
             self.error = Some(format!("Could not save agent settings: {error}"));

@@ -2,7 +2,6 @@ use crate::{inspect_file, provider::ProviderConfig};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -440,7 +439,7 @@ impl Store {
     pub fn save(&self, library: &Library) -> Result<(), String> {
         let mut snapshot = library.clone();
         snapshot.capture_selected_settings();
-        atomic_json(&self.root.join("library.json"), &snapshot, 8_000_000)
+        crate::durable_file::write_json(&self.root.join("library.json"), &snapshot, 8_000_000)
     }
     pub fn history(&self, id: Uuid) -> Result<Vec<Turn>, String> {
         let mut turns = self.read_history(id)?;
@@ -460,7 +459,7 @@ impl Store {
     }
     pub fn save_history(&self, id: Uuid, turns: &[Turn]) -> Result<(), String> {
         validate_history(turns)?;
-        atomic_json(
+        crate::durable_file::write_json(
             &self.root.join("conversations").join(format!("{id}.json")),
             &turns[history_start(turns)..],
             16_000_000,
@@ -521,60 +520,6 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
         return Err("Saved data exceeds the supported size; original file left intact".into());
     }
     Ok(bytes)
-}
-
-pub(crate) fn atomic_json<T: Serialize + ?Sized>(
-    path: &Path,
-    data: &T,
-    limit: usize,
-) -> Result<(), String> {
-    struct BoundedBytes {
-        bytes: Vec<u8>,
-        limit: usize,
-    }
-    impl Write for BoundedBytes {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-                return Err(std::io::Error::other(
-                    "Saved data exceeds its size limit; existing file left intact",
-                ));
-            }
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut writer = BoundedBytes {
-        bytes: Vec::new(),
-        limit,
-    };
-    serde_json::to_writer_pretty(&mut writer, data).map_err(|e| e.to_string())?;
-    let bytes = writer.bytes;
-    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let result = (|| -> Result<(), std::io::Error> {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        #[cfg(unix)]
-        if let Some(parent) = path.parent() {
-            fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result.map_err(|e| e.to_string())
 }
 
 /// Bounded, explicit directory scan. Does not follow symlinked directories.
@@ -789,7 +734,7 @@ mod tests {
             200
         ];
         extra.extend(candidate.clone());
-        atomic_json(&path, &extra, 16_000_000).unwrap();
+        crate::durable_file::write_json(&path, &extra, 16_000_000).unwrap();
         assert!(
             store
                 .save_external_history_with(id, &candidate, message_id, || Err(
@@ -1277,9 +1222,9 @@ mod tests {
         let root = std::env::temp_dir().join(format!("studio-bounds-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("bounded.json");
-        atomic_json(&path, &"original", 32).unwrap();
+        crate::durable_file::write_json(&path, &"original", 32).unwrap();
         let original = fs::read(&path).unwrap();
-        assert!(atomic_json(&path, &"x".repeat(100), 32).is_err());
+        assert!(crate::durable_file::write_json(&path, &"x".repeat(100), 32).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
         fs::remove_dir_all(root).unwrap();

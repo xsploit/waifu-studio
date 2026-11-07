@@ -9,7 +9,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     net::IpAddr,
     path::{Path, PathBuf},
     sync::{
@@ -991,7 +991,7 @@ fn index(
         if data.len() as u64 > MAX_FILE {
             return Err("Vector cache exceeds 16 MiB".into());
         }
-        write_atomic(root, &name, &data)?;
+        crate::durable_file::write(&root.join(&name), &data).map_err(|e| e.to_string())?;
     }
     if let Some(e) = failure {
         return Err(e);
@@ -1033,28 +1033,6 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, String> {
     }
     Ok(Some(data))
 }
-fn write_atomic(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
-    let temporary = root.join(format!(".{name}-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&temporary).map_err(|e| e.to_string())?;
-        file.write_all(data)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(file);
-        crate::durable_file::replace(&temporary, &root.join(name)).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
-}
 fn read_settings(root: &Path) -> Result<EmbeddingSettings, String> {
     ensure_root(root)?;
     let Some(data) = read_bounded(&root.join("settings.json"), MAX_SETTINGS)? else {
@@ -1068,7 +1046,7 @@ fn save_settings(root: &Path, settings: &EmbeddingSettings) -> Result<(), String
     settings.validate()?;
     ensure_root(root)?;
     let data = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
-    write_atomic(root, "settings.json", &data)
+    crate::durable_file::write(&root.join("settings.json"), &data).map_err(|e| e.to_string())
 }
 fn delete_cache(root: &Path, character: Uuid) -> Result<(), String> {
     match fs::remove_file(root.join(format!("{character}.json"))) {
@@ -1081,7 +1059,7 @@ fn delete_cache(root: &Path, character: Uuid) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader},
+        io::{BufRead, BufReader, Write},
         net::TcpListener,
         sync::{
             Arc,

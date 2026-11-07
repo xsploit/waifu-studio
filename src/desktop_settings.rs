@@ -103,13 +103,7 @@ impl DesktopSettings {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-            std::fs::write(
-                &temporary,
-                serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            std::fs::rename(temporary, path).map_err(|e| e.to_string())
+            waifu_studio::durable_file::write_json(path, self, 64 * 1024)
         })();
         self.dirty = result.is_err();
         self.error = result

@@ -69,27 +69,12 @@ fn read_saved(path: &Path) -> Result<SavedRoster, String> {
     decode(&bytes)
 }
 fn write_saved(path: &Path, saved: &SavedRoster) -> Result<(), String> {
-    use std::io::Write;
     let bytes = serde_json::to_vec_pretty(saved).map_err(|e| e.to_string())?;
     decode(&bytes)?;
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let temp = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, path).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    }
-    result
+    crate::durable_file::write(path, &bytes).map_err(|e| e.to_string())
 }
 struct Persistence {
     sender: Option<mpsc::SyncSender<SavedRoster>>,

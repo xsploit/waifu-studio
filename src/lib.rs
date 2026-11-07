@@ -3,7 +3,7 @@ pub mod data;
 pub mod desktop_interaction;
 pub mod desktop_occlusion;
 pub mod desktop_platform;
-mod durable_file;
+pub mod durable_file;
 pub mod inspect;
 pub mod loading;
 pub mod provider;

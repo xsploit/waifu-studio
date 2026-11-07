@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -1430,29 +1430,6 @@ fn read_pending(root: &Path, id: Uuid) -> Result<Pending, String> {
     }
     Ok(Some(candidates))
 }
-/// Temp file, fsync, rename, then directory fsync.
-fn atomic_write(dir: &Path, name: &str, data: &[u8]) -> Result<(), String> {
-    let tmp = dir.join(format!(".{name}-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(data)
-            .and_then(|()| f.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(f);
-        crate::durable_file::replace(&tmp, &dir.join(name)).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(tmp);
-    }
-    result
-}
 fn write(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     validate(d)?;
     let dir = directory(root, id)?;
@@ -1466,7 +1443,7 @@ fn write(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     if data.len() as u64 > MAX_BYTES {
         return Err("Ledger exceeds 1 MiB".into());
     }
-    atomic_write(&dir, FACTS_FILE, &data)
+    crate::durable_file::write(&dir.join(FACTS_FILE), &data).map_err(|e| e.to_string())
 }
 /// Version 2 only when a reflection is present, so builds that predate reflections keep
 /// reading files without them and fail closed (leaving the file untouched) on the rest.
@@ -1492,7 +1469,7 @@ fn write_pending(root: &Path, id: Uuid, candidates: &[MemoryRecord]) -> Result<(
     if data.len() as u64 > MAX_PENDING_BYTES {
         return Err("candidates.jsonl exceeds its size bound".into());
     }
-    atomic_write(&dir, PENDING_FILE, &data)
+    crate::durable_file::write(&dir.join(PENDING_FILE), &data).map_err(|e| e.to_string())
 }
 fn remove(dir: &Path, name: &str) -> Result<(), String> {
     match fs::remove_file(dir.join(name)) {

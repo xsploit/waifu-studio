@@ -3,7 +3,7 @@ use bevy::prelude::Resource;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -539,27 +539,7 @@ fn save_document(root: &Path, id: Uuid, d: &Document) -> Result<(), String> {
     if data.len() as u64 > MAX_FILE {
         return Err("Memory file exceeds 512 KiB".into());
     }
-    let temporary = root.join(format!(".{id}-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(&temporary).map_err(|e| e.to_string())?;
-        file.write_all(&data)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        drop(file);
-        crate::durable_file::replace(&temporary, &root.join(format!("{id}.json")))
-            .map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
+    crate::durable_file::write(&root.join(format!("{id}.json")), &data).map_err(|e| e.to_string())
 }
 #[cfg(test)]
 mod tests {
