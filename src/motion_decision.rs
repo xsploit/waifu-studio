@@ -295,55 +295,6 @@ pub struct CompletedReply<'a> {
     pub affect: Option<AffectEmotion>,
 }
 
-/// Every accepted reply emotion, including custom fear/disgust bindings.
-pub const EMOTIONS: [AffectEmotion; 20] = [
-    AffectEmotion::Neutral,
-    AffectEmotion::Amused,
-    AffectEmotion::Happy,
-    AffectEmotion::Excited,
-    AffectEmotion::Curious,
-    AffectEmotion::Confused,
-    AffectEmotion::Thinking,
-    AffectEmotion::Surprised,
-    AffectEmotion::Angry,
-    AffectEmotion::Annoyed,
-    AffectEmotion::Embarrassed,
-    AffectEmotion::Grateful,
-    AffectEmotion::Optimistic,
-    AffectEmotion::Proud,
-    AffectEmotion::Nervous,
-    AffectEmotion::Sad,
-    AffectEmotion::Caring,
-    AffectEmotion::Relaxed,
-    AffectEmotion::Fear,
-    AffectEmotion::Disgust,
-];
-
-pub fn emotion_name(emotion: AffectEmotion) -> &'static str {
-    match emotion {
-        AffectEmotion::Neutral => "neutral",
-        AffectEmotion::Amused => "amused",
-        AffectEmotion::Happy => "happy",
-        AffectEmotion::Excited => "excited",
-        AffectEmotion::Curious => "curious",
-        AffectEmotion::Confused => "confused",
-        AffectEmotion::Thinking => "thinking",
-        AffectEmotion::Surprised => "surprised",
-        AffectEmotion::Angry => "angry",
-        AffectEmotion::Annoyed => "annoyed",
-        AffectEmotion::Embarrassed => "embarrassed",
-        AffectEmotion::Grateful => "grateful",
-        AffectEmotion::Optimistic => "optimistic",
-        AffectEmotion::Proud => "proud",
-        AffectEmotion::Nervous => "nervous",
-        AffectEmotion::Sad => "sad",
-        AffectEmotion::Caring => "caring",
-        AffectEmotion::Relaxed => "relaxed",
-        AffectEmotion::Fear => "fear",
-        AffectEmotion::Disgust => "disgust",
-    }
-}
-
 /// The emotion parsed for exactly this job and character; never a stored mood
 /// or an earlier reply's emotion.
 pub fn job_affect(
@@ -691,10 +642,7 @@ impl ReplyMotion {
         }
         let paths = bound_motions(config, emotion, entries);
         if paths.is_empty() {
-            self.note = Some(format!(
-                "No scanned motion bound to {}",
-                emotion_name(emotion)
-            ));
+            self.note = Some(format!("No scanned motion bound to {}", emotion.as_str()));
             return None;
         }
         if self
@@ -711,7 +659,7 @@ impl ReplyMotion {
         let path = paths[next].clone();
         self.note = Some(format!(
             "Selected the {} motion ({}/{})",
-            emotion_name(emotion),
+            emotion.as_str(),
             next + 1,
             paths.len()
         ));
@@ -744,7 +692,7 @@ impl ReplyMotion {
         let with_emotion = reply.affect.map(|emotion| {
             format!(
                 "Character emotion: {}.\n{}",
-                emotion_name(emotion),
+                emotion.as_str(),
                 bounded_context(text)
             )
         });
@@ -1369,11 +1317,8 @@ mod tests {
                 // The user chooses the clip; filename sentiment is never inferred.
                 bind(&mut h, emotion, "joy.bvh");
                 h.affect = Some(emotion);
-                assert!(EMOTIONS.contains(&emotion));
-                assert_eq!(
-                    serde_json::to_value(emotion).unwrap(),
-                    emotion_name(emotion)
-                );
+                assert!(AffectEmotion::ALL.contains(&emotion));
+                assert_eq!(serde_json::to_value(emotion).unwrap(), emotion.as_str());
                 assert_eq!(
                     h.frame(Some((Uuid::new_v4(), "Hello")), "Wave"),
                     Some(AutoAction::Play(PathBuf::from("/lib/test/joy.bvh")))

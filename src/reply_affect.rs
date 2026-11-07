@@ -40,6 +40,55 @@ pub enum AffectEmotion {
     Disgust,
 }
 impl AffectEmotion {
+    /// Canonical accepted catalog in motion-picker order.
+    pub const ALL: [AffectEmotion; 20] = [
+        Self::Neutral,
+        Self::Amused,
+        Self::Happy,
+        Self::Excited,
+        Self::Curious,
+        Self::Confused,
+        Self::Thinking,
+        Self::Surprised,
+        Self::Angry,
+        Self::Annoyed,
+        Self::Embarrassed,
+        Self::Grateful,
+        Self::Optimistic,
+        Self::Proud,
+        Self::Nervous,
+        Self::Sad,
+        Self::Caring,
+        Self::Relaxed,
+        Self::Fear,
+        Self::Disgust,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Neutral => "neutral",
+            Self::Amused => "amused",
+            Self::Happy => "happy",
+            Self::Excited => "excited",
+            Self::Curious => "curious",
+            Self::Confused => "confused",
+            Self::Thinking => "thinking",
+            Self::Surprised => "surprised",
+            Self::Angry => "angry",
+            Self::Annoyed => "annoyed",
+            Self::Embarrassed => "embarrassed",
+            Self::Grateful => "grateful",
+            Self::Optimistic => "optimistic",
+            Self::Proud => "proud",
+            Self::Nervous => "nervous",
+            Self::Sad => "sad",
+            Self::Caring => "caring",
+            Self::Relaxed => "relaxed",
+            Self::Fear => "fear",
+            Self::Disgust => "disgust",
+        }
+    }
+
     pub(crate) fn aliases(self) -> &'static [&'static str] {
         match self {
             Self::Neutral => &[],
@@ -493,6 +542,22 @@ impl AffectLibrary {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn canonical_catalog_is_unique_and_matches_persisted_and_prompt_names() {
+        let mut names = std::collections::BTreeSet::new();
+        for emotion in AffectEmotion::ALL {
+            assert!(names.insert(emotion.as_str()));
+            let value = serde_json::to_value(emotion).unwrap();
+            assert_eq!(value.as_str(), Some(emotion.as_str()));
+            assert_eq!(
+                serde_json::from_value::<AffectEmotion>(value).unwrap(),
+                emotion
+            );
+            assert!(AFFECT_PROMPT.contains(emotion.as_str()));
+        }
+        assert_eq!(names.len(), 20);
+    }
     use super::*;
 
     fn mapping_fixture() -> (

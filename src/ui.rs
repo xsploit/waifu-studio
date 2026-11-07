@@ -1826,7 +1826,7 @@ fn emotion_bindings(
         ui,
         "Check one or more motions per emotion. Eligible replies rotate in selection order; the cooldown still applies.",
     );
-    for emotion in motion_decision::EMOTIONS {
+    for emotion in waifu_studio::reply_affect::AffectEmotion::ALL {
         let mut current = Vec::new();
         for binding in config
             .emotion_bindings
@@ -1857,48 +1857,45 @@ fn emotion_bindings(
             _ => format!("{} motions ({} unavailable)", current.len(), missing.len()),
         };
         let mut picked = current.clone();
-        kit::row(ui, motion_decision::emotion_name(emotion), "", |ui| {
-            egui::ComboBox::from_id_salt((
-                "emotion_binding",
-                motion_decision::emotion_name(emotion),
-            ))
-            .selected_text(text)
-            .width(control_width(ui))
-            .truncate()
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show_ui(ui, |ui| {
-                popup_layout(ui, 380.0);
-                if ui.selectable_label(picked.is_empty(), "None").clicked() {
-                    picked.clear();
-                }
-                for path in &missing {
-                    let mut keep = picked.contains(path);
-                    let label = format!(
-                        "Unavailable: {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    );
-                    if ui.checkbox(&mut keep, label).changed() {
-                        if keep {
-                            picked.push(path.clone());
-                        } else {
-                            picked.retain(|p| p != path);
+        kit::row(ui, emotion.as_str(), "", |ui| {
+            egui::ComboBox::from_id_salt(("emotion_binding", emotion.as_str()))
+                .selected_text(text)
+                .width(control_width(ui))
+                .truncate()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show_ui(ui, |ui| {
+                    popup_layout(ui, 380.0);
+                    if ui.selectable_label(picked.is_empty(), "None").clicked() {
+                        picked.clear();
+                    }
+                    for path in &missing {
+                        let mut keep = picked.contains(path);
+                        let label = format!(
+                            "Unavailable: {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        );
+                        if ui.checkbox(&mut keep, label).changed() {
+                            if keep {
+                                picked.push(path.clone());
+                            } else {
+                                picked.retain(|p| p != path);
+                            }
                         }
                     }
-                }
-                for entry in entries.iter().filter(|entry| entry.auto_playable()) {
-                    let mut checked = picked.contains(&entry.path);
-                    if ui
-                        .checkbox(&mut checked, format!("{} / {}", entry.group, entry.label))
-                        .changed()
-                    {
-                        if checked {
-                            picked.push(entry.path.clone());
-                        } else {
-                            picked.retain(|p| p != &entry.path);
+                    for entry in entries.iter().filter(|entry| entry.auto_playable()) {
+                        let mut checked = picked.contains(&entry.path);
+                        if ui
+                            .checkbox(&mut checked, format!("{} / {}", entry.group, entry.label))
+                            .changed()
+                        {
+                            if checked {
+                                picked.push(entry.path.clone());
+                            } else {
+                                picked.retain(|p| p != &entry.path);
+                            }
                         }
                     }
-                }
-            });
+                });
         });
         if picked != current {
             changed = true;

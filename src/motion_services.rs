@@ -349,7 +349,7 @@ pub fn reply_motion_frame(
         .map(|(_, _, emotion)| {
             format!(
                 "The character feels {} in response to the user's message: {}",
-                motion_decision::emotion_name(emotion),
+                emotion.as_str(),
                 studio
                     .turns
                     .iter()
