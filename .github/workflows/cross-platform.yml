@@ -45,6 +45,11 @@ jobs:
           cache-on-failure: true
       - name: Offline voice worker test dependencies
         run: npm ci --prefix tools/discord-voice --no-audit --no-fund
+      - name: Restore pinned speech downloads
+        if: github.repository == 'xsploit/waifu-studio'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download speech-assets-silero6.2.1-ort1.24.4 --repo '${{ github.repository }}' --dir work/silero-downloads
       - name: Prepare bundled speech detection
         run: python tools/prepare_silero.py
       - name: Package integrity tests
