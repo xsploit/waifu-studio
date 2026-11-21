@@ -6,17 +6,20 @@ import io
 import json
 from pathlib import Path
 import sys
-import tarfile
 import urllib.request
 import zipfile
 
 MODEL_COMMIT = "7e30209a3e901f9842f81b225f3e93d8199902b1"
 MODEL_BASE = f"https://raw.githubusercontent.com/snakers4/silero-vad/{MODEL_COMMIT}/"
 ORT_VERSION = "1.24.4"
-ARCHIVES = {
-    "windows-x86_64": ("onnxruntime-win-x64-1.24.4.zip", "d2319fddfb6ea4db99ccc4b60c85c517bcd855721f5daa6a06d40d7cb2ee2357"),
-    "linux-x86_64": ("onnxruntime-linux-x64-1.24.4.tgz", "3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747"),
+ORT_PACKAGE = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime"
+ORT_URL = f"{ORT_PACKAGE}/{ORT_VERSION}/microsoft.ml.onnxruntime.{ORT_VERSION}.nupkg"
+ORT_SHA256 = "4b978d5065b85e7004b6c6f60ca494bd978fbe6836cbf0a0b52d82b61ab99638"
+RUNTIMES = {
+    "windows-x86_64": ("win-x64", ("onnxruntime.dll", "onnxruntime_providers_shared.dll")),
+    "linux-x86_64": ("linux-x64", ("libonnxruntime.so", "libonnxruntime_providers_shared.so")),
 }
+NOTICES = ("LICENSE", "ThirdPartyNotices.txt", "Privacy.md")
 
 
 def sha256(data):
@@ -53,44 +56,30 @@ def prepare(output, cache, platforms):
         ("LICENSE", "SILERO-LICENSE.txt", "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b"),
     ]:
         write(output / name, fetch(MODEL_BASE + source, expected, cache))
-    for platform in platforms:
-        archive_name, expected = ARCHIVES[platform]
-        url = f"https://github.com/microsoft/onnxruntime/releases/download/v{ORT_VERSION}/{archive_name}"
-        data = fetch(url, expected, cache)
-        files = {}
-        if platform.startswith("windows"):
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                for member in archive.infolist():
-                    name = Path(member.filename).name
-                    if name in {"onnxruntime.dll", "onnxruntime_providers_shared.dll", "LICENSE", "ThirdPartyNotices.txt", "Privacy.md"}:
-                        files[name] = archive.read(member)
-            required = "onnxruntime.dll"
-        else:
-            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-                for member in archive.getmembers():
-                    name = Path(member.name).name
-                    if member.isfile() and name in {f"libonnxruntime.so.{ORT_VERSION}", "libonnxruntime_providers_shared.so", "LICENSE", "ThirdPartyNotices.txt", "Privacy.md"}:
-                        files["libonnxruntime.so" if name.startswith("libonnxruntime.so.") else name] = archive.extractfile(member).read()
-            required = "libonnxruntime.so"
-        if required not in files or "LICENSE" not in files:
-            raise ValueError("Runtime archive is missing its library or license")
-        for name, content in files.items():
-            write(output / platform / name, content)
-        receipt = {"silero_version": "6.2.1", "silero_commit": MODEL_COMMIT, "onnxruntime_version": ORT_VERSION,
-                   "archive_url": url, "archive_sha256": expected,
-                   "files": {name: sha256(content) for name, content in sorted(files.items())}}
-        write(output / platform / "provenance.json", (json.dumps(receipt, indent=2) + "\n").encode())
-        print(f"Prepared Silero 6.2.1 and ONNX Runtime {ORT_VERSION}: {platform}")
+    data = fetch(ORT_URL, ORT_SHA256, cache)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        notices = {name: archive.read(name) for name in NOTICES}
+        for platform in platforms:
+            target, libraries = RUNTIMES[platform]
+            files = {name: archive.read(f"runtimes/{target}/native/{name}") for name in libraries}
+            files.update(notices)
+            for name, content in files.items():
+                write(output / platform / name, content)
+            receipt = {"silero_version": "6.2.1", "silero_commit": MODEL_COMMIT, "onnxruntime_version": ORT_VERSION,
+                       "archive_url": ORT_URL, "archive_sha256": ORT_SHA256,
+                       "files": {name: sha256(content) for name, content in sorted(files.items())}}
+            write(output / platform / "provenance.json", (json.dumps(receipt, indent=2) + "\n").encode())
+            print(f"Prepared Silero 6.2.1 and ONNX Runtime {ORT_VERSION}: {platform}")
 
 
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--platform", choices=[*ARCHIVES, "all"], default="windows-x86_64" if sys.platform == "win32" else "linux-x86_64")
+    parser.add_argument("--platform", choices=[*RUNTIMES, "all"], default="windows-x86_64" if sys.platform == "win32" else "linux-x86_64")
     parser.add_argument("--output", type=Path, default=repo / "assets/silero")
     parser.add_argument("--cache", type=Path, default=repo / "work/silero-downloads")
     args = parser.parse_args()
-    prepare(args.output, args.cache, list(ARCHIVES) if args.platform == "all" else [args.platform])
+    prepare(args.output, args.cache, list(RUNTIMES) if args.platform == "all" else [args.platform])
 
 
 if __name__ == "__main__":
