@@ -5,7 +5,7 @@
 //! Usage: <idle|sitting|grabbed|LOCAL_MOTION_PATH> <output.png>
 //!        [--time SECONDS] [--frames 180] [--avatar LOCAL_VRM_PATH] [--sequence FPS]
 //!        [--view front|side|rear|other-side|three-quarter] [--rig-overlay]
-//!        [--pose-json PATH] [--arm-clearance on|off]
+//!        [--pose-json PATH] [--arm-clearance on|off|soft]
 //!        [--continuous --sequence FPS] [--end SECONDS] [--spring-strength 0..1]
 //!        [--arm-pose-probe] (diagnostic10° outward swing/−20° twist before live springs)
 //!        [--rest-pose] (authored skeleton pose, with live spring physics)
@@ -77,6 +77,7 @@ struct Options {
     view: String,
     pose_json: Option<PathBuf>,
     arm_clearance: bool,
+    soft_arm_clearance: bool,
     arm_pose_probe: bool,
     rig_overlay: bool,
     continuous: bool,
@@ -94,7 +95,7 @@ impl Options {
             Some("sitting") => root.join("assets/animations/desktop/idle-sitting.vrma"),
             Some("grabbed" | "drag") => root.join("assets/animations/desktop/grabbed.vrma"),
             Some(path) if !path.starts_with('-') => PathBuf::from(path),
-            _ => return Err("Usage: render_desktop_motion <idle|sitting|grabbed|LOCAL_MOTION_PATH> <output.png> [--time SECONDS] [--frames 180] [--avatar LOCAL_VRM_PATH] [--sequence FPS] [--view front|side|rear|other-side|three-quarter] [--rig-overlay] [--pose-json PATH] [--arm-clearance on|off]".into()),
+            _ => return Err("Usage: render_desktop_motion <idle|sitting|grabbed|LOCAL_MOTION_PATH> <output.png> [--time SECONDS] [--frames 180] [--avatar LOCAL_VRM_PATH] [--sequence FPS] [--view front|side|rear|other-side|three-quarter] [--rig-overlay] [--pose-json PATH] [--arm-clearance on|off|soft]".into()),
         };
         let output = args
             .next()
@@ -119,6 +120,7 @@ impl Options {
             view: "front".into(),
             pose_json: None,
             arm_clearance: false,
+            soft_arm_clearance: false,
             arm_pose_probe: false,
             rig_overlay: false,
             continuous: false,
@@ -195,11 +197,13 @@ impl Options {
                     );
                 }
                 "--arm-clearance" => {
-                    options.arm_clearance = match args.next().as_deref() {
-                        Some("on") => true,
-                        Some("off") => false,
-                        _ => return Err("--arm-clearance requires on or off".into()),
-                    };
+                    (options.arm_clearance, options.soft_arm_clearance) =
+                        match args.next().as_deref() {
+                            Some("on") => (true, false),
+                            Some("off") => (false, false),
+                            Some("soft") => (false, true),
+                            _ => return Err("--arm-clearance requires on, off or soft".into()),
+                        };
                 }
                 "--avatar" => {
                     options.avatar = args
@@ -210,7 +214,7 @@ impl Options {
                 _ => return Err(format!("Unexpected argument: {option}")),
             }
         }
-        if options.arm_pose_probe && (options.rest_pose || options.arm_clearance) {
+        if options.arm_pose_probe && (options.rest_pose || options.arm_clearance || options.soft_arm_clearance) {
             return Err(
                 "--arm-pose-probe cannot be combined with --rest-pose or --arm-clearance on".into(),
             );
@@ -453,6 +457,7 @@ fn main() -> AppExit {
     animation.path = Some(options.motion.clone());
     animation.looping = false;
     animation.arm_clearance = options.arm_clearance;
+    animation.soft_arm_clearance = options.soft_arm_clearance;
     if options.rest_pose {
         animation.weight = 0.;
     }
@@ -978,6 +983,7 @@ fn write_pose_json(
         "seconds": state.options.seconds,
         "view": state.options.view,
         "arm_clearance": state.options.arm_clearance,
+        "soft_arm_clearance": state.options.soft_arm_clearance,
         "diagnostic_arm_pose_probe": if state.options.arm_pose_probe { serde_json::json!({"outward_swing_degrees":10,"axial_twist_degrees":-20,"stage":"before transform propagation and spring simulation; restored before each Update"}) } else { serde_json::Value::Null },
         "pose_control": if state.options.arm_pose_probe { "production animation plus diagnostic arm pose probe; live springs" } else if state.options.rest_pose { "authored rest skeleton; live springs; zero animation weight" } else { "production animation" },
         "rig_overlay": state.options.rig_overlay,

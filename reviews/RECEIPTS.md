@@ -1,0 +1,4 @@
+- 2026-11-08 01:59 codex reviewed `soft-arm-clearance` at f83a252: 0 findings, 0 verified, 0 blocking (verified high/medium) -> codex-soft-arm-clearance-20261108-0120.md
+- 2026-11-08 03:36 codex reviewed `soft-arm-clearance` at f83a252: 4 findings, 0 verified, 0 blocking (verified high/medium) -> codex-soft-arm-clearance-20261108-0335.md
+- 2026-11-08 03:42 codex reviewed `soft-arm-clearance` at f83a252: 3 findings, 3 verified, 3 blocking (verified high/medium) -> codex-soft-arm-clearance-20261108-0340.md
+- 2026-11-09 17:06 claude reviewed `soft-arm-clearance-fable52` at f83a252: 8 findings, 6 verified, 2 blocking (verified high/medium) -> claude-soft-arm-clearance-fable52-20261109-1703.md

@@ -2105,6 +2105,12 @@ fn animation_controls(ui: &mut egui::Ui, studio: &mut Studio, animation: &mut An
             "Try whole-arm clearance against the torso mesh. Can distort gestures; does not protect the full movement path. Resets when the app closes.",
             &mut animation.arm_clearance,
         );
+        kit::toggle_row(
+            ui,
+            "Soft arm clearance (experimental)",
+            "Swing the whole arm slightly away when it would pass through the body. Keeps the gesture's shape; ignores skirts and hair. Resets when the app closes.",
+            &mut animation.soft_arm_clearance,
+        );
         if animation.is_posing() && !animation.playing {
             ui.label(RichText::new("Paused on this pose").small().color(MUTED));
         }

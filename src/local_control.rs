@@ -140,7 +140,7 @@ fn status(world: &mut World, control: &LocalControl) -> Value {
         "fps":control.fps,"frame_p99_ms":control.p99_ms,
         "view":format!("{:?}",studio.mode),"screen":format!("{:?}",studio.tab),
         "character":character.map(|c| &c.name),
-        "motion":{"path":animation.path,"position":animation.position,"playing":animation.playing,"loading":animation.loading,"error":animation.error,"arm_clearance":animation.arm_clearance},
+        "motion":{"path":animation.path,"position":animation.position,"playing":animation.playing,"loading":animation.loading,"error":animation.error,"arm_clearance":animation.arm_clearance,"soft_arm_clearance":animation.soft_arm_clearance},
         "gaze":studio.library.scene.gaze,"facial":studio.library.scene.facial,
         "caps":{"focused":desktop.focused_fps,"background":desktop.background_fps,"desktop":desktop.overlay_fps},
         "sitting":desktop.sitting,"sitting_status":desktop.sitting_status,

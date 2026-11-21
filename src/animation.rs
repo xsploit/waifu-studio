@@ -29,6 +29,8 @@ pub use animation_import::{parse_fbx, parse_vrma};
 mod animation_body;
 #[path = "animation_clearance.rs"]
 mod animation_clearance;
+#[path = "animation_soft_clearance.rs"]
+mod animation_soft_clearance;
 
 #[path = "animation_lifecycle.rs"]
 mod animation_lifecycle;
@@ -728,6 +730,9 @@ pub struct AnimationState {
     pub weight: f32,
     /// Experimental mesh-derived arm correction; off pending movement-path review.
     pub arm_clearance: bool,
+    /// Small capped whole-arm swing away from the body (strict torso mesh only).
+    /// Off by default until visually accepted; ignored while `arm_clearance` is on.
+    pub soft_arm_clearance: bool,
     pub position: f32,
     pub loading: bool,
     pub error: Option<String>,
@@ -763,6 +768,7 @@ impl Default for AnimationState {
             speed: 1.0,
             weight: 1.0,
             arm_clearance: false,
+            soft_arm_clearance: false,
             position: 0.0,
             loading: false,
             error: None,
@@ -1420,7 +1426,11 @@ struct PoseCache {
     last_position: f32,
     last_weight: f32,
     last_arm_clearance: bool,
+    last_soft_arm_clearance: bool,
     body: animation_body::MeshBodyCache,
+    soft_arms: animation_soft_clearance::SoftArmState,
+    /// Soft correction still converging; bypasses the paused-pose early return.
+    soft_settling: bool,
     /// The active avatar's rest facing; `Some(true)` = -Z, as VRM 0.x models are.
     target_faces_negative_z: Option<bool>,
     /// Source and avatar face opposite ways, so rotations are turned around Y.
@@ -1713,6 +1723,9 @@ fn animate_humanoid(
             }
             cache.applied = false;
         }
+        // The idle pose carries no soft correction; the next clip eases in from zero.
+        cache.soft_arms.reset();
+        cache.soft_settling = false;
         return;
     }
     let Some(clip) = state.clip.clone() else {
@@ -1819,6 +1832,8 @@ fn animate_humanoid(
         && cache.last_position == state.position
         && cache.last_weight == weight
         && cache.last_arm_clearance == state.arm_clearance
+        && cache.last_soft_arm_clearance == state.soft_arm_clearance
+        && !cache.soft_settling
     {
         return;
     }
@@ -1903,6 +1918,7 @@ fn animate_humanoid(
     cache.last_position = state.position;
     cache.last_weight = weight;
     cache.last_arm_clearance = state.arm_clearance;
+    cache.last_soft_arm_clearance = state.soft_arm_clearance;
     if state.arm_clearance && (weight > 0. || alpha < 1.) {
         let PoseCache { body, bones, .. } = &mut *cache;
         if let (Some(meshes), Some(bindposes)) = (meshes.as_deref(), bindposes.as_deref())
@@ -1914,6 +1930,7 @@ fn animate_humanoid(
                 &mesh_entities,
                 &parents,
                 &transforms,
+                false,
             )
             && let Some(points) = body.posed_points(root, &parents, &transforms)
             && let Some(hull) = animation_clearance::Hull::from_points(&points)
@@ -1926,6 +1943,72 @@ fn animate_humanoid(
                 &hull,
                 body.arm_radii(),
             );
+        }
+    }
+    // The pose was just re-sampled, so any visible soft correction is gone unless
+    // re-applied below; keep the state in sync with what is shown.
+    let soft_wanted = !state.arm_clearance
+        && (state.soft_arm_clearance || cache.soft_arms.active())
+        && (weight > 0. || alpha < 1.);
+    cache.soft_settling = false;
+    if !soft_wanted {
+        cache.soft_arms.reset();
+    } else {
+        let PoseCache {
+            body,
+            bones,
+            soft_arms,
+            soft_settling,
+            ..
+        } = &mut *cache;
+        let report = match (meshes.as_deref(), bindposes.as_deref()) {
+            (Some(meshes), Some(bindposes))
+                if body.capture(
+                    root,
+                    bones,
+                    meshes,
+                    bindposes,
+                    &mesh_entities,
+                    &parents,
+                    &transforms,
+                    true,
+                ) =>
+            {
+                body.posed_strict(root, &parents, &transforms)
+                    .and_then(|points| {
+                        animation_soft_clearance::correct_arms_soft(
+                            root,
+                            bones,
+                            &parents,
+                            &mut transforms,
+                            &points,
+                            body.arm_radii().1,
+                            soft_arms,
+                            state.soft_arm_clearance,
+                            time.delta_secs(),
+                        )
+                    })
+            }
+            _ => None,
+        };
+        match report {
+            Some(report) => {
+                *soft_settling = report.settling;
+                if std::env::var_os("WAIFU_SOFT_CLEARANCE_REPORT").is_some() {
+                    eprintln!(
+                        "soft_clearance position={:.4} before={:.4},{:.4} after={:.4},{:.4} angle={:.4},{:.4}",
+                        state.position,
+                        report.before[0],
+                        report.before[1],
+                        report.after[0],
+                        report.after[1],
+                        report.angle[0],
+                        report.angle[1],
+                    );
+                }
+            }
+            // Nothing could be applied, so the shown pose carries no correction.
+            None => soft_arms.reset(),
         }
     }
     cache.applied = true;
