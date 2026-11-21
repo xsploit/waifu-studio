@@ -217,7 +217,7 @@ Image backgrounds are flat backdrops; the rooms contain rendered geometry. They 
 
 ### Motion library and automatic playlists
 
-The preview includes the original **167-motion Waifumations library generated with Kimodo**: idle, talking, reactions, greetings, dance and walking clips. It is discovered from the package's `assets/animations/waifumations` folder on both platforms. Automatic idle/talking playlists choose their matching categories; reply gestures use the selected decision or emotion-mapping mode. Walking motions are available for manual preview and excluded from automatic playback. These original motions can clip on some avatars; rejected arm-clearance experiments are not bundled.
+The preview includes **11 Waifumations clips generated with Kimodo**: the subset of the original 167 that showed no arm/body clipping (under 1 cm) on Hikari, Neuro-sama and Jim. The other 156 clipped on most avatars and were removed on 2026-11-11; they remain in git history. It is discovered from the package's `assets/animations/waifumations` folder on both platforms. Automatic idle/talking playlists choose their matching categories; reply gestures use the selected decision or emotion-mapping mode. Rejected arm-clearance experiments are not bundled.
 
 Import **BVH, VRMA or FBX** motions, find them by folder, category or search, then play, pause, stop, scrub, loop or adjust speed and weight. Motions are retargeted to the avatar's humanoid rig, with rest-pose correction and clip crossfades. Results vary with the source animation and target rig.
 

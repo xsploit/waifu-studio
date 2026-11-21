@@ -218,11 +218,14 @@ fn sync_occlusion(
     interaction: Res<DesktopInteraction>,
     platform: Res<DesktopPlatform>,
     state: Res<AvatarLoadState>,
-    cameras: Query<(Entity, &Camera, &GlobalTransform), With<crate::runtime::StudioCamera>>,
+    cameras: Query<
+        (Entity, &Camera, &GlobalTransform, Option<&DesktopOcclusion>),
+        With<crate::runtime::StudioCamera>,
+    >,
     bones: Query<(Entity, &HumanBoneName, &GlobalTransform)>,
     parents: Query<&ChildOf>,
 ) {
-    for (entity, camera, camera_transform) in &cameras {
+    for (entity, camera, camera_transform, previous) in &cameras {
         let mask = (|| {
             if studio.mode != ViewMode::Desktop
                 || !settings.window_occlusion
@@ -252,6 +255,23 @@ fn sync_occlusion(
             ))
         })()
         .unwrap_or_default();
+        sync_camera_mask(&mut commands, entity, previous, mask);
+    }
+}
+
+pub(crate) fn sync_camera_mask(
+    commands: &mut Commands,
+    entity: Entity,
+    previous: Option<&DesktopOcclusion>,
+    mask: DesktopOcclusion,
+) {
+    // Bevy's SyncComponentPlugin removes the render-world counterpart when
+    // the main-world component is removed, so no stale ledge remains.
+    if mask.is_empty() {
+        if previous.is_some() {
+            commands.entity(entity).remove::<DesktopOcclusion>();
+        }
+    } else if previous != Some(&mask) {
         commands.entity(entity).insert(mask);
     }
 }
@@ -270,7 +290,9 @@ fn sync_desktop_platform(
             // Unloading a compositor script may block on D-Bus, never the frame loop.
             std::thread::spawn(move || drop(bridge));
         }
-        settings.surface_status.clear();
+        if !settings.surface_status.is_empty() {
+            settings.surface_status.clear();
+        }
         return;
     }
     if !platform.attempted {
@@ -311,7 +333,7 @@ fn sync_desktop_platform(
     if let Some(bridge) = &platform.bridge {
         let stacking_error = bridge.request_keep_above(settings.always_on_top).err();
         let snapshot = bridge.snapshot();
-        settings.surface_status = match snapshot {
+        let status: std::borrow::Cow<'_, str> = match snapshot {
             Ok(snapshot) if snapshot.own_window_rect.is_some() => {
                 if platform.above_panels != snapshot.own_above_panels {
                     platform.above_panels = snapshot.own_above_panels;
@@ -320,17 +342,20 @@ fn sync_desktop_platform(
                         snapshot.own_above_panels
                     );
                 }
-                stacking_error.unwrap_or_else(|| {
-                    if settings.always_on_top && snapshot.own_above_panels == Some(false) {
-                        "Desktop connected; waiting for the compositor to place the companion above panels.".into()
-                    } else {
-                        "Desktop geometry connected; drag above a window edge or taskbar to sit.".into()
-                    }
-                })
+                if let Some(error) = stacking_error {
+                    error.into()
+                } else if settings.always_on_top && snapshot.own_above_panels == Some(false) {
+                    "Desktop connected; waiting for the compositor to place the companion above panels.".into()
+                } else {
+                    "Desktop geometry connected; drag above a window edge or taskbar to sit.".into()
+                }
             }
             Ok(_) => "Desktop bridge connected; waiting for the companion window.".into(),
-            Err(error) => error,
+            Err(error) => error.into(),
         };
+        if settings.surface_status != status {
+            settings.surface_status = status.into_owned();
+        }
     }
 }
 
@@ -808,6 +833,85 @@ mod tests {
     use waifu_studio::desktop_interaction::{DesktopSurface, ScreenRect, SurfaceId};
 
     #[test]
+    fn camera_mask_is_created_updated_and_removed_without_idle_reinsertion() {
+        #[derive(Resource)]
+        struct Desired(DesktopOcclusion);
+        #[derive(Component)]
+        struct TestCamera;
+        fn sync(
+            mut commands: Commands,
+            desired: Res<Desired>,
+            cameras: Query<(Entity, Option<&DesktopOcclusion>), With<TestCamera>>,
+        ) {
+            for (entity, old) in &cameras {
+                sync_camera_mask(&mut commands, entity, old, desired.0);
+            }
+        }
+        let mut app = App::new();
+        app.insert_resource(Desired(DesktopOcclusion::default()))
+            .add_systems(Update, sync);
+        let entity = app.world_mut().spawn(TestCamera).id();
+        app.update();
+        assert!(app.world().get::<DesktopOcclusion>(entity).is_none());
+        let rect = ScreenRect {
+            origin: Vec2::ZERO,
+            size: Vec2::splat(100.),
+        };
+        let snap = DesktopSnapshot {
+            received_at: Instant::now(),
+            surfaces: vec![DesktopSurface {
+                id: SurfaceId::Window(1),
+                rect,
+                z_order: 1,
+            }],
+            own_window_ids: Vec::new(),
+            own_window_rect: Some(rect),
+            own_interactive_move: None,
+            own_above_panels: None,
+            cursor: Vec2::ZERO,
+        };
+        let mask = |depth| {
+            DesktopOcclusion::for_seat(&snap, SurfaceId::Window(1), depth, snap.received_at)
+        };
+        app.world_mut().resource_mut::<Desired>().0 = mask(0.3);
+        app.update();
+        assert!(
+            app.world()
+                .get::<DesktopOcclusion>(entity)
+                .unwrap()
+                .hides(Vec2::splat(0.5), 0.2)
+        );
+        let before = app
+            .world()
+            .entity(entity)
+            .get_ref::<DesktopOcclusion>()
+            .unwrap()
+            .last_changed();
+        app.update();
+        let after = app
+            .world()
+            .entity(entity)
+            .get_ref::<DesktopOcclusion>()
+            .unwrap()
+            .last_changed();
+        assert_eq!(before, after, "unchanged masks must not be reinserted");
+        app.world_mut().resource_mut::<Desired>().0 = mask(0.6);
+        app.update();
+        assert!(
+            app.world()
+                .get::<DesktopOcclusion>(entity)
+                .unwrap()
+                .hides(Vec2::splat(0.5), 0.5)
+        );
+        app.world_mut().resource_mut::<Desired>().0 = DesktopOcclusion::default();
+        app.update();
+        assert!(
+            app.world().get::<DesktopOcclusion>(entity).is_none(),
+            "stale ledge must be removed"
+        );
+    }
+
+    #[test]
     fn verified_snap_uses_usable_bounds_above_the_panel() {
         let mut snapshot = DesktopSnapshot {
             received_at: Instant::now(),
@@ -1170,6 +1274,7 @@ mod tests {
                     .unwrap()
                     .ends_with("idle-maid.vrma")
             );
+            assert_eq!(app.world().resource::<AnimationState>().weight, 0.4);
             app.world_mut().resource_mut::<DesktopInteraction>().state = InteractionState::Sitting;
             app.update();
             assert!(
@@ -1180,6 +1285,7 @@ mod tests {
                     .unwrap()
                     .ends_with("idle-sitting.vrma")
             );
+            assert_eq!(app.world().resource::<AnimationState>().weight, 0.4);
             app.world_mut().resource_mut::<DesktopGrab>().active = true;
             app.update();
             assert!(

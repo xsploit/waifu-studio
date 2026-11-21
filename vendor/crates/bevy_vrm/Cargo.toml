@@ -29,6 +29,7 @@ gltf = { default-features = false, features = [
   "names",
   "utils",
 ], version = "1.4.1" }
+image = { version = "0.25", default-features = false, features = ["gif", "png"] }
 paste = { optional = true, version = "1.0.15" }
 serde.workspace = true
 serde_json.workspace = true

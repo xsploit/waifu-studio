@@ -126,9 +126,29 @@ fn update(
     let Ok((mut camera, mut transform)) = cameras.single_mut() else {
         return;
     };
-    camera.is_active =
+    let active =
         studio.mode == ViewMode::Studio && matches!(studio.tab, Tab::Characters | Tab::Scene);
-    if !camera.is_active {
+    if camera.is_active != active {
+        camera.is_active = active;
+    }
+    if !active {
+        // The egui texture ID and camera target retain this image even while
+        // hidden. Shrink the target once so its full-resolution GPU backing
+        // can be released; the next active frame restores the requested size.
+        if let Some(mut image) = images.get_mut(&target.0)
+            && (image.width() != 1 || image.height() != 1)
+        {
+            image.resize(bevy::render::render_resource::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            });
+            // Vec::resize alone retains the full previous allocation. The
+            // hidden target is our RGBA8 scratch image, so discard its pixels.
+            if image.data.is_some() {
+                image.data = Some(vec![0; 4]);
+            }
+        }
         return;
     }
     if state.active != preview.root {
@@ -552,6 +572,70 @@ mod tests {
             assert_eq!((preview.yaw, preview.pitch, preview.zoom), (0.4, -0.2, 1.7));
         }
         assert_ne!(*app.world().get::<Transform>(camera).unwrap(), initial);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn hidden_preview_releases_target_and_restores_it_with_the_same_texture() {
+        let (mut app, camera, directory) = preview_fixture();
+        let texture = app.world().resource::<AvatarPreview>().texture;
+        let target = app.world().resource::<PreviewImage>().0.clone();
+        let dimensions = |app: &App| {
+            let images = app.world().resource::<Assets<Image>>();
+            let image = images.get(&target).unwrap();
+            (image.width(), image.height())
+        };
+        assert_eq!(dimensions(&app), (600, 900));
+        {
+            let mut preview = app.world_mut().resource_mut::<AvatarPreview>();
+            preview.yaw = 0.4;
+            preview.pitch = -0.2;
+            preview.zoom = 1.7;
+        }
+        app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
+        app.update();
+        assert!(!app.world().get::<Camera>(camera).unwrap().is_active);
+        assert_eq!(dimensions(&app), (1, 1));
+        let images = app.world().resource::<Assets<Image>>();
+        assert_eq!(
+            images
+                .get(&target)
+                .unwrap()
+                .data
+                .as_ref()
+                .unwrap()
+                .capacity(),
+            4
+        );
+        let inactive_tick = app
+            .world()
+            .entity(camera)
+            .get_ref::<Camera>()
+            .unwrap()
+            .last_changed();
+        app.update();
+        assert_eq!(dimensions(&app), (1, 1));
+        assert_eq!(
+            app.world()
+                .entity(camera)
+                .get_ref::<Camera>()
+                .unwrap()
+                .last_changed(),
+            inactive_tick
+        );
+        app.world_mut().resource_mut::<Studio>().mode = ViewMode::Studio;
+        app.update();
+        assert!(app.world().get::<Camera>(camera).unwrap().is_active);
+        assert_eq!(dimensions(&app), (600, 900));
+        let preview = app.world().resource::<AvatarPreview>();
+        assert_eq!(preview.texture, texture);
+        assert_eq!((preview.yaw, preview.pitch, preview.zoom), (0.4, -0.2, 1.7));
+        app.world_mut().resource_mut::<Studio>().tab = Tab::Chat;
+        app.update();
+        assert_eq!(dimensions(&app), (1, 1));
+        app.world_mut().resource_mut::<Studio>().tab = Tab::Characters;
+        app.update();
+        assert_eq!(dimensions(&app), (600, 900));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

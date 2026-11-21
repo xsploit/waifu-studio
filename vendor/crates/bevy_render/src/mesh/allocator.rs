@@ -12,20 +12,27 @@ use bevy_ecs::{
     system::{Res, ResMut},
     world::{FromWorld, World},
 };
-use wgpu::{BufferUsages, DownlevelFlags, COPY_BUFFER_ALIGNMENT};
+use wgpu::{BufferUsages, COPY_BUFFER_ALIGNMENT, DownlevelFlags};
 
 #[cfg(feature = "morph")]
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+#[cfg(feature = "morph")]
 use bevy_mesh::morph::MorphAttributes;
+#[cfg(feature = "morph")]
+use bevy_platform::collections::{HashMap, HashSet};
 
 use crate::{
+    GpuResourceAppExt, Render, RenderApp, RenderSystems,
     mesh::{Mesh, MeshVertexBufferLayouts, RenderMesh},
-    render_asset::{prepare_assets, ExtractedAssets},
+    render_asset::{ExtractedAssets, prepare_assets},
     renderer::{RenderAdapter, RenderDevice, RenderQueue},
     slab_allocator::{
         Slab, SlabAllocationBufferSlice, SlabAllocator, SlabAllocatorSettings, SlabId, SlabItem,
         SlabItemLayout,
     },
-    GpuResourceAppExt, Render, RenderApp, RenderSystems,
 };
 
 /// A plugin that manages GPU memory for mesh data.
@@ -54,6 +61,8 @@ pub struct MeshAllocator {
     /// WebGL 2. On this platform, we must give each vertex array its own
     /// buffer, because we can't adjust the first vertex when we perform a draw.
     general_vertex_slabs_supported: bool,
+    #[cfg(feature = "morph")]
+    shared_morphs: SharedMorphs,
 }
 
 /// Tunable parameters that customize the behavior of the allocator.
@@ -137,13 +146,91 @@ pub struct MeshAllocationKey {
     pub mesh_id: AssetId<Mesh>,
     /// The type of data: vertex data, index data, or morph data.
     pub class: ElementClass,
+    /// Distinguishes retained morph allocations from later versions of their owner mesh.
+    pub morph_generation: u64,
 }
 
 impl MeshAllocationKey {
     /// Creates a new [`MeshAllocationKey`] for the given mesh asset ID and
     /// class.
     pub fn new(mesh_id: AssetId<Mesh>, class: ElementClass) -> Self {
-        Self { mesh_id, class }
+        Self {
+            mesh_id,
+            class,
+            morph_generation: 0,
+        }
+    }
+}
+
+// Meshes may share the same immutable Arc-backed displacement data. Keep one
+// allocation per backing. A Weak keeps its identity from being reused without
+// retaining the CPU displacement data. A generation prevents collision if the
+// first mesh is modified while others still use its previous allocation.
+#[cfg(feature = "morph")]
+#[derive(Default)]
+struct SharedMorphs {
+    groups: HashMap<usize, SharedMorph>,
+    meshes: HashMap<AssetId<Mesh>, usize>,
+    next_generation: u64,
+}
+#[cfg(feature = "morph")]
+struct SharedMorph {
+    _source: Weak<Vec<MorphAttributes>>,
+    allocation: MeshAllocationKey,
+    references: usize,
+}
+#[cfg(feature = "morph")]
+impl SharedMorphs {
+    fn insert(
+        &mut self,
+        mesh_id: AssetId<Mesh>,
+        source: Arc<Vec<MorphAttributes>>,
+    ) -> (MeshAllocationKey, bool) {
+        let identity = Arc::as_ptr(&source) as usize;
+        assert!(
+            !self.meshes.contains_key(&mesh_id),
+            "mesh must be freed before re-extraction"
+        );
+        self.meshes.insert(mesh_id, identity);
+        if let Some(group) = self.groups.get_mut(&identity) {
+            group.references += 1;
+            return (group.allocation, false);
+        }
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .expect("morph allocation generation exhausted");
+        let allocation = MeshAllocationKey {
+            mesh_id,
+            class: ElementClass::MorphTarget,
+            morph_generation: self.next_generation,
+        };
+        self.groups.insert(
+            identity,
+            SharedMorph {
+                _source: Arc::downgrade(&source),
+                allocation,
+                references: 1,
+            },
+        );
+        (allocation, true)
+    }
+    fn key(&self, mesh_id: &AssetId<Mesh>) -> Option<MeshAllocationKey> {
+        self.groups
+            .get(self.meshes.get(mesh_id)?)
+            .map(|group| group.allocation)
+    }
+    fn remove(&mut self, mesh_id: &AssetId<Mesh>) -> Option<MeshAllocationKey> {
+        let identity = self.meshes.remove(mesh_id)?;
+        let group = self
+            .groups
+            .get_mut(&identity)
+            .expect("registered morph group");
+        group.references -= 1;
+        if group.references == 0 {
+            return self.groups.remove(&identity).map(|group| group.allocation);
+        }
+        None
     }
 }
 
@@ -234,6 +321,8 @@ impl FromWorld for MeshAllocator {
         Self {
             slab_allocator,
             general_vertex_slabs_supported,
+            #[cfg(feature = "morph")]
+            shared_morphs: SharedMorphs::default(),
         }
     }
 }
@@ -290,10 +379,8 @@ impl MeshAllocator {
     /// If the mesh has no morph target data or wasn't allocated, returns None.
     #[cfg(feature = "morph")]
     pub fn mesh_morph_target_slice(&self, mesh_id: &AssetId<Mesh>) -> Option<MeshBufferSlice<'_>> {
-        self.slab_allocation_slice(
-            &MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget),
-            *self.mesh_id_to_morph_target_slab(mesh_id)?,
-        )
+        let key = self.shared_morphs.key(mesh_id)?;
+        self.slab_allocation_slice(&key, *self.mesh_id_to_morph_target_slab(mesh_id)?)
     }
 
     /// Returns the IDs of the vertex buffer and index buffer respectively for
@@ -341,8 +428,7 @@ impl MeshAllocator {
         &self,
         mesh_id: &AssetId<Mesh>,
     ) -> Option<&SlabId<MeshSlabItem>> {
-        self.key_to_slab
-            .get(&MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget))
+        self.key_to_slab.get(&self.shared_morphs.key(mesh_id)?)
     }
 
     /// Returns an iterator over all slabs that contain morph targets.
@@ -368,6 +454,8 @@ impl MeshAllocator {
         render_queue: &RenderQueue,
     ) {
         let mut allocation_stage = self.slab_allocator.stage_allocation();
+        #[cfg(feature = "morph")]
+        let mut new_morphs: HashSet<MeshAllocationKey> = HashSet::default();
 
         // Loop over each mesh that was extracted this frame.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
@@ -408,12 +496,19 @@ impl MeshAllocator {
             // Allocate morph target data.
             #[cfg(feature = "morph")]
             if let Some(morph_targets) = mesh.get_morph_targets() {
-                allocation_stage.allocate(
-                    &MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget),
-                    morph_targets.len() as u64 * size_of::<MorphAttributes>() as u64,
-                    MORPH_ATTRIBUTE_ELEMENT_LAYOUT,
-                    mesh_allocator_settings,
-                );
+                let source = mesh
+                    .try_shared_morph_targets()
+                    .expect("extracted morph backing");
+                let (key, is_new) = self.shared_morphs.insert(*mesh_id, source);
+                if is_new {
+                    allocation_stage.allocate(
+                        &key,
+                        morph_targets.len() as u64 * size_of::<MorphAttributes>() as u64,
+                        MORPH_ATTRIBUTE_ELEMENT_LAYOUT,
+                        mesh_allocator_settings,
+                    );
+                    new_morphs.insert(key);
+                }
             }
         }
 
@@ -425,7 +520,11 @@ impl MeshAllocator {
             self.copy_mesh_vertex_data(mesh_id, mesh, render_device, render_queue);
             self.copy_mesh_index_data(mesh_id, mesh, render_device, render_queue);
             #[cfg(feature = "morph")]
-            self.copy_mesh_morph_target_data(mesh_id, mesh, render_device, render_queue);
+            if let Some(key) = self.shared_morphs.key(mesh_id)
+                && new_morphs.remove(&key)
+            {
+                self.copy_mesh_morph_target_data(&key, mesh, render_device, render_queue);
+            }
         }
     }
 
@@ -476,7 +575,7 @@ impl MeshAllocator {
     #[cfg(feature = "morph")]
     fn copy_mesh_morph_target_data(
         &mut self,
-        mesh_id: &AssetId<Mesh>,
+        key: &MeshAllocationKey,
         mesh: &Mesh,
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
@@ -487,7 +586,7 @@ impl MeshAllocator {
 
         // Call the generic function.
         self.copy_element_data(
-            &MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget),
+            key,
             size_of_val(morph_targets),
             |mut slice| slice.copy_from_slice(bytemuck::cast_slice(morph_targets)),
             render_device,
@@ -518,7 +617,9 @@ impl MeshAllocator {
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Vertex));
             deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::Index));
             #[cfg(feature = "morph")]
-            deallocation_stage.free(&MeshAllocationKey::new(*mesh_id, ElementClass::MorphTarget));
+            if let Some(key) = self.shared_morphs.remove(mesh_id) {
+                deallocation_stage.free(&key);
+            }
         }
 
         deallocation_stage.commit();
@@ -600,7 +701,7 @@ impl ElementClass {
 mod tests {
     use super::*;
     use crate::test_utils::create_dummy_device;
-    use bevy_asset::{uuid::Uuid, RenderAssetUsages};
+    use bevy_asset::{RenderAssetUsages, uuid::Uuid};
     use bevy_math::bounding::Aabb3d;
     use bevy_mesh::PrimitiveTopology;
     use glam::Vec3;
@@ -640,6 +741,8 @@ mod tests {
         MeshAllocator {
             slab_allocator: SlabAllocator::new(),
             general_vertex_slabs_supported,
+            #[cfg(feature = "morph")]
+            shared_morphs: SharedMorphs::default(),
         }
     }
 
@@ -670,6 +773,10 @@ mod tests {
         mesh_id: AssetId<Mesh>,
         class: ElementClass,
     ) -> bool {
+        #[cfg(feature = "morph")]
+        if matches!(class, ElementClass::MorphTarget) {
+            return mesh_allocator.mesh_morph_target_slice(&mesh_id).is_some();
+        }
         mesh_allocator
             .key_to_slab
             .contains_key(&MeshAllocationKey::new(mesh_id, class))
@@ -696,6 +803,57 @@ mod tests {
         let mut extracted_meshes = extracted_mesh(id, mesh);
         extracted_meshes.modified.insert(id);
         extracted_meshes
+    }
+
+    #[cfg(feature = "morph")]
+    #[test]
+    fn shared_morph_allocations_survive_owner_replacement_and_release_on_last_mesh() {
+        let (device, queue) = create_dummy_device();
+        let settings = MeshAllocatorSettings::default();
+        let mut layouts = MeshVertexBufferLayouts::default();
+        let mut allocator = mesh_allocator(true);
+        let first = mesh_id(111);
+        let second = mesh_id(112);
+        let shared = full_mesh();
+        let mut both = extracted_mesh(first, shared.clone());
+        both.extracted.push((second, shared.clone()));
+        both.added.insert(second);
+        allocator.allocate_meshes(&settings, &both, &mut layouts, &device, &queue);
+        let a = allocator.mesh_morph_target_slice(&first).unwrap();
+        let b = allocator.mesh_morph_target_slice(&second).unwrap();
+        assert_eq!(a.buffer.id(), b.buffer.id());
+        assert_eq!(a.range, b.range);
+        assert_eq!(allocator.shared_morphs.groups.len(), 1);
+
+        // Replace the original owner's morph data. The other mesh must keep
+        // the original GPU allocation even though the owner's ID is reused.
+        let old_key = allocator.shared_morphs.key(&second).unwrap();
+        let mut replacement = shared.clone();
+        replacement.set_morph_targets(vec![
+            MorphAttributes {
+                position: Vec3::ONE,
+                ..Default::default()
+            };
+            64
+        ]);
+        let changed = modified_mesh(first, replacement);
+        allocator.free_meshes(&changed);
+        allocator.allocate_meshes(&settings, &changed, &mut layouts, &device, &queue);
+        assert!(allocator.shared_morphs.key(&second) == Some(old_key));
+        assert!(allocator.shared_morphs.key(&first) != Some(old_key));
+        assert!(allocator.mesh_morph_target_slice(&second).is_some());
+        assert!(allocator.mesh_morph_target_slice(&first).is_some());
+        assert_eq!(allocator.shared_morphs.groups.len(), 2);
+
+        let mut removed = ExtractedAssets::<RenderMesh>::default();
+        removed.removed.insert(second);
+        allocator.free_meshes(&removed);
+        assert!(allocator.mesh_morph_target_slice(&second).is_none());
+        assert!(allocator.mesh_morph_target_slice(&first).is_some());
+        assert_eq!(allocator.shared_morphs.groups.len(), 1);
+        allocator.free_meshes(&changed);
+        assert!(allocator.shared_morphs.groups.is_empty());
+        assert!(allocator.key_to_slab.is_empty());
     }
 
     /// `free_meshes` must release meshes that are merely being re-extracted, not

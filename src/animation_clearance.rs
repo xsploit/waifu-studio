@@ -8,6 +8,12 @@ use serde_vrm::vrm1::vrmc_vrm::humanoid::HumanBoneName as Bone;
 
 const SHOULDER_ATTACHMENT: f32 = 0.2;
 
+/// VRM 1.0 rigs can omit the neck. Use the center of the shoulder line as
+/// the upper torso landmark on those rigs.
+pub(super) fn torso_top(neck: Option<Vec3>, left_upper_arm: Vec3, right_upper_arm: Vec3) -> Vec3 {
+    neck.unwrap_or_else(|| left_upper_arm.midpoint(right_upper_arm))
+}
+
 trait BodyShape {
     fn push(&self, point: Vec3, margin: f32) -> Vec3;
     fn segment_contact(&self, start: Vec3, end: Vec3, margin: f32, begin: f32) -> (Vec3, f32);
@@ -20,6 +26,29 @@ pub(super) struct Hull {
     planes: Vec<(Vec3, f32)>,
 }
 impl Hull {
+    /// Overlapping height bands retain a narrow waist instead of filling the
+    /// whole jacket/skirt convex envelope. Each band encloses actual mesh points.
+    pub(super) fn sections(points: &[Vec3]) -> Vec<Self> {
+        let lo = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        let hi = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+        let step = (hi - lo) / 6.;
+        if !step.is_finite() || step < 1e-5 {
+            return Vec::new();
+        }
+        (0..6)
+            .filter_map(|i| {
+                let lower = lo + i as f32 * step - step * 0.35;
+                let upper = lower + step * 1.7;
+                Self::from_points(
+                    &points
+                        .iter()
+                        .copied()
+                        .filter(|p| p.y >= lower && p.y <= upper)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
+    }
     /// Intersection of mesh support planes. It encloses the selected torso
     /// vertices conservatively, including front/back and diagonal silhouettes.
     pub(super) fn from_points(points: &[Vec3]) -> Option<Self> {
@@ -64,16 +93,43 @@ impl BodyShape for Hull {
         result
     }
     fn push(&self, point: Vec3, margin: f32) -> Vec3 {
-        let (depth, normal) = self.clearance(point, margin);
-        normal * depth.max(0.)
+        let mut best = (f32::INFINITY, Vec3::ZERO);
+        for &(normal, offset) in &self.planes {
+            let depth = offset + margin - normal.dot(point);
+            if depth <= 0. {
+                return Vec3::ZERO;
+            }
+            if depth < best.0 {
+                best = (depth, normal);
+            }
+        }
+        best.1 * best.0
     }
     fn segment_contact(&self, start: Vec3, end: Vec3, margin: f32, begin: f32) -> (Vec3, f32) {
-        // Minimum plane slack along a segment is concave and piecewise linear.
-        // Find its maximum, including cases where both endpoints are outside.
-        // This tests the whole capsule axis rather than three sample locations.
+        // Clip the whole axis against the inflated convex volume first. Most
+        // band/capsule pairs do not overlap and can return after a few planes.
         let mut lo = begin;
-        let mut hi = 1.;
-        for _ in 0..18 {
+        let mut hi: f32 = 1.;
+        let delta = end - start;
+        for &(normal, offset) in &self.planes {
+            let slack = offset + margin - normal.dot(start);
+            let slope = -normal.dot(delta);
+            if slope.abs() < 1e-10 {
+                if slack <= 0. {
+                    return (Vec3::ZERO, begin);
+                }
+            } else if slope > 0. {
+                lo = lo.max(-slack / slope);
+            } else {
+                hi = hi.min(-slack / slope);
+            }
+            if lo >= hi {
+                return (Vec3::ZERO, begin);
+            }
+        }
+        // The minimum plane slack is concave along the segment. Search inside
+        // the actual overlap rather than missing intersections between samples.
+        for _ in 0..8 {
             let a = lo + (hi - lo) / 3.;
             let b = hi - (hi - lo) / 3.;
             if self.clearance(start.lerp(end, a), margin).0
@@ -85,7 +141,7 @@ impl BodyShape for Hull {
             }
         }
         let mut best = (Vec3::ZERO, begin);
-        for t in [begin, (lo + hi) * 0.5, 1.] {
+        for t in [lo, (lo + hi) * 0.5, hi] {
             let push = self.push(start.lerp(end, t), margin);
             if push.length_squared() > best.0.length_squared() {
                 best = (push, t);
@@ -183,6 +239,42 @@ fn two_bone(shoulder: Vec3, elbow: Vec3, wrist: Vec3, target: Vec3, pole: Vec3) 
     )
 }
 
+fn limit_correction(
+    shoulder: Vec3,
+    elbow: Vec3,
+    wrist: Vec3,
+    previous: (Vec3, Vec3),
+    best: (Vec3, Vec3),
+    max_step: f32,
+) -> (Vec3, Vec3) {
+    // Reproject onto this frame's limb lengths. This limits guard-induced
+    // motion, not source animation, and does not guarantee swept clearance.
+    let base = two_bone(shoulder, elbow, wrist, previous.1, previous.0);
+    let distance = |pose: (Vec3, Vec3)| pose.0.distance(base.0).max(pose.1.distance(base.1));
+    if distance(best) <= max_step {
+        return best;
+    }
+    let (mut low, mut high) = (0., 1.);
+    let mut limited = base;
+    for _ in 0..18 {
+        let t = (low + high) * 0.5;
+        let pose = two_bone(
+            shoulder,
+            elbow,
+            wrist,
+            base.1.lerp(best.1, t),
+            base.0.lerp(best.0, t),
+        );
+        if distance(pose) <= max_step {
+            low = t;
+            limited = pose;
+        } else {
+            high = t;
+        }
+    }
+    limited
+}
+
 fn push_all(mut point: Vec3, shapes: &[impl BodyShape], margin: f32) -> Vec3 {
     let original = point;
     for shape in shapes {
@@ -191,6 +283,33 @@ fn push_all(mut point: Vec3, shapes: &[impl BodyShape], margin: f32) -> Vec3 {
     point - original
 }
 
+fn upper_contact(
+    shape: &impl BodyShape,
+    shoulder: Vec3,
+    elbow: Vec3,
+    radius: f32,
+    attachment: f32,
+) -> (Vec3, f32) {
+    if attachment <= SHOULDER_ATTACHMENT {
+        return shape.segment_contact(shoulder, elbow, radius, attachment);
+    }
+    // The sleeve emerges gradually from its armhole. Taper the protection
+    // near the attachment instead of treating the joint as a full capsule.
+    let mut best = (Vec3::ZERO, attachment);
+    for i in 0..4 {
+        let a = attachment + (1. - attachment) * (i as f32 / 4.);
+        let b = attachment + (1. - attachment) * ((i + 1) as f32 / 4.);
+        let margin = radius * ((a - attachment) / 0.20).min(1.);
+        let (push, t) =
+            shape.segment_contact(shoulder.lerp(elbow, a), shoulder.lerp(elbow, b), margin, 0.);
+        if push.length_squared() > best.0.length_squared() {
+            best = (push, a + (b - a) * t);
+        }
+    }
+    best
+}
+
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn solve(
     shoulder: Vec3,
@@ -201,18 +320,60 @@ fn solve(
     size: f32,
     radii: (f32, f32),
 ) -> (Vec3, Vec3) {
+    solve_guided(
+        shoulder,
+        elbow,
+        wrist,
+        fingers,
+        shapes,
+        size,
+        radii,
+        None,
+        None,
+        None,
+        f32::INFINITY,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_guided(
+    shoulder: Vec3,
+    elbow: Vec3,
+    wrist: Vec3,
+    fingers: &[Vec3],
+    shapes: &[impl BodyShape],
+    size: f32,
+    radii: (f32, f32),
+    axes: Option<(Vec3, Vec3)>,
+    previous: Option<(Vec3, Vec3)>,
+    hand_sphere: Option<(Vec3, f32)>,
+    max_step: f32,
+) -> (Vec3, Vec3) {
     let mut e = elbow;
     let mut w = wrist;
+    // A shoulder joint inside the clothed torso is an attachment, not a loose
+    // capsule that can be expelled. Protect the distal arm; do not lift the arm
+    // overhead to clear its own armhole. Outside shoulders retain full coverage.
+    let attachment = if shapes
+        .iter()
+        .any(|s| s.push(shoulder, radii.0).length_squared() > 1e-10)
+    {
+        0.35
+    } else {
+        SHOULDER_ATTACHMENT
+    };
     let score = |e: Vec3, w: Vec3| {
         let mut score = 0.;
         for shape in shapes {
             score += shape.push(e, radii.1).length_squared();
             score += shape.push(w, size * 0.020).length_squared();
+            if let Some((center, radius)) = hand_sphere {
+                score += shape.push(w + center, radius).length_squared();
+            }
             for offset in fingers {
                 score += shape.push(w + *offset, size * 0.005).length_squared();
             }
-            score += shape
-                .segment_contact(shoulder, e, radii.0, SHOULDER_ATTACHMENT)
+            score += upper_contact(shape, shoulder, e, radii.0, attachment)
                 .0
                 .length_squared();
             score += shape.segment_contact(e, w, radii.1, 0.).0.length_squared();
@@ -221,42 +382,94 @@ fn solve(
     };
     let mut best = (e, w);
     let raw_score = score;
-    let score = |e: Vec3, w: Vec3| (raw_score(e, w).sqrt() - size * 0.0005).max(0.).powi(2);
+    let score = |e: Vec3, w: Vec3| {
+        let penetration = (raw_score(e, w).sqrt() - size * 0.00025).max(0.);
+        penetration.powi(2) * 1_000_000.
+            + e.distance_squared(elbow)
+            + w.distance_squared(wrist) * 4.
+            + axes.map_or(0., |(_, up)| {
+                let raised = (e - elbow).dot(up).max(0.);
+                raised * raised * 16.
+            })
+            + previous.map_or(0., |(a, b)| {
+                e.distance_squared(a) + w.distance_squared(b) * 4.
+            })
+    };
     let mut best_score = score(e, w);
-    if best_score == 0. {
+    if raw_score(e, w) < 1e-12
+        && previous.is_none_or(|(a, b)| a.distance_squared(e) + b.distance_squared(w) < 1e-12)
+    {
         return best;
     }
     let axis = (wrist - shoulder).try_normalize().unwrap_or(Vec3::Y);
     let mut wrist_seeds = vec![wrist];
     for shape in shapes {
-        wrist_seeds.extend(shape.exit_candidates(wrist, size * 0.020));
+        if previous.is_some() {
+            wrist_seeds.push(wrist + shape.push(wrist, size * 0.020));
+        } else {
+            wrist_seeds.extend(shape.exit_candidates(wrist, size * 0.020));
+        }
     }
+    if let Some((outward, up)) = axes {
+        let reach = shoulder.distance(elbow) + elbow.distance(wrist);
+        for amount in if previous.is_some() {
+            &[0.08][..]
+        } else {
+            &[0.05, 0.1, 0.2][..]
+        } {
+            wrist_seeds.push(wrist + outward * size * *amount);
+        }
+        // Preserve a relaxed, nearly extended arm as a candidate. Without
+        // this seed the solver can favor an elbows-out, hands-on-hips pose.
+        wrist_seeds.push(shoulder + outward * reach * 0.30 - up * reach * 0.94);
+        wrist_seeds.push(shoulder + outward * reach * 0.38 - up * reach * 0.90);
+        wrist_seeds.push(shoulder + outward * reach * 0.45 - up * reach * 0.85);
+        wrist_seeds.push(shoulder + outward * reach * 0.52 - up * reach * 0.85);
+        wrist_seeds.push(shoulder + outward * reach * 0.55 - up * reach * 0.83);
+        wrist_seeds.push(shoulder + outward * reach * 0.60 - up * reach * 0.80);
+        wrist_seeds.push(shoulder + outward * reach * 0.7 - up * reach * 0.65);
+    }
+    if let Some((_, w)) = previous {
+        wrist_seeds.insert(0, w);
+    }
+    wrist_seeds.dedup_by(|a, b| a.distance_squared(*b) < 1e-8);
     for wrist_seed in wrist_seeds {
         // Search elbow bend planes before moving the hand far from its gesture.
-        for angle in [0_f32, 0.5, -0.5, 1., -1., 1.5, -1.5, std::f32::consts::PI] {
+        let angles: &[f32] = if previous.is_some() {
+            &[0., 0.5, -0.5]
+        } else {
+            &[0., 0.5, -0.5, 1., -1., 1.5, -1.5, std::f32::consts::PI]
+        };
+        for &angle in angles {
             (e, w) = two_bone(
                 shoulder,
                 elbow,
                 wrist,
                 wrist_seed,
-                shoulder + Quat::from_axis_angle(axis, angle) * (elbow - shoulder),
+                if angle == 0. {
+                    previous.map_or(elbow, |p| p.0)
+                } else {
+                    shoulder + Quat::from_axis_angle(axis, angle) * (elbow - shoulder)
+                },
             );
-            for _ in 0..24 {
+            for _ in 0..if previous.is_some() { 8 } else { 24 } {
                 let elbow_push = push_all(e, shapes, radii.1);
                 let mut pole = e + elbow_push;
                 // A pole alone cannot move an elbow along its current bend plane.
                 // Let the wrist move too when necessary to make elbow clearance feasible.
                 let mut target = w + push_all(w, shapes, size * 0.020) + elbow_push;
+                if let Some((center, radius)) = hand_sphere {
+                    target += push_all(target + center, shapes, radius);
+                }
                 // Preserve the original hand's model orientation while protecting its
                 // palm/finger envelope as well as the wrist joint itself.
                 for offset in fingers {
                     target += push_all(target + *offset, shapes, size * 0.005);
                 }
                 for shape in shapes {
-                    let (correction, t) =
-                        shape.segment_contact(shoulder, pole, radii.0, SHOULDER_ATTACHMENT);
-                    pole += correction / t.max(SHOULDER_ATTACHMENT);
-                    target += correction * 0.5 / t.max(SHOULDER_ATTACHMENT);
+                    let (correction, t) = upper_contact(shape, shoulder, pole, radii.0, attachment);
+                    pole += correction / t.max(attachment);
+                    target += correction * 0.5 / t.max(attachment);
                     let (correction, t) = shape.segment_contact(pole, target, radii.1, 0.);
                     let denominator = (1. - t).powi(2) + t.powi(2);
                     pole += correction * (1. - t) / denominator;
@@ -289,7 +502,9 @@ fn solve(
             }
         }
     }
-    best
+    previous.map_or(best, |prior| {
+        limit_correction(shoulder, elbow, wrist, prior, best, max_step)
+    })
 }
 
 fn set_model_rotation(
@@ -315,19 +530,51 @@ pub(super) fn correct_arms(
     bones: &[PoseBone],
     parents: &Query<&ChildOf>,
     transforms: &mut Query<&mut Transform>,
-    hull: &Hull,
+    shapes: &[Hull],
     radii: (f32, f32),
+    hands: &[Vec<Vec3>; 2],
+    history: &mut [Option<(Vec3, Vec3)>; 2],
+    delta_seconds: f32,
 ) {
     let find = |name| bones.iter().find(|bone| bone.bone == name);
-    let Some((hips, neck)) = find(Bone::Hips).zip(find(Bone::Neck)) else {
+    let Some((hips, (left, right))) =
+        find(Bone::Hips).zip(find(Bone::LeftUpperArm).zip(find(Bone::RightUpperArm)))
+    else {
         return;
     };
-    let size = hips.rest_position.distance(neck.rest_position) * 4.;
+    let neck = find(Bone::Neck);
+    let rest_top = torso_top(
+        neck.map(|bone| bone.rest_position),
+        left.rest_position,
+        right.rest_position,
+    );
+    let size = hips.rest_position.distance(rest_top) * 4.;
     if !size.is_finite() || size < 1e-5 {
         return;
     }
-    let shapes = std::slice::from_ref(hull);
-    for (upper, lower, hand, tips) in [
+    let current = |bone: &PoseBone| {
+        model_transform(bone.entity, root, parents, transforms).map(|m| Vec3::from(m.translation))
+    };
+    let Some((hips_position, (left_position, right_position))) =
+        current(hips).zip(current(left).zip(current(right)))
+    else {
+        return;
+    };
+    let neck_position = match neck {
+        Some(neck) => {
+            let Some(position) = current(neck) else {
+                return;
+            };
+            Some(position)
+        }
+        None => None,
+    };
+    let top = torso_top(neck_position, left_position, right_position);
+    let Some(up) = (top - hips_position).try_normalize() else {
+        return;
+    };
+    let center = left_position.midpoint(right_position);
+    for (side, (upper, lower, hand, tips)) in [
         (
             Bone::LeftUpperArm,
             Bone::LeftLowerArm,
@@ -352,7 +599,10 @@ pub(super) fn correct_arms(
                 Bone::RightThumbDistal,
             ],
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let Some(((upper, lower), hand)) = find(upper).zip(find(lower)).zip(find(hand)) else {
             continue;
         };
@@ -365,7 +615,7 @@ pub(super) fn correct_arms(
         let (_, upper_rotation, shoulder) = s.to_scale_rotation_translation();
         let (_, _, elbow) = e.to_scale_rotation_translation();
         let (_, hand_rotation, wrist) = w.to_scale_rotation_translation();
-        let fingers: Vec<_> = tips
+        let mut fingers: Vec<_> = tips
             .iter()
             .filter_map(|tip| {
                 let bone = find(*tip)?;
@@ -376,7 +626,27 @@ pub(super) fn correct_arms(
                 )
             })
             .collect();
-        let (new_elbow, new_wrist) = solve(shoulder, elbow, wrist, &fingers, shapes, size, radii);
+        fingers.extend(hands[side].iter().map(|point| *point - wrist));
+        let Some(outward) = (shoulder - center).try_normalize() else {
+            continue;
+        };
+        // Persist correction offsets, not absolute joint positions. Ordinary
+        // authored motion follows immediately; only the guard is smoothed.
+        let previous = history[side].map(|(a, b)| (elbow + a, wrist + b));
+        let (new_elbow, new_wrist) = solve_guided(
+            shoulder,
+            elbow,
+            wrist,
+            &fingers,
+            shapes,
+            size,
+            radii,
+            Some((outward, up)),
+            previous,
+            None,
+            delta_seconds.clamp(0., 0.1) * 1.2,
+        );
+        history[side] = Some((new_elbow - elbow, new_wrist - wrist));
         if new_elbow.distance_squared(elbow) + new_wrist.distance_squared(wrist) < 1e-12 {
             continue;
         }
@@ -412,6 +682,7 @@ pub(super) fn correct_arms(
             set_model_rotation(hand.entity, hand_rotation, root, parents, transforms)
         })();
         if applied.is_none() {
+            history[side] = None;
             for (entity, original) in [upper.entity, lower.entity, hand.entity]
                 .into_iter()
                 .zip(originals)
@@ -429,6 +700,26 @@ pub(super) fn correct_arms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correction_limit_preserves_arm_lengths_and_bounds_guard_step() {
+        let shoulder = Vec3::ZERO;
+        let elbow = Vec3::new(0.25, -0.20, 0.0);
+        let wrist = Vec3::new(0.45, -0.35, 0.0);
+        let previous = two_bone(shoulder, elbow, wrist, wrist, elbow);
+        let desired = two_bone(
+            shoulder,
+            elbow,
+            wrist,
+            Vec3::new(0.1, -0.35, 0.3),
+            Vec3::new(0.1, -0.1, 0.3),
+        );
+        let limited = limit_correction(shoulder, elbow, wrist, previous, desired, 0.02);
+        assert!(limited.0.distance(previous.0) <= 0.02001);
+        assert!(limited.1.distance(previous.1) <= 0.02001);
+        assert!((shoulder.distance(limited.0) - shoulder.distance(elbow)).abs() < 1e-5);
+        assert!((limited.0.distance(limited.1) - elbow.distance(wrist)).abs() < 1e-5);
+    }
 
     fn box_shape(center: Vec3, radii: Vec3) -> Hull {
         let points: Vec<_> = [-1., 1.]
@@ -476,6 +767,15 @@ mod tests {
 
     #[test]
     fn ecs_ik_preserves_hand_orientation_and_other_avatar() {
+        assert_ecs_ik(true);
+    }
+
+    #[test]
+    fn ecs_ik_runs_without_an_optional_neck_bone() {
+        assert_ecs_ik(false);
+    }
+
+    fn assert_ecs_ik(has_neck: bool) {
         use bevy::ecs::system::SystemState;
         let mut world = World::new();
         let root = world
@@ -519,6 +819,7 @@ mod tests {
             (right, Bone::RightUpperArm, Vec3::new(-0.12, 1.1, 0.)),
         ]
         .into_iter()
+        .filter(|&(_, bone, _)| has_neck || bone != Bone::Neck)
         .map(|(entity, bone, rest_position)| PoseBone {
             entity,
             bone,
@@ -557,8 +858,11 @@ mod tests {
             &bones,
             &parents,
             &mut transforms,
-            &hull,
+            &[hull],
             (0.012, 0.012),
+            &[Vec::new(), Vec::new()],
+            &mut [None; 2],
+            1. / 60.,
         );
         let (_, rotation, position) = model_transform(hand, root, &parents, &transforms)
             .unwrap()

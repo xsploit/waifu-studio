@@ -30,6 +30,9 @@ struct Proof {
     requested: bool,
     msaa: Msaa,
     output: PathBuf,
+    camera: Option<Entity>,
+    mask: DesktopOcclusion,
+    stage: u8,
 }
 
 fn main() -> AppExit {
@@ -50,6 +53,9 @@ fn main() -> AppExit {
             requested: false,
             msaa,
             output,
+            camera: None,
+            mask: DesktopOcclusion::default(),
+            stage: 0,
         })
         .add_plugins(
             DefaultPlugins
@@ -100,27 +106,32 @@ fn setup(
         own_above_panels: None,
         cursor: Vec2::ZERO,
     };
-    commands.spawn((
-        Camera3d::default(),
-        RenderTarget::Image(proof.target.clone().into()),
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        Projection::Orthographic(OrthographicProjection {
-            near: 0.,
-            far: 10.,
-            scaling_mode: ScalingMode::Fixed {
-                width: 4.,
-                height: 2.,
-            },
-            ..OrthographicProjection::default_3d()
-        }),
-        Transform::from_xyz(0., 0., 5.).looking_at(Vec3::ZERO, Vec3::Y),
-        proof.msaa,
-        Tonemapping::None,
-        DesktopOcclusion::for_seat(&snapshot, SurfaceId::Window(1), 0.5, now),
-    ));
+    proof.mask = DesktopOcclusion::for_seat(&snapshot, SurfaceId::Window(1), 0.5, now);
+    proof.camera = Some(
+        commands
+            .spawn((
+                Camera3d::default(),
+                RenderTarget::Image(proof.target.clone().into()),
+                Camera {
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                    ..default()
+                },
+                Projection::Orthographic(OrthographicProjection {
+                    near: 0.,
+                    far: 10.,
+                    scaling_mode: ScalingMode::Fixed {
+                        width: 4.,
+                        height: 2.,
+                    },
+                    ..OrthographicProjection::default_3d()
+                }),
+                Transform::from_xyz(0., 0., 5.).looking_at(Vec3::ZERO, Vec3::Y),
+                proof.msaa,
+                Tonemapping::None,
+                proof.mask,
+            ))
+            .id(),
+    );
     for (position, size, color) in [
         (
             Vec3::new(0., 0., -1.),
@@ -150,7 +161,7 @@ fn capture(mut commands: Commands, mut proof: ResMut<Proof>, mut exit: MessageWr
     if proof.frames > 600 {
         exit.write(AppExit::error());
     }
-    if proof.frames < 90 || proof.requested {
+    if proof.frames < if proof.stage == 0 { 90 } else { 30 } || proof.requested {
         return;
     }
     proof.requested = true;
@@ -158,7 +169,10 @@ fn capture(mut commands: Commands, mut proof: ResMut<Proof>, mut exit: MessageWr
     commands
         .spawn(Screenshot::image(proof.target.clone()))
         .observe(
-            move |event: On<ScreenshotCaptured>, mut exit: MessageWriter<AppExit>| {
+            move |event: On<ScreenshotCaptured>,
+                  mut exit: MessageWriter<AppExit>,
+                  mut proof: ResMut<Proof>,
+                  mut commands: Commands| {
                 let image = event
                     .image
                     .clone()
@@ -173,19 +187,41 @@ fn capture(mut commands: Commands, mut proof: ResMut<Proof>, mut exit: MessageWr
                     baseline[0] > 220 && baseline[3] > 220,
                     "unmasked red baseline: {baseline:?}"
                 );
-                assert!(
-                    hidden[3] < 5,
-                    "masked geometry must leave transparent pixels: {hidden:?}"
-                );
+                if proof.stage == 1 {
+                    assert!(
+                        hidden[0] > 220 && hidden[3] > 220,
+                        "removed mask must restore red geometry: {hidden:?}"
+                    );
+                } else {
+                    assert!(
+                        hidden[3] < 5,
+                        "masked geometry must leave transparent pixels: {hidden:?}"
+                    );
+                }
                 assert!(
                     foreground[1] > 220 && foreground[0] < 20 && foreground[3] > 220,
                     "front green geometry: {foreground:?}"
                 );
-                println!(
-                    "PASS: back geometry hidden, front geometry visible, alpha preserved; {}",
-                    output.display()
-                );
-                exit.write(AppExit::Success);
+                let camera = proof.camera.expect("proof camera");
+                match proof.stage {
+                    0 => {
+                        commands.entity(camera).remove::<DesktopOcclusion>();
+                    }
+                    1 => {
+                        commands.entity(camera).insert(proof.mask);
+                    }
+                    _ => {
+                        println!(
+                            "PASS: active, removed and restored masks; {}",
+                            output.display()
+                        );
+                        exit.write(AppExit::Success);
+                        return;
+                    }
+                }
+                proof.stage += 1;
+                proof.frames = 0;
+                proof.requested = false;
             },
         );
 }

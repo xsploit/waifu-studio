@@ -5,10 +5,13 @@
 //! Usage: <idle|sitting|grabbed|LOCAL_MOTION_PATH> <output.png>
 //!        [--time SECONDS] [--frames 180] [--avatar LOCAL_VRM_PATH] [--sequence FPS]
 //!        [--view front|side|rear|other-side|three-quarter] [--rig-overlay]
-//!        [--pose-json PATH] [--arm-clearance on|off]
+//!        [--pose-json PATH] [--arm-clearance on|off] [--motion-weight 0..1]
 //!        [--continuous --sequence FPS] [--end SECONDS] [--spring-strength 0..1]
 //!        [--arm-pose-probe] (diagnostic10° outward swing/−20° twist before live springs)
 //!        [--rest-pose] (authored skeleton pose, with live spring physics)
+//!        [--blend-from LOCAL_MOTION_PATH] [--blend-from-time SECONDS] [--blend-from-paused]
+//! --blend-from records the production half-second crossfade into the requested motion.
+//! The first recorded pose is the first animation tick after the switch.
 //! Views orbit at the same distance: front +Z, side +X, rear -Z, other-side -X,
 //! three-quarter +X/+Z. Rig overlay: left cyan, right magenta, torso yellow;
 //! native unlit cylinders at actual avatar joints, with normal depth occlusion.
@@ -76,13 +79,18 @@ struct Options {
     sequence: Option<f32>,
     view: String,
     pose_json: Option<PathBuf>,
+    pose_bones_only: bool,
     arm_clearance: bool,
     arm_pose_probe: bool,
     rig_overlay: bool,
     continuous: bool,
     rest_pose: bool,
+    motion_weight: f32,
     end: Option<f32>,
     spring_strength: f32,
+    blend_from: Option<PathBuf>,
+    blend_from_time: Option<f32>,
+    blend_from_paused: bool,
 }
 
 impl Options {
@@ -118,13 +126,18 @@ impl Options {
             sequence: None,
             view: "front".into(),
             pose_json: None,
+            pose_bones_only: false,
             arm_clearance: false,
             arm_pose_probe: false,
             rig_overlay: false,
             continuous: false,
             rest_pose: false,
+            motion_weight: 1.0,
             end: None,
             spring_strength: 0.0,
+            blend_from: None,
+            blend_from_time: None,
+            blend_from_paused: false,
         };
         while let Some(option) = args.next() {
             match option.as_str() {
@@ -167,9 +180,17 @@ impl Options {
                         .ok_or("--view requires front, side, rear, other-side or three-quarter")?;
                 }
                 "--rig-overlay" => options.rig_overlay = true,
+                "--pose-bones-only" => options.pose_bones_only = true,
                 "--follow-hips" => options.follow_hips = true,
                 "--continuous" => options.continuous = true,
                 "--rest-pose" => options.rest_pose = true,
+                "--motion-weight" => {
+                    options.motion_weight = args
+                        .next()
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .filter(|s| (0.0..=1.0).contains(s))
+                        .ok_or("--motion-weight requires a number between 0 and 1")?;
+                }
                 "--arm-pose-probe" => options.arm_pose_probe = true,
                 "--end" => {
                     options.end = Some(
@@ -179,6 +200,21 @@ impl Options {
                             .ok_or("--end requires a finite time at or after --time")?,
                     );
                 }
+                "--blend-from" => {
+                    options.blend_from = Some(PathBuf::from(
+                        args.next()
+                            .ok_or("--blend-from requires a local motion path")?,
+                    ));
+                }
+                "--blend-from-time" => {
+                    options.blend_from_time = Some(
+                        args.next()
+                            .and_then(|value| value.parse::<f32>().ok())
+                            .filter(|seconds| seconds.is_finite() && *seconds >= 0.)
+                            .ok_or("--blend-from-time requires a finite nonnegative number")?,
+                    );
+                }
+                "--blend-from-paused" => options.blend_from_paused = true,
                 "--spring-strength" => {
                     options.spring_strength = args
                         .next()
@@ -224,6 +260,21 @@ impl Options {
         if options.end.is_some() && !options.continuous {
             return Err("--end requires --continuous".into());
         }
+        if let Some(path) = &mut options.blend_from {
+            if !options.continuous
+                || options.seconds != 0.
+                || options.rest_pose
+                || options.batch_dir.is_some()
+                || options.end.is_some_and(|end| end < 0.5)
+            {
+                return Err("--blend-from requires --continuous --time 0 and at least 0.5 seconds of capture; it cannot be combined with --rest-pose or --batch-dir".into());
+            }
+            *path = path
+                .canonicalize()
+                .map_err(|error| format!("Cannot resolve outgoing motion: {error}"))?;
+        } else if options.blend_from_time.is_some() || options.blend_from_paused {
+            return Err("--blend-from-time and --blend-from-paused require --blend-from".into());
+        }
         if options.end.is_some_and(|end| end < options.seconds) {
             return Err("--end precedes --time".into());
         }
@@ -248,32 +299,7 @@ impl Options {
     }
 
     fn clip(&self) -> Result<BvhClip, String> {
-        let file =
-            std::fs::File::open(&self.motion).map_err(|e| format!("Cannot open motion: {e}"))?;
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file() || metadata.len() > MAX_MOTION_BYTES {
-            return Err("Motion must be a regular local file at most 32 MiB".into());
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_MOTION_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_MOTION_BYTES {
-            return Err("Motion exceeds 32 MiB".into());
-        }
-        let clip = match self
-            .motion
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "vrma" => parse_vrma(&bytes),
-            "fbx" => parse_fbx(&bytes),
-            "bvh" => parse_bvh(std::str::from_utf8(&bytes).map_err(|_| "BVH must be UTF-8 text")?),
-            _ => return Err("Motion must be a local .vrma, .fbx or .bvh file".into()),
-        }?;
+        let clip = read_clip(&self.motion)?;
         if self.seconds > clip.duration() {
             return Err(format!(
                 "Requested sample {:.3}s exceeds clip duration {:.3}s",
@@ -285,6 +311,33 @@ impl Options {
             return Err("--end exceeds clip duration".into());
         }
         Ok(clip)
+    }
+}
+
+fn read_clip(path: &Path) -> Result<BvhClip, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("Cannot open motion: {e}"))?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_MOTION_BYTES {
+        return Err("Motion must be a regular local file at most 32 MiB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_MOTION_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_MOTION_BYTES {
+        return Err("Motion exceeds 32 MiB".into());
+    }
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "vrma" => parse_vrma(&bytes),
+        "fbx" => parse_fbx(&bytes),
+        "bvh" => parse_bvh(std::str::from_utf8(&bytes).map_err(|_| "BVH must be UTF-8 text")?),
+        _ => return Err("Motion must be a local .vrma, .fbx or .bvh file".into()),
     }
 }
 
@@ -309,6 +362,7 @@ struct Capture {
     failed: Arc<AtomicBool>,
     last_pose: f32,
     continuous_start_seconds: f32,
+    pending_blend: Option<Arc<BvhClip>>,
 }
 
 /// The vendored spring clock uses 1/60 s steps and clamps elapsed to 0.25 s.
@@ -436,9 +490,9 @@ fn main() -> AppExit {
         options.seconds,
         clip.mapped_bones()
     );
-    // Activate the real retargeter without desktop behavior's entry crossfade.
-    // Last pins the requested sample after the loader has selected a root;
-    // the next Update applies it through BvhAnimationPlugin's actual rig code.
+    // Warm up the authored pose through BvhAnimationPlugin before the
+    // offscreen capture starts. The optional switch uses the same select_clip
+    // entry point as the live app.
     let duration = clip.duration();
     let last_pose = clip.last_sample_time();
     let step = if options.continuous {
@@ -449,13 +503,36 @@ fn main() -> AppExit {
     let mut physics = SpringPhysicsState::default();
     physics.config.strength = options.spring_strength;
     let mut animation = AnimationState::default();
-    animation.clip = Some(Arc::new(clip));
-    animation.path = Some(options.motion.clone());
-    animation.looping = false;
-    animation.arm_clearance = options.arm_clearance;
-    if options.rest_pose {
-        animation.weight = 0.;
+    let mut pending_blend = None;
+    if let Some(path) = &options.blend_from {
+        let outgoing = match read_clip(path) {
+            Ok(clip) => clip,
+            Err(error) => {
+                eprintln!("Outgoing motion import failed: {error}");
+                return AppExit::error();
+            }
+        };
+        if options.blend_from_time.unwrap_or(0.) > outgoing.last_sample_time() || last_pose < 0.5 {
+            eprintln!(
+                "Crossfade needs a valid outgoing sample and at least 0.5 seconds of incoming poses"
+            );
+            return AppExit::error();
+        }
+        animation.clip = Some(Arc::new(outgoing));
+        animation.path = Some(path.clone());
+        animation.looping = !options.blend_from_paused;
+        pending_blend = Some(Arc::new(clip));
+    } else {
+        animation.clip = Some(Arc::new(clip));
+        animation.path = Some(options.motion.clone());
+        animation.looping = false;
     }
+    animation.arm_clearance = options.arm_clearance;
+    animation.weight = if options.rest_pose {
+        0.
+    } else {
+        options.motion_weight
+    };
     animation.play();
     animation.pause();
     let continuous_start_seconds = options.seconds;
@@ -480,6 +557,7 @@ fn main() -> AppExit {
             failed: default(),
             last_pose,
             continuous_start_seconds,
+            pending_blend,
         })
         .insert_resource(physics)
         .insert_resource(animation)
@@ -834,10 +912,23 @@ fn write_pose_json(
     state: &Capture,
     root: Entity,
     clip: &BvhClip,
+    motion_weight: f32,
     diagnostics: &PoseDiagnostics,
 ) -> Result<(), String> {
     let Some(path) = &state.options.pose_json else {
         return Ok(());
+    };
+    let batch_path;
+    let path = if state.options.batch_dir.is_some() {
+        batch_path = state
+            .options
+            .output
+            .parent()
+            .ok_or("Missing output directory")?
+            .join(path.file_name().ok_or("Missing pose filename")?);
+        &batch_path
+    } else {
+        path
     };
     let path = if state.options.sequence.is_some() {
         let mut stem = path.with_extension("").into_os_string();
@@ -879,6 +970,13 @@ fn write_pose_json(
     }
     if avatar.is_empty() {
         return Err("Active avatar has no diagnostic humanoid bones".into());
+    }
+    if state.options.pose_bones_only {
+        avatar.sort_by(|a, b| a["bone"].as_str().cmp(&b["bone"].as_str()));
+        let data = serde_json::json!({"seconds":state.options.seconds,"arm_clearance":state.options.arm_clearance,"avatar":avatar});
+        std::fs::write(path, serde_json::to_vec(&data).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
     }
     // Use the actual globals consumed by render skinning, including spring
     // helpers that have no HumanBoneName. Keep full affine matrices: decomposing
@@ -977,6 +1075,7 @@ fn write_pose_json(
         "source_format": clip.format(),
         "seconds": state.options.seconds,
         "view": state.options.view,
+        "motion_weight": motion_weight,
         "arm_clearance": state.options.arm_clearance,
         "diagnostic_arm_pose_probe": if state.options.arm_pose_probe { serde_json::json!({"outward_swing_degrees":10,"axial_twist_degrees":-20,"stage":"before transform propagation and spring simulation; restored before each Update"}) } else { serde_json::Value::Null },
         "pose_control": if state.options.arm_pose_probe { "production animation plus diagnostic arm pose probe; live springs" } else if state.options.rest_pose { "authored rest skeleton; live springs; zero animation weight" } else { "production animation" },
@@ -988,6 +1087,11 @@ fn write_pose_json(
         "skin_pose_scope": "final render globals after springs; actual primitive morph weights exported before skinning",
         "shader_outline_passes_excluded": true,
         "continuous_playback": state.options.continuous,
+        "crossfade": state.options.blend_from.as_ref().map(|path| serde_json::json!({
+            "from": path,
+            "from_seconds": state.options.blend_from_time.unwrap_or(0.),
+            "from_playing": !state.options.blend_from_paused,
+        })),
         "app_step_seconds": if state.options.continuous { 1.0 / state.options.sequence.unwrap_or(60.0) } else { 1.0 / 60.0 },
         "spring_fixed_step_seconds": 1.0_f64 / 60.0,
         "expected_spring_steps_per_app_frame": if state.options.continuous { Some(continuous_spring_steps(state.options.sequence.unwrap())?) } else { None },
@@ -1042,6 +1146,14 @@ fn capture_continuous(
         .ok_or("Missing continuous capture rate")?;
     if !state.continuous_started {
         state.continuous_started = true;
+        if let Some(incoming) = state.pending_blend.take() {
+            if !state.options.blend_from_paused {
+                animation.play();
+            }
+            animation.select_clip(incoming, Some(state.options.motion.clone()));
+            state.continuous_start_seconds = 1. / fps;
+            return Ok(());
+        }
     }
     // The animator has already sampled this position in Update, followed by
     // the actual spring simulation. Never pin a later position onto its label.
@@ -1053,7 +1165,7 @@ fn capture_continuous(
         fps,
     )?;
     let clip = animation.clip.as_deref().ok_or("Missing continuous clip")?;
-    write_pose_json(state, root, clip, diagnostics)?;
+    write_pose_json(state, root, clip, animation.weight, diagnostics)?;
     let stem = state.options.output.with_extension("");
     let path = PathBuf::from(format!("{}_{:04}.png", stem.display(), state.index));
     let completed = state.completed.clone();
@@ -1225,7 +1337,11 @@ fn prepare_and_capture(
         return;
     }
     if !state.continuous_started {
-        animation.position = state.options.seconds;
+        animation.position = if state.pending_blend.is_some() {
+            state.options.blend_from_time.unwrap_or(0.)
+        } else {
+            state.options.seconds
+        };
         animation.pause();
     }
     if state.requested
@@ -1258,7 +1374,7 @@ fn prepare_and_capture(
         let Some(clip) = animation.clip.as_deref() else {
             return;
         };
-        if let Err(error) = write_pose_json(&state, root, clip, &diagnostics) {
+        if let Err(error) = write_pose_json(&state, root, clip, animation.weight, &diagnostics) {
             eprintln!("Cannot save pose diagnostics: {error}");
             exit.write(AppExit::error());
             return;

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 const MAX_MASKS: usize = 16;
 
-#[derive(Component, Clone, Copy, Default, ExtractComponent, ShaderType)]
+#[derive(Component, Clone, Copy, Default, PartialEq, ExtractComponent, ShaderType)]
 pub struct DesktopOcclusion {
     rects: [Vec4; MAX_MASKS],
     depths: [Vec4; MAX_MASKS],
@@ -34,6 +34,11 @@ pub struct DesktopOcclusion {
 }
 
 impl DesktopOcclusion {
+    /// Whether the view has no desktop surfaces to mask.
+    pub fn is_empty(&self) -> bool {
+        self.counts.x == 0
+    }
+
     /// All geometry is derived from one fresh, logical-coordinate snapshot.
     /// Reverse Z: zero is far away, one is at the camera's near plane.
     pub fn for_seat(snapshot: &DesktopSnapshot, seat: SurfaceId, depth: f32, now: Instant) -> Self {

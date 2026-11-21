@@ -431,8 +431,8 @@ mod tests {
         let entries = scan(&[root]);
         assert_eq!(
             entries.len(),
-            167,
-            "Original Kimodo library must ship intact"
+            11,
+            "Clipping-free Kimodo subset must ship intact"
         );
         for entry in &entries {
             let text = std::fs::read_to_string(&entry.path).unwrap();
@@ -445,14 +445,14 @@ mod tests {
                 .iter()
                 .filter(|e| e.category() == MotionCategory::Idle)
                 .count()
-                >= 16
+                >= 3
         );
         assert!(
             entries
                 .iter()
                 .filter(|e| e.category() == MotionCategory::Talking)
                 .count()
-                >= 20
+                >= 1
         );
         assert!(
             entries
@@ -546,7 +546,7 @@ mod tests {
         let entries = scan(&[
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/animations/waifumations")
         ]);
-        assert_eq!(entries.len(), 167);
+        assert_eq!(entries.len(), 11);
         let categories = MotionCategory::ALL
             .into_iter()
             .filter(|c| *c != MotionCategory::Locomotion)
@@ -556,7 +556,7 @@ mod tests {
             catalog.options().count(),
             entries.iter().filter(|entry| entry.auto_playable()).count()
         );
-        assert!(catalog.options().count() > 16);
+        assert!(catalog.options().count() > 3);
         assert!(
             catalog
                 .options()

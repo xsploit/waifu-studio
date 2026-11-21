@@ -1,7 +1,10 @@
-//! CPU skinning samples for the active avatar's torso and clothed arm radii.
+//! CPU skinning samples for the active avatar's torso, skirt and clothed arms.
 //! Requires retained CPU mesh attributes; deliberately has no skeleton body proxy.
 //! Morph targets and cloth/spring simulation are not applied to these samples.
-use super::{PoseBone, animation_clearance::model_transform};
+use super::{
+    PoseBone,
+    animation_clearance::{model_transform, torso_top},
+};
 use bevy::{
     math::Affine3A,
     mesh::{
@@ -16,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 const MAX_BODY_POINTS: usize = 20_000;
 // Per side and segment: a dense left sleeve cannot crowd out the right.
 const MAX_RADIUS_SAMPLES: usize = 2_048;
+const MAX_HAND_CANDIDATES: usize = 4_096;
 
 #[derive(Clone, Copy)]
 struct Influence {
@@ -60,6 +64,7 @@ impl SkinPoint {
 pub(super) struct MeshBodyCache {
     root: Option<Entity>,
     points: Vec<SkinPoint>,
+    hands: [Vec<SkinPoint>; 2],
     radii: (f32, f32),
 }
 
@@ -93,25 +98,26 @@ impl MeshBodyCache {
             .map(|bone| (bone.entity, bone))
             .collect();
         let find = |name| mapped.values().find(|bone| bone.bone == name).copied();
-        let Some((hips, neck, left, right)) = find(Bone::Hips)
-            .zip(find(Bone::Neck))
-            .zip(find(Bone::LeftUpperArm))
-            .zip(find(Bone::RightUpperArm))
-            .map(|(((hips, neck), left), right)| (hips, neck, left, right))
+        let Some((hips, (left, right))) =
+            find(Bone::Hips).zip(find(Bone::LeftUpperArm).zip(find(Bone::RightUpperArm)))
         else {
             return false;
         };
         let hips = hips.rest_position;
-        let neck = neck.rest_position;
+        let top = torso_top(
+            find(Bone::Neck).map(|bone| bone.rest_position),
+            left.rest_position,
+            right.rest_position,
+        );
         let width = left.rest_position.distance(right.rest_position);
-        let length = hips.distance(neck);
+        let length = hips.distance(top);
         if !hips.is_finite()
-            || !neck.is_finite()
+            || !top.is_finite()
             || !width.is_finite()
             || width < 1e-5
             || !length.is_finite()
             || length < 1e-5
-            || neck.y <= hips.y
+            || top.y <= hips.y
         {
             return false;
         }
@@ -131,6 +137,7 @@ impl MeshBodyCache {
                 })
         });
         let mut radius_samples = [[Vec::new(), Vec::new()], [Vec::new(), Vec::new()]];
+        let mut hand_candidates: [Vec<(SkinPoint, Vec3)>; 2] = [Vec::new(), Vec::new()];
         let mut seen = HashSet::new();
         // Lazily resolve only referenced, positively weighted joints. This also
         // bounds the temporary joint cache to the u16 mesh palette address space.
@@ -174,6 +181,9 @@ impl MeshBodyCache {
                         .iter()
                         .flatten()
                         .all(|samples| samples.len() == MAX_RADIUS_SAMPLES)
+                    && hand_candidates
+                        .iter()
+                        .all(|samples| samples.len() == MAX_HAND_CANDIDATES)
                 {
                     break;
                 }
@@ -190,6 +200,7 @@ impl MeshBodyCache {
                 let mut rest_point = Vec3::ZERO;
                 let mut torso_weight = 0.;
                 let mut arm_weights = [0.; 2];
+                let mut hand_weights = [0.; 2];
                 let mut valid = true;
                 for slot in 0..4 {
                     let weight = weights[vertex][slot];
@@ -241,6 +252,8 @@ impl MeshBodyCache {
                         JointClass::Torso => torso_weight += weight,
                         JointClass::LeftArm => arm_weights[0] += weight,
                         JointClass::RightArm => arm_weights[1] += weight,
+                        JointClass::LeftHand => hand_weights[0] += weight,
+                        JointClass::RightHand => hand_weights[1] += weight,
                         JointClass::Other => {}
                     }
                 }
@@ -249,7 +262,7 @@ impl MeshBodyCache {
                 }
                 let body = self.points.len() < MAX_BODY_POINTS
                     && torso_weight > 0.75
-                    && inside_torso(rest_point, hips, neck, length, width);
+                    && inside_torso(rest_point, hips, top, length, width);
                 let mut measurements = [[None; 2]; 2];
                 for side in 0..2 {
                     if arm_weights[side] < 0.75 {
@@ -265,13 +278,21 @@ impl MeshBodyCache {
                         }
                     }
                 }
-                if (!body && measurements.iter().flatten().all(Option::is_none))
+                let hand = hand_weights.map(|w| w > 0.95);
+                if (!body
+                    && !hand.iter().any(|&x| x)
+                    && measurements.iter().flatten().all(Option::is_none))
                     || !seen.insert(point.key(position))
                 {
                     continue;
                 }
                 if body {
                     self.points.push(point);
+                }
+                for side in 0..2 {
+                    if hand[side] && hand_candidates[side].len() < MAX_HAND_CANDIDATES {
+                        hand_candidates[side].push((point, rest_point));
+                    }
                 }
                 for (samples, measurement) in radius_samples
                     .iter_mut()
@@ -291,11 +312,37 @@ impl MeshBodyCache {
             percentile_radius(&mut upper).unwrap_or(self.radii.0),
             percentile_radius(&mut lower).unwrap_or(self.radii.1),
         );
+        self.hands = hand_candidates.map(|candidates| {
+            let mut selected = Vec::new();
+            let mut indices = HashSet::new();
+            for x in -1..=1 {
+                for y in -1..=1 {
+                    for z in -1..=1 {
+                        let direction = Vec3::new(x as f32, y as f32, z as f32);
+                        if direction == Vec3::ZERO {
+                            continue;
+                        }
+                        if let Some((index, _)) = candidates
+                            .iter()
+                            .enumerate()
+                            .max_by(|a, b| direction.dot(a.1.1).total_cmp(&direction.dot(b.1.1)))
+                        {
+                            if indices.insert(index) {
+                                selected.push(candidates[index].0);
+                            }
+                        }
+                    }
+                }
+            }
+            selected
+        });
         if !self.points.is_empty() {
             info!(
                 points = self.points.len(),
                 upper_radius = self.radii.0,
                 forearm_radius = self.radii.1,
+                left_hand_points = self.hands[0].len(),
+                right_hand_points = self.hands[1].len(),
                 "Prepared experimental mesh arm clearance"
             );
         }
@@ -309,29 +356,35 @@ impl MeshBodyCache {
         root: Entity,
         parents: &Query<&ChildOf>,
         transforms: &Query<&mut Transform>,
-    ) -> Option<Vec<Vec3>> {
+    ) -> Option<(Vec<Vec3>, [Vec<Vec3>; 2])> {
         if self.root != Some(root) || self.points.is_empty() {
             return None;
         }
         let mut joints = HashMap::new();
-        let mut result = Vec::with_capacity(self.points.len());
-        for point in &self.points {
-            let mut position = Vec3::ZERO;
-            for influence in point.0.iter().flatten() {
-                let affine = match joints.entry(influence.entity) {
-                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                    std::collections::hash_map::Entry::Vacant(entry) => *entry.insert(
-                        model_transform(influence.entity, root, parents, transforms)?,
-                    ),
-                };
-                position += affine.transform_point3(influence.position) * influence.weight;
+        let mut skin = |points: &[SkinPoint]| -> Option<Vec<Vec3>> {
+            let mut result = Vec::with_capacity(points.len());
+            for point in points {
+                let mut position = Vec3::ZERO;
+                for influence in point.0.iter().flatten() {
+                    let affine = match joints.entry(influence.entity) {
+                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                        std::collections::hash_map::Entry::Vacant(entry) => *entry.insert(
+                            model_transform(influence.entity, root, parents, transforms)?,
+                        ),
+                    };
+                    position += affine.transform_point3(influence.position) * influence.weight;
+                }
+                if !position.is_finite() {
+                    return None;
+                }
+                result.push(position);
             }
-            if !position.is_finite() {
-                return None;
-            }
-            result.push(position);
-        }
-        Some(result)
+            Some(result)
+        };
+        let body = skin(&self.points)?;
+        let left = skin(&self.hands[0])?;
+        let right = skin(&self.hands[1])?;
+        Some((body, [left, right]))
     }
 
     /// (Upper arm, forearm) sleeve-aware 95th percentile radii across both sides.
@@ -361,6 +414,8 @@ enum JointClass {
     Torso,
     LeftArm,
     RightArm,
+    LeftHand,
+    RightHand,
     Other,
 }
 
@@ -373,12 +428,32 @@ fn classify(
     let mut current = entity;
     for _ in 0..128 {
         if let Some(bone) = mapped.get(&current) {
-            return match bone.bone {
-                Bone::Hips | Bone::Spine | Bone::Chest | Bone::UpperChest => JointClass::Torso,
+            let class = match bone.bone {
+                // Skirt spring chains commonly descend from an upper leg.
+                // The spatial bounds below retain only the nearby upper-thigh
+                // region, excluding lower legs, shoes and unrelated geometry.
+                Bone::Hips
+                | Bone::Spine
+                | Bone::Chest
+                | Bone::UpperChest
+                | Bone::LeftUpperLeg
+                | Bone::RightUpperLeg => JointClass::Torso,
                 Bone::LeftUpperArm | Bone::LeftLowerArm => JointClass::LeftArm,
                 Bone::RightUpperArm | Bone::RightLowerArm => JointClass::RightArm,
-                _ => JointClass::Other,
+                Bone::LeftHand => JointClass::LeftHand,
+                Bone::RightHand => JointClass::RightHand,
+                _ => {
+                    if current == root {
+                        break;
+                    }
+                    let Ok(parent) = parents.get(current) else {
+                        break;
+                    };
+                    current = parent.parent();
+                    continue;
+                }
             };
+            return class;
         }
         if current == root {
             break;
@@ -426,9 +501,15 @@ fn inside_torso(point: Vec3, hips: Vec3, neck: Vec3, length: f32, width: f32) ->
     let fraction = ((point.y - hips.y) / (neck.y - hips.y)).clamp(0., 1.);
     let center = hips.lerp(neck, fraction);
     let horizontal = Vec2::new(point.x - center.x, point.z - center.z);
-    point.y >= hips.y - length * 0.15
+    // Hands hang below the hips. The former 15% cutoff omitted the skirt and
+    // lower jacket completely. Allow the hip-bound clothing envelope down to
+    // the upper thighs, widening towards the hem rather than cropping it to
+    // the shoulder joint span. Leg/foot vertices are excluded by joint class.
+    let below = ((hips.y - point.y) / length).clamp(0., 0.7);
+    let width_factor = 1.1 + (below * 4.).min(1.0);
+    point.y >= hips.y - length * 0.7
         && point.y <= neck.y
-        && horizontal.length_squared() <= (width * 0.8).powi(2)
+        && horizontal.length_squared() <= (width * width_factor).powi(2)
 }
 
 fn segment_radius(point: Vec3, start: Vec3, end: Vec3) -> Option<f32> {
@@ -459,6 +540,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skirt_helpers_and_finger_bones_follow_their_mapped_ancestors() {
+        use bevy::ecs::system::SystemState;
+        let mut world = World::new();
+        let root = world.spawn_empty().id();
+        let leg = world.spawn(ChildOf(root)).id();
+        let skirt = world.spawn(ChildOf(leg)).id();
+        let hand = world.spawn(ChildOf(root)).id();
+        let finger = world.spawn(ChildOf(hand)).id();
+        let bones: Vec<_> = [
+            (leg, Bone::LeftUpperLeg),
+            (hand, Bone::LeftHand),
+            (finger, Bone::LeftIndexProximal),
+        ]
+        .into_iter()
+        .map(|(entity, bone)| PoseBone {
+            entity,
+            bone,
+            rest: Transform::IDENTITY,
+            idle: Transform::IDENTITY,
+            rest_rotation: Quat::IDENTITY,
+            rest_position: Vec3::ZERO,
+            model_to_parent: None,
+            joint: None,
+            depth: 0,
+        })
+        .collect();
+        let mapped = bones.iter().map(|bone| (bone.entity, bone)).collect();
+        let mut system: SystemState<Query<&ChildOf>> = SystemState::new(&mut world);
+        let parents = system.get(&world).unwrap();
+        assert!(matches!(
+            classify(skirt, root, &mapped, &parents),
+            JointClass::Torso
+        ));
+        assert!(matches!(
+            classify(finger, root, &mapped, &parents),
+            JointClass::LeftHand
+        ));
+    }
+
+    #[test]
     fn sleeve_measurements_exclude_segment_ends_and_use_percentile() {
         assert_eq!(
             segment_radius(Vec3::new(0.1, 0.2, 0.), Vec3::ZERO, Vec3::X),
@@ -479,12 +600,13 @@ mod tests {
     }
 
     #[test]
-    fn rest_bounds_exclude_skirts_and_wide_ornaments() {
+    fn rest_bounds_include_hip_bound_skirts_without_foot_or_wide_ornament_geometry() {
         let hips = Vec3::Y;
         let neck = Vec3::Y * 1.5;
         assert!(inside_torso(Vec3::new(0.1, 1.2, 0.1), hips, neck, 0.5, 0.4));
-        assert!(!inside_torso(Vec3::new(0., 0.8, 0.), hips, neck, 0.5, 0.4));
-        assert!(!inside_torso(Vec3::new(0.4, 1.2, 0.), hips, neck, 0.5, 0.4));
+        assert!(inside_torso(Vec3::new(0.25, 0.8, 0.), hips, neck, 0.5, 0.4));
+        assert!(!inside_torso(Vec3::new(0., 0.5, 0.), hips, neck, 0.5, 0.4));
+        assert!(!inside_torso(Vec3::new(0.5, 1.2, 0.), hips, neck, 0.5, 0.4));
         assert!(!inside_torso(Vec3::new(0., 1.6, 0.), hips, neck, 0.5, 0.4));
     }
 

@@ -1,1 +1,3 @@
 Original Waifu Studio procedural BVH motions: subtle head/chest nod, tilt, and downward glance. Authored for this application; no third-party motion data. Upper-body channels only; no root translation or locomotion.
+
+`thinking-open-hands.bvh` uses the timing and non-arm tracks from the user-generated Kimodo take `talking_thinking_01`. Its shoulders, arms, wrists, and fingers were reauthored for more clearance. Waifu Studio's Windows renderer reported zero selected forearm or hand to torso skin crossings on Hikari, Neuro-sama, and Jim v2 at all 419 samples per avatar, with the arm guard off. The check covered Hikari's skin under the sleeves. Clothes and hair were outside the geometry check.

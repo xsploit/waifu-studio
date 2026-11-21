@@ -48,8 +48,8 @@ def serve(directory):
     """MCP stdio JSON-RPC transport; stdout contains protocol messages only."""
     tools = [{
         "name": "waifu_control",
-        "description": "Inspect/control an explicitly opted-in local Waifu Studio instance. Actions: status, list_motions, play_motion (catalog path), stop_motion, set_gaze (config), set_view (studio/desktop), set_screen (screen), sit (sitting boolean), capture (plain PNG name). No global mouse/keyboard.",
-        "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "list_motions", "play_motion", "stop_motion", "set_automatic_motion", "set_frame_caps", "set_camera_view", "restore_window", "set_gaze", "set_view", "set_screen", "sit", "capture"]}, "path": {"type": "string"}, "config": {"type": "object"}, "view": {"type": "string"}, "screen": {"type": "string"}, "sitting": {"type": "boolean"}, "name": {"type": "string"}, "enabled": {"type": "boolean"}, "focused": {"type": "integer"}, "background": {"type": "integer"}, "desktop": {"type": "integer"}}, "required": ["action"], "additionalProperties": False},
+        "description": "Inspect/control an explicitly opted-in local Waifu Studio instance. Actions include status, list_characters, select_character (library ID), list_motions, play_motion (catalog path), stop_motion, set_gaze, set_view, set_screen, sit and capture. No global mouse/keyboard.",
+        "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "list_characters", "select_character", "list_motions", "play_motion", "stop_motion", "set_automatic_motion", "set_frame_caps", "set_camera_view", "restore_window", "set_gaze", "set_view", "set_screen", "sit", "capture"]}, "id": {"type": "string"}, "path": {"type": "string"}, "config": {"type": "object"}, "view": {"type": "string"}, "screen": {"type": "string"}, "sitting": {"type": "boolean"}, "name": {"type": "string"}, "enabled": {"type": "boolean"}, "focused": {"type": "integer"}, "background": {"type": "integer"}, "desktop": {"type": "integer"}}, "required": ["action"], "additionalProperties": False},
     }]
     for line in sys.stdin:
         try:

@@ -146,10 +146,34 @@ fn status(world: &mut World, control: &LocalControl) -> Value {
         "sitting":desktop.sitting,"sitting_status":desktop.sitting_status,
         "surface_status":desktop.surface_status,
     });
-    let avatar = world.resource::<AvatarLoadState>().active;
-    result["avatar_ready"] = json!(avatar.is_some());
+    let avatar = world.resource::<AvatarLoadState>();
+    result["avatar_ready"] = json!(avatar.active.is_some());
+    result["avatar_entity"] = json!(avatar.active.map(|entity| entity.to_bits()));
+    result["avatar_load_status"] = json!(format!("{:?}", avatar.status));
+    result["character_id"] = json!(studio.library.selected);
     let mut windows = world.query::<&Window>();
     result["windows"]=json!(windows.iter(world).map(|w|json!({"focused":w.focused,"width":w.physical_width(),"height":w.physical_height(),"scale":w.scale_factor()})).collect::<Vec<_>>());
+    // Only the explicitly enabled control endpoint pays for this diagnostic.
+    // Asset counts reflect Bevy's CPU-side stores, not GPU driver allocations.
+    let images = world.resource::<Assets<Image>>();
+    let image_bytes: usize = images
+        .iter()
+        .filter_map(|(_, image)| image.data.as_ref().map(Vec::len))
+        .sum();
+    let image_count = images.len();
+    let meshes = world.resource::<Assets<Mesh>>();
+    let mesh_count = meshes.len();
+    let (morph_logical_bytes, morph_unique_bytes) = waifu_studio::loading::morph_cpu_bytes(meshes);
+    let material_count = world.resource::<Assets<StandardMaterial>>().len();
+    let environment = world.resource::<waifu_studio::environments::EnvironmentSettings>();
+    let room_suppressed = environment.suppressed;
+    let room_selected = format!("{:?}", environment.kind);
+    let mut rooms = world.query::<&waifu_studio::environments::EnvironmentRoot>();
+    let room_roots = rooms.iter(world).count();
+    result["resources"] = json!({"images":image_count,"image_cpu_bytes":image_bytes,"meshes":mesh_count,"materials":material_count,"morph_logical_bytes":morph_logical_bytes,"morph_unique_bytes":morph_unique_bytes,"room_selected":room_selected,"room_suppressed":room_suppressed,"room_roots":room_roots});
+    if let Some(metrics) = world.get_resource::<crate::runtime::RuntimeMetricsSnapshot>() {
+        result["runtime_metrics"] = metrics.0.clone();
+    }
     result
 }
 fn execute(world: &mut World, control: &LocalControl, command: &Value) -> Result<Value, String> {
@@ -159,6 +183,34 @@ fn execute(world: &mut World, control: &LocalControl, command: &Value) -> Result
         .ok_or("Missing action")?;
     match action {
         "status" => return Ok(status(world, control)),
+        "list_characters" => {
+            return Ok(json!(
+                world
+                    .resource::<Studio>()
+                    .library
+                    .characters
+                    .iter()
+                    .map(|c| json!({"id":c.id,"name":c.name}))
+                    .collect::<Vec<_>>()
+            ));
+        }
+        "select_character" => {
+            let id = command
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                .ok_or("Invalid character ID")?;
+            let mut studio = world.resource_mut::<Studio>();
+            if !studio
+                .library
+                .characters
+                .iter()
+                .any(|character| character.id == id)
+            {
+                return Err("Character must be in the app library".into());
+            }
+            studio.select_character(id);
+        }
         "list_motions" => {
             let entries = world.resource::<MotionServices>().entries(false);
             return Ok(json!(

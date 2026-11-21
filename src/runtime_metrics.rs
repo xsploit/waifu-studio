@@ -85,6 +85,8 @@ struct RenderSamples {
     render_start: Option<Instant>,
     prepare: Vec<f64>,
     render: Vec<f64>,
+    mesh_slab_bytes: [u64; 3],
+    mesh_allocations: [usize; 3],
 }
 #[derive(Clone, Copy)]
 enum Stage {
@@ -97,6 +99,8 @@ pub(super) struct RenderReport {
     pub render_ms: (f64, f64),
     pub prepare_samples: usize,
     pub render_samples: usize,
+    pub mesh_slab_bytes: [u64; 3],
+    pub mesh_allocations: [usize; 3],
 }
 impl RenderPhases {
     fn begin(&self, stage: Stage, now: Instant) {
@@ -137,6 +141,8 @@ impl RenderPhases {
             render_ms: percentiles(&mut sample.render),
             prepare_samples: sample.prepare.len(),
             render_samples: sample.render.len(),
+            mesh_slab_bytes: sample.mesh_slab_bytes,
+            mesh_allocations: sample.mesh_allocations,
         };
         sample.prepare.clear();
         sample.render.clear();
@@ -154,6 +160,37 @@ fn render_begin(probe: bevy::prelude::Res<RenderPhases>) {
 }
 fn render_end(probe: bevy::prelude::Res<RenderPhases>) {
     probe.end(Stage::Render, Instant::now());
+}
+fn mesh_memory_probe(
+    probe: bevy::prelude::Res<RenderPhases>,
+    allocator: bevy::prelude::Res<bevy::render::mesh::allocator::MeshAllocator>,
+    mut previous: bevy::prelude::Local<Option<Instant>>,
+) {
+    use bevy::render::mesh::allocator::ElementClass;
+    let now = Instant::now();
+    if previous.is_some_and(|at| now.duration_since(at) < Duration::from_secs(2)) {
+        return;
+    }
+    *previous = Some(now);
+    let index = |class| match class {
+        ElementClass::Vertex => 0,
+        ElementClass::Index => 1,
+        ElementClass::MorphTarget => 2,
+    };
+    let mut bytes = [0; 3];
+    let mut counts = [0; 3];
+    for slab in allocator.slabs.values() {
+        bytes[index(slab.element_class())] += slab.buffer_size();
+    }
+    for key in allocator.key_to_slab.keys() {
+        counts[index(key.class)] += 1;
+    }
+    let mut samples = probe
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    samples.mesh_slab_bytes = bytes;
+    samples.mesh_allocations = counts;
 }
 /// Register observers, preserving the existing renderer systems and resources.
 pub(super) fn install_render_probes(app: &mut bevy::prelude::App) {
@@ -183,7 +220,8 @@ pub(super) fn install_render_probes(app: &mut bevy::prelude::App) {
                     render_end.after(render_system),
                 )
                     .in_set(RenderSystems::Render),
-            );
+            )
+            .add_systems(Render, mesh_memory_probe.in_set(RenderSystems::Cleanup));
         app.insert_resource(probe);
     }
 }

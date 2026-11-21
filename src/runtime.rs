@@ -131,6 +131,7 @@ impl Plugin for StudioRuntimePlugin {
         app.add_systems(Last, reclaim_avatar_load_memory);
         if std::env::var_os("WAIFU_RUNTIME_METRICS").is_some() {
             app.init_resource::<crate::runtime_metrics::FramePhases>()
+                .init_resource::<RuntimeMetricsSnapshot>()
                 .add_systems(Last, log_runtime_metrics);
             crate::runtime_metrics::install_render_probes(app);
         }
@@ -215,6 +216,10 @@ struct RuntimeSample {
     mixed_focus: bool,
 }
 
+/// Latest opt-in diagnostics window for the local control endpoint.
+#[derive(Resource, Default)]
+pub(crate) struct RuntimeMetricsSnapshot(pub serde_json::Value);
+
 fn frame_percentiles(samples: &mut [f64]) -> (f64, f64) {
     if samples.is_empty() {
         return (0.0, 0.0);
@@ -231,6 +236,7 @@ fn log_runtime_metrics(
     desktop: Res<DesktopSettings>,
     winit: Res<WinitSettings>,
     mut sample: Local<RuntimeSample>,
+    mut snapshot: ResMut<RuntimeMetricsSnapshot>,
     phase_data: (
         ResMut<crate::runtime_metrics::FramePhases>,
         Option<Res<crate::runtime_metrics::RenderPhases>>,
@@ -295,6 +301,23 @@ fn log_runtime_metrics(
                 window.resolution.physical_width(),
                 window.resolution.physical_height(),
             )
+        });
+        snapshot.0 = serde_json::json!({
+            "fps": sample.frames as f64 / elapsed,
+            "frame_p50_ms": p50, "frame_p99_ms": p99,
+            "focused": focused, "mixed_focus": sample.mixed_focus,
+            "compute_threads": bevy::tasks::ComputeTaskPool::get().thread_num(),
+            "pacing_sleep_ms": phases.sleep_ms,
+            "main_work_ms": phases.work_ms,
+            "between_main_ms": phases.between_ms,
+            "prepare_windows_ms": render.prepare_ms,
+            "render_system_ms": render.render_ms,
+            "mesh_slab_bytes": render.mesh_slab_bytes,
+            "mesh_allocations": render.mesh_allocations,
+            "main_samples": phases.work_samples,
+            "render_samples": render.render_samples,
+            "render_probe_installed": render_installed,
+            "physical_size": [width, height]
         });
         info!(
             "Runtime phase metrics: pacing_sleep_ms_p50={:.3} pacing_sleep_ms_p99={:.3} sampled_main_work_ms_p50={:.3} sampled_main_work_ms_p99={:.3} between_main_ms_p50={:.3} between_main_ms_p99={:.3} sleep_samples={} work_samples={} between_samples={} windows={} sampled_window_physical={}x{} present_is_requested=true prepare_windows_bracket_ms_p50={:.3} prepare_windows_bracket_ms_p99={:.3} render_system_bracket_ms_p50={:.3} render_system_bracket_ms_p99={:.3} prepare_samples={} render_samples={} render_probe_installed={} desired_frame_latency_requested={:?}",
@@ -439,6 +462,7 @@ struct DesktopControlsPass;
 struct DesktopState {
     controls: Option<(Entity, Entity)>,
     companion_size: Option<Vec2>,
+    pending_studio_resolution: Option<bevy::window::WindowResolution>,
     original_window: Option<(
         bool,
         WindowLevel,
@@ -601,6 +625,7 @@ fn desktop_windows(
     }
     if studio.mode == ViewMode::Desktop {
         if state.original_window.is_none() {
+            state.pending_studio_resolution = None;
             state.original_window = Some((
                 window.decorations,
                 window.window_level,
@@ -712,12 +737,20 @@ fn desktop_windows(
             window.decorations = decorations;
             window.window_level = level;
             window.has_shadow = shadow;
-            window.resolution = resolution;
+            // Winit applies a requested inner size before restoring decorations.
+            // On Windows, adding the frame afterwards shrinks the client area.
+            // Reapply the saved size on the next update, after that transition.
+            window.resolution = resolution.clone();
+            // Maximized windows are restored by the window manager, not by a
+            // subsequent client-size request that could undo maximization.
+            state.pending_studio_resolution = (cfg!(windows) && !maximized).then_some(resolution);
             window.position = position;
             if maximized {
                 window.set_maximized(true);
             }
             studio.frame_requested = true;
+        } else if let Some(resolution) = state.pending_studio_resolution.take() {
+            window.resolution = resolution;
         }
         if let Some((controls, camera)) = state.controls.take() {
             commands.entity(camera).try_despawn();
@@ -2309,6 +2342,39 @@ mod tests {
         assert!(app.world().resource::<DesktopState>().controls.is_none());
         assert!(app.world().get_entity(controls).is_err());
         assert!(app.world().get_entity(camera).is_err());
+        #[cfg(windows)]
+        {
+            // Simulate the native decoration change reporting a smaller client area.
+            app.world_mut()
+                .get_mut::<Window>(primary)
+                .unwrap()
+                .resolution
+                .set(1000., 700.);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<Window>(primary)
+                    .unwrap()
+                    .resolution
+                    .size(),
+                original_size
+            );
+            // The correction is one-shot; later user resizes must not be undone.
+            app.world_mut()
+                .get_mut::<Window>(primary)
+                .unwrap()
+                .resolution
+                .set(1000., 700.);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .get::<Window>(primary)
+                    .unwrap()
+                    .resolution
+                    .size(),
+                Vec2::new(1000., 700.)
+            );
+        }
         app.world_mut().resource_mut::<Studio>().mode = ViewMode::Desktop;
         app.update();
         assert!(

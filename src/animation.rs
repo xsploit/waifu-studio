@@ -806,6 +806,7 @@ impl AnimationState {
             receipt.finish(PlaybackOutcome::Cancelled);
         }
         let mut fresh = Self::default();
+        fresh.weight = self.weight;
         fresh.motion_observations = self.motion_observations.clone();
         fresh.revoked_paths = std::mem::take(&mut self.revoked_paths);
         let paths = Arc::new(Mutex::new(ParkedPaths {
@@ -1253,7 +1254,6 @@ impl AnimationState {
         self.revision = self.revision.wrapping_add(1);
         self.autoplay_import = true;
         self.speed = 1.0;
-        self.weight = 1.0;
         self.looping = true;
         self.one_shot = false;
         self.one_shot_finished = false;
@@ -1421,6 +1421,7 @@ struct PoseCache {
     last_weight: f32,
     last_arm_clearance: bool,
     body: animation_body::MeshBodyCache,
+    arm_history: [Option<(Vec3, Vec3)>; 2],
     /// The active avatar's rest facing; `Some(true)` = -Z, as VRM 0.x models are.
     target_faces_negative_z: Option<bool>,
     /// Source and avatar face opposite ways, so rotations are turned around Y.
@@ -1609,6 +1610,7 @@ fn animate_humanoid(
         cache.applied = false;
         cache.transition = None;
         cache.body = default();
+        cache.arm_history = [None; 2];
         state.position = 0.0;
     }
     // Revocation also invalidates an outgoing clip already moved into the cache.
@@ -1702,6 +1704,7 @@ fn animate_humanoid(
         cache.revision = state.revision.wrapping_sub(1);
     }
     if !state.is_posing() {
+        cache.arm_history = [None; 2];
         cache.transition = None;
         cache.clip = None;
         cache.path = None;
@@ -1814,6 +1817,7 @@ fn animate_humanoid(
         1.0
     };
     if !state.playing
+        && !state.arm_clearance
         && cache.applied
         && cache.transition.is_none()
         && cache.last_position == state.position
@@ -1903,8 +1907,17 @@ fn animate_humanoid(
     cache.last_position = state.position;
     cache.last_weight = weight;
     cache.last_arm_clearance = state.arm_clearance;
+    if !state.arm_clearance {
+        cache.arm_history = [None; 2];
+    }
     if state.arm_clearance && (weight > 0. || alpha < 1.) {
-        let PoseCache { body, bones, .. } = &mut *cache;
+        let guard_started = std::time::Instant::now();
+        let PoseCache {
+            body,
+            bones,
+            arm_history,
+            ..
+        } = &mut *cache;
         if let (Some(meshes), Some(bindposes)) = (meshes.as_deref(), bindposes.as_deref())
             && body.capture(
                 root,
@@ -1915,16 +1928,25 @@ fn animate_humanoid(
                 &parents,
                 &transforms,
             )
-            && let Some(points) = body.posed_points(root, &parents, &transforms)
-            && let Some(hull) = animation_clearance::Hull::from_points(&points)
+            && let Some((points, hands)) = body.posed_points(root, &parents, &transforms)
         {
+            let hulls = animation_clearance::Hull::sections(&points);
             animation_clearance::correct_arms(
                 root,
                 bones,
                 &parents,
                 &mut transforms,
-                &hull,
+                &hulls,
                 body.arm_radii(),
+                &hands,
+                arm_history,
+                time.delta_secs(),
+            );
+        }
+        if std::env::var_os("WAIFU_GUARD_PROFILE").is_some() {
+            eprintln!(
+                "arm_guard_ms={:.3}",
+                guard_started.elapsed().as_secs_f64() * 1000.
             );
         }
     }
@@ -3010,6 +3032,21 @@ mod tests {
     }
 
     #[test]
+    fn clip_switch_keeps_motion_weight_on_both_sides_of_the_crossfade() {
+        let clip = Arc::new(parse_bvh(SAMPLE).unwrap());
+        let mut state = AnimationState::default();
+        state.select_clip(clip.clone(), Some("idle.bvh".into()));
+        state.weight = 0.4;
+
+        state.select_clip(clip, Some("gesture.bvh".into()));
+
+        assert_eq!(state.weight, 0.4);
+        assert_eq!(state.transition_from.as_ref().unwrap().weight, 0.4);
+        state.park_for_desktop();
+        assert_eq!(state.weight, 0.4);
+    }
+
+    #[test]
     fn normalized_joint_space_preserves_arbitrary_source_and_destination_rests() {
         let src_local = Quat::from_euler(EulerRot::XYZ, 0.3, -0.6, 0.2);
         let src_model = Quat::from_euler(EulerRot::XYZ, -0.4, 0.1, 0.9) * src_local;
@@ -3332,6 +3369,101 @@ mod tests {
         app.update();
         assert_eq!(*app.world().get::<Transform>(hips).unwrap(), rest);
     }
+    #[test]
+    fn clear_clip_endpoints_can_blend_a_forearm_through_the_torso() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin))
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                125,
+            )))
+            .init_resource::<AvatarLoadState>()
+            .add_plugins(BvhAnimationPlugin);
+        let world = app.world_mut();
+        let root = world.spawn(Transform::default()).id();
+        let hips = world
+            .spawn((
+                HumanBoneName::Hips,
+                Transform::from_xyz(0., 1., 0.),
+                ChildOf(root),
+            ))
+            .id();
+        let upper = world
+            .spawn((
+                HumanBoneName::LeftUpperArm,
+                Transform::from_xyz(0.3, 0.25, 0.),
+                ChildOf(hips),
+            ))
+            .id();
+        let elbow = world
+            .spawn((
+                HumanBoneName::LeftLowerArm,
+                Transform::from_xyz(-0.18, 0., 0.),
+                ChildOf(upper),
+            ))
+            .id();
+        let wrist = world
+            .spawn((
+                HumanBoneName::LeftHand,
+                Transform::from_xyz(-0.18, 0., 0.),
+                ChildOf(elbow),
+            ))
+            .id();
+        world.resource_mut::<AvatarLoadState>().active = Some(root);
+
+        let fixed_clip = |angle| {
+            let source = format!(
+                "HIERARCHY ROOT hips {{ OFFSET 0 0 0 CHANNELS 3 Xrotation Yrotation Zrotation
+                  JOINT leftUpperArm {{ OFFSET 1 1 0 CHANNELS 3 Xrotation Yrotation Zrotation
+                    End Site {{ OFFSET -1 0 0 }} }} }}
+                 MOTION Frames: 2 Frame Time: 1
+                 0 0 0 0 {angle} 0
+                 0 0 0 0 {angle} 0"
+            );
+            Arc::new(parse_bvh(&source).unwrap())
+        };
+        let mut animation = world.resource_mut::<AnimationState>();
+        animation.clip = Some(fixed_clip(75));
+        animation.play();
+        app.update();
+
+        let forearm = |app: &App| {
+            [elbow, wrist].map(|joint| {
+                app.world()
+                    .get::<GlobalTransform>(joint)
+                    .unwrap()
+                    .translation()
+            })
+        };
+        let chest_center = Vec3::new(0., 1.25, 0.);
+        let chest_half_extent = Vec3::new(0.12, 0.1, 0.08);
+        let outside_chest = |app: &App| {
+            // Both endpoints on the same side certify the entire straight forearm segment.
+            assert!(forearm(app).iter().all(|p| p.x > chest_half_extent.x));
+        };
+        outside_chest(&app);
+
+        app.world_mut()
+            .resource_mut::<AnimationState>()
+            .select_clip(fixed_clip(-75), None);
+        for _ in 0..2 {
+            app.update();
+        }
+        let [elbow_position, wrist_position] = forearm(&app);
+        for point in [wrist_position, elbow_position.midpoint(wrist_position)] {
+            assert!(
+                (point - chest_center).abs().cmplt(chest_half_extent).all(),
+                "{point:?}"
+            );
+        }
+        for _ in 0..2 {
+            app.update();
+        }
+        outside_chest(&app);
+    }
+
     #[test]
     fn revocation_clears_an_outgoing_clip_already_owned_by_pose_cache() {
         use bevy::time::TimeUpdateStrategy;
